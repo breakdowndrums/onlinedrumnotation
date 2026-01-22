@@ -49,11 +49,60 @@ export default function App() {
   const [resolution, setResolution] = useState(8); // 4, 8, 16
   const [bars, setBars] = useState(2);
   const [timeSig, setTimeSig] = useState({ n: 4, d: 4 });
+  const [keepTiming, setKeepTiming] = useState(true);
   const [mergeRests, setMergeRests] = useState(true);
   const [mergeNotes, setMergeNotes] = useState(true);
 
   const stepsPerBar = Math.max(1, Math.round((timeSig.n * resolution) / timeSig.d));
   const columns = bars * stepsPerBar;
+
+
+  const computeStepsPerBar = (ts, res) => Math.max(1, Math.round((ts.n * res) / ts.d));
+
+  const remapGrid = (prevGrid, oldStepsPerBar, newStepsPerBar) => {
+    const next = {};
+    INSTRUMENTS.forEach((inst) => {
+      const out = Array(bars * newStepsPerBar).fill(0);
+      for (let b = 0; b < bars; b++) {
+        for (let s = 0; s < oldStepsPerBar; s++) {
+          const oldGlobal = b * oldStepsPerBar + s;
+          const val = prevGrid[inst.id]?.[oldGlobal] ?? 0;
+          if (val === 0) continue;
+
+          const newLocal = Math.round((s * newStepsPerBar) / oldStepsPerBar);
+          const clamped = Math.min(newStepsPerBar - 1, Math.max(0, newLocal));
+          const newGlobal = b * newStepsPerBar + clamped;
+
+          out[newGlobal] = Math.max(out[newGlobal] ?? 0, val);
+        }
+      }
+      next[inst.id] = out;
+    });
+    return next;
+  };
+
+  const handleResolutionChange = (newRes) => {
+    if (!keepTiming) {
+      setResolution(newRes);
+      return;
+    }
+    const oldSPB = stepsPerBar;
+    const newSPB = computeStepsPerBar(timeSig, newRes);
+    setGrid((prev) => remapGrid(prev, oldSPB, newSPB));
+    setResolution(newRes);
+  };
+
+  const handleTimeSigChange = (newTS) => {
+    if (!keepTiming) {
+      setTimeSig(newTS);
+      return;
+    }
+    const oldSPB = stepsPerBar;
+    const newSPB = computeStepsPerBar(newTS, resolution);
+    setGrid((prev) => remapGrid(prev, oldSPB, newSPB));
+    setTimeSig(newTS);
+  };
+
 
   const [grid, setGrid] = useState(() => {
     const g = {};
@@ -96,7 +145,7 @@ export default function App() {
           Resolution
           <select
             value={resolution}
-            onChange={(e) => setResolution(Number(e.target.value))}
+            onChange={(e) => handleResolutionChange(Number(e.target.value))}
             className="bg-neutral-800 border border-neutral-700 rounded px-2 py-1"
           >
             <option value={4}>4th</option>
@@ -106,12 +155,22 @@ export default function App() {
         </label>
 
         <label className="text-sm text-neutral-300 flex items-center gap-2">
+          <input
+            type="checkbox"
+            checked={keepTiming}
+            onChange={(e) => setKeepTiming(e.target.checked)}
+          />
+          Keep timing
+        </label>
+
+
+        <label className="text-sm text-neutral-300 flex items-center gap-2">
           Time
           <select
             value={`${timeSig.n}/${timeSig.d}`}
             onChange={(e) => {
               const [n, d] = e.target.value.split("/").map(Number);
-              setTimeSig({ n, d });
+              handleTimeSigChange({ n, d });
             }}
             className="bg-neutral-800 border border-neutral-700 rounded px-2 py-1"
           >

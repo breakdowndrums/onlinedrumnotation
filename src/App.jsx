@@ -158,8 +158,10 @@ export default function App() {
       srcByRow[instId] = next[instId].slice(start, start + length);
     }
 
-    for (let pos = start + step; pos + length <= columns; pos += step) {
-      for (let i = 0; i < length; i++) {
+    // Repeat the pattern to the right. If the remaining space doesn't fit a full
+    // `length` block, still fill the remaining cells with the start of the pattern.
+    for (let pos = start + step; pos < columns; pos += step) {
+      for (let i = 0; i < length && pos + i < columns; i++) {
         const idx = pos + i;
         for (let r = rowStart; r <= rowEnd; r++) {
           const instId = INSTRUMENTS[r].id;
@@ -184,8 +186,10 @@ export default function App() {
       srcByRow[instId] = (baseGrid[instId] || []).slice(start, start + length);
     }
 
-    for (let pos = start + step; pos + length <= columns; pos += step) {
-      for (let i = 0; i < length; i++) {
+    // Repeat the pattern to the right. If the remaining space doesn't fit a full
+    // `length` block, still fill the remaining cells with the start of the pattern.
+    for (let pos = start + step; pos < columns; pos += step) {
+      for (let i = 0; i < length && pos + i < columns; i++) {
         for (let r = rowStart; r <= rowEnd; r++) {
           const instId = INSTRUMENTS[r].id;
           g[instId][pos + i] = (srcByRow[instId]?.[i] ?? 0); // overwrite, including 0

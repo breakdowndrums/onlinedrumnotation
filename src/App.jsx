@@ -50,6 +50,40 @@ export default function App() {
   const [bars, setBars] = useState(2);
   const [timeSig, setTimeSig] = useState({ n: 4, d: 4 });
   const [keepTiming, setKeepTiming] = useState(true);
+
+  const [selection, setSelection] = useState(null); // { rowStart, rowEnd, start, endExclusive } (row indices into INSTRUMENTS)
+  const [loopRule, setLoopRule] = useState(null);
+
+  // If selection collapses to a single cell while looping is active, drop the loop.
+  useEffect(() => {
+    if (!loopRule) return;
+    const width = selection ? (selection.endExclusive - selection.start) : 0;
+    if (width < 2) {
+      setLoopRule(null);
+    }
+  }, [selection, loopRule]);
+
+
+  // Auto-enable looping after holding a valid selection for 200ms
+  useEffect(() => {
+    if (loopRule) return;
+    if (!selection) return;
+    const width = selection.endExclusive - selection.start;
+    if (width < 2) return;
+
+    const timer = setTimeout(() => {
+      setLoopRule({
+        rowStart: selection.rowStart,
+        rowEnd: selection.rowEnd,
+        start: selection.start,
+        length: width,
+      });
+    }, 200);
+
+    return () => clearTimeout(timer);
+  }, [selection, loopRule]);
+
+ // { rowStart, rowEnd, start, length }
   const [mergeRests, setMergeRests] = useState(true);
   const [mergeNotes, setMergeNotes] = useState(true);
 
@@ -88,7 +122,7 @@ export default function App() {
     }
     const oldSPB = stepsPerBar;
     const newSPB = computeStepsPerBar(timeSig, newRes);
-    setGrid((prev) => remapGrid(prev, oldSPB, newSPB));
+    setBaseGrid((prev) => remapGrid(prev, oldSPB, newSPB));
     setResolution(newRes);
   };
 
@@ -99,20 +133,72 @@ export default function App() {
     }
     const oldSPB = stepsPerBar;
     const newSPB = computeStepsPerBar(newTS, resolution);
-    setGrid((prev) => remapGrid(prev, oldSPB, newSPB));
+    setBaseGrid((prev) => remapGrid(prev, oldSPB, newSPB));
     setTimeSig(newTS);
   };
 
 
-  const [grid, setGrid] = useState(() => {
+
+  const [baseGrid, setBaseGrid] = useState(() => {
     const g = {};
     INSTRUMENTS.forEach((i) => (g[i.id] = Array(columns).fill(0)));
     return g;
   });
 
+
+  const bakeLoopInto = (prevGrid, rule) => {
+    const next = {};
+    INSTRUMENTS.forEach((inst) => (next[inst.id] = [...(prevGrid[inst.id] || [])]));
+
+    const { rowStart, rowEnd, start, length } = rule;
+    const step = length;
+    const srcByRow = {};
+    for (let r = rowStart; r <= rowEnd; r++) {
+      const instId = INSTRUMENTS[r].id;
+      srcByRow[instId] = next[instId].slice(start, start + length);
+    }
+
+    for (let pos = start + step; pos + length <= columns; pos += step) {
+      for (let i = 0; i < length; i++) {
+        const idx = pos + i;
+        for (let r = rowStart; r <= rowEnd; r++) {
+          const instId = INSTRUMENTS[r].id;
+          next[instId][idx] = (srcByRow[instId]?.[i] ?? 0);
+        }
+      }
+    }
+    return next;
+  };
+
+  const computedGrid = React.useMemo(() => {
+    const g = {};
+    INSTRUMENTS.forEach((inst) => (g[inst.id] = [...(baseGrid[inst.id] || [])]));
+
+    if (!loopRule || loopRule.length < 2) return g;
+
+    const { rowStart, rowEnd, start, length } = loopRule;
+    const step = length;
+    const srcByRow = {};
+    for (let r = rowStart; r <= rowEnd; r++) {
+      const instId = INSTRUMENTS[r].id;
+      srcByRow[instId] = (baseGrid[instId] || []).slice(start, start + length);
+    }
+
+    for (let pos = start + step; pos + length <= columns; pos += step) {
+      for (let i = 0; i < length; i++) {
+        for (let r = rowStart; r <= rowEnd; r++) {
+          const instId = INSTRUMENTS[r].id;
+          g[instId][pos + i] = (srcByRow[instId]?.[i] ?? 0); // overwrite, including 0
+        }
+      }
+    }
+    return g;
+  }, [baseGrid, loopRule, columns]);
+
+
   // Resize grid when resolution/bars change (preserve existing hits)
   useEffect(() => {
-    setGrid((prev) => {
+    setBaseGrid((prev) => {
       const next = {};
       INSTRUMENTS.forEach((i) => {
         next[i.id] = Array(columns)
@@ -123,22 +209,55 @@ export default function App() {
     });
   }, [columns]);
 
+  
+  
+  
   const cycleVelocity = (inst, idx) => {
-    setGrid((prev) => {
+    if (loopRule) {
+      const r = INSTRUMENTS.findIndex((x) => x.id === inst);
+      const inLoopRows = r >= loopRule.rowStart && r <= loopRule.rowEnd;
+      const inSourceCols = idx >= loopRule.start && idx < loopRule.start + loopRule.length;
+      const inSource = inLoopRows && inSourceCols;
+
+      const inGenerated = inLoopRows && idx >= loopRule.start + loopRule.length;
+
+      // Rule:
+      // - Click inside source: edit source live (no bake)
+      // - Click anywhere else (including generated area): bake loop and exit loop mode (NO toggle on this click)
+      if (!inSource || inGenerated) {
+        setBaseGrid((prev) => bakeLoopInto(prev, loopRule));
+        setLoopRule(null);
+        setSelection(null);
+        return;
+      }
+    }
+
+    // Normal edit (or edit within loop source)
+    setBaseGrid((prev) => {
+      const next = { ...prev };
       const current = prev[inst][idx];
       const nextVal =
         VELOCITY_CYCLE[(VELOCITY_CYCLE.indexOf(current) + 1) % VELOCITY_CYCLE.length];
-
-      return {
-        ...prev,
-        [inst]: prev[inst].map((v, i) => (i === idx ? nextVal : v)),
-      };
+      next[inst] = [...prev[inst]];
+      next[inst][idx] = nextVal;
+      return next;
     });
   };
 
   return (
-    <div className="min-h-screen bg-neutral-900 text-white p-6">
-      <header className="flex flex-wrap items-center gap-3">
+    <div
+      className="min-h-screen bg-neutral-900 text-white p-6"
+      onMouseDown={(e) => {
+        if (!loopRule) return;
+        const el = e.target;
+        // If click is NOT on a grid cell, dismiss looping (no bake)
+        if (el && el.closest && el.closest("[data-gridcell='1']")) return;
+        if (el && el.closest && el.closest("[data-loopui='1']")) return;
+        setLoopRule(null);
+        setSelection(null);
+      }}
+    >
+      <header className="flex flex-wrap items-center gap-3" data-loopui='1'>
         <h1 className="text-lg font-semibold mr-4">Drum Grid → Notation</h1>
 
         <label className="text-sm text-neutral-300 flex items-center gap-2">
@@ -162,7 +281,6 @@ export default function App() {
           />
           Keep timing
         </label>
-
 
         <label className="text-sm text-neutral-300 flex items-center gap-2">
           Time
@@ -208,6 +326,45 @@ export default function App() {
           Merge notes: {mergeNotes ? "On" : "Off"}
         </button>
 
+        <button
+          onClick={() => {
+            // Toggle looping
+            if (loopRule) {
+              setLoopRule(null);
+              setSelection(null);
+              return;
+            }
+            if (!selection) return;
+            const length = Math.max(1, selection.endExclusive - selection.start);
+            if (length < 2) return;
+            setLoopRule({ rowStart: selection.rowStart, rowEnd: selection.rowEnd, start: selection.start, length });
+          }}
+          disabled={(!loopRule && (!selection || (selection.endExclusive - selection.start) < 2))}
+          className={`px-3 py-2 rounded border text-sm ${
+            (!loopRule && (!selection || (selection.endExclusive - selection.start) < 2))
+              ? "bg-neutral-900 border-neutral-800 text-neutral-600"
+              : "bg-neutral-800 border-neutral-700"
+          }`}
+          title={loopRule ? "Turn looping off" : "Enable looping from the selected source region (min 2 cells wide)"}
+        >
+          Looping
+        </button>
+
+        <button
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={() => {
+            if (!loopRule) return;
+            setBaseGrid((prev) => bakeLoopInto(prev, loopRule));
+            setLoopRule(null);
+            setSelection(null);
+          }}
+          disabled={!loopRule}
+          className={`px-3 py-2 rounded border text-sm ${loopRule ? "bg-neutral-800 border-neutral-700" : "bg-neutral-900 border-neutral-800 text-neutral-600"}`}
+          title="Bake loop: commit repeated notes and remove the active loop"
+        >
+          Bake loop
+        </button>
+
         <div className="text-xs text-neutral-400 ml-auto">
           Click cell: Off → 100 → Off
         </div>
@@ -215,11 +372,11 @@ export default function App() {
 
       <main className="mt-6 grid grid-cols-1 xl:grid-cols-[auto_1fr] gap-6 items-start">
         <div className="overflow-x-auto rounded-lg border border-neutral-800 p-3 bg-neutral-950/30">
-          <Grid grid={grid} columns={columns} bars={bars} stepsPerBar={stepsPerBar} resolution={resolution} timeSig={timeSig} cycleVelocity={cycleVelocity} />
+          <Grid grid={computedGrid} columns={columns} bars={bars} stepsPerBar={stepsPerBar} resolution={resolution} timeSig={timeSig} cycleVelocity={cycleVelocity} selection={selection} setSelection={setSelection} loopRule={loopRule} />
         </div>
 
         <div className="rounded-lg border border-neutral-800 p-3 bg-neutral-950/30">
-          <Notation grid={grid} resolution={resolution} bars={bars} stepsPerBar={stepsPerBar} timeSig={timeSig} mergeRests={mergeRests} mergeNotes={mergeNotes} />
+          <Notation grid={computedGrid} resolution={resolution} bars={bars} stepsPerBar={stepsPerBar} timeSig={timeSig} mergeRests={mergeRests} mergeNotes={mergeNotes} />
         </div>
       </main>
     </div>
@@ -227,7 +384,8 @@ export default function App() {
 }
 
 
-function Grid({ grid, columns, bars, stepsPerBar, resolution, timeSig, cycleVelocity }) {
+function Grid({ grid, columns, bars, stepsPerBar, resolution, timeSig, cycleVelocity, selection, setSelection, loopRule }) {
+  const [drag, setDrag] = useState(null); // { row, col }
   // Build a render timeline with a visual gap between bars.
   // Example for 2 bars of 8ths: [0..7, GAP, 8..15]
   const timeline = [];
@@ -250,8 +408,40 @@ function Grid({ grid, columns, bars, stepsPerBar, resolution, timeSig, cycleVelo
     return sub === 0 ? `${beat}` : "·";
   };
 
+
+  
+  const getCellRole = (instId, stepIndex) => {
+    if (loopRule) {
+      const r = INSTRUMENTS.findIndex((x) => x.id === instId);
+      if (r >= loopRule.rowStart && r <= loopRule.rowEnd) {
+        const inSrc = stepIndex >= loopRule.start && stepIndex < loopRule.start + loopRule.length;
+        if (inSrc) return "source";
+        if (stepIndex >= loopRule.start + loopRule.length) return "generated";
+      }
+    }
+
+    // Only show selection outline if it spans at least 2 cells
+    if (selection) {
+      const width = selection.endExclusive - selection.start;
+      if (width >= 2) {
+        const r = INSTRUMENTS.findIndex((x) => x.id === instId);
+        if (
+          r >= selection.rowStart &&
+          r <= selection.rowEnd &&
+          stepIndex >= selection.start &&
+          stepIndex < selection.endExclusive
+        )
+          return "selected";
+      }
+    }
+
+    return "none";
+  };
+
+
+
   return (
-    <div className="grid gap-1" style={{ gridTemplateColumns: `auto repeat(${timeline.length}, 28px)` }}>
+    <div className="grid gap-1" onMouseUp={() => setDrag(null)} style={{ gridTemplateColumns: `auto repeat(${timeline.length}, 28px)` }}>
       <div />
       {timeline.map((t, i) =>
         t.type === "gap" ? (
@@ -278,8 +468,31 @@ function Grid({ grid, columns, bars, stepsPerBar, resolution, timeSig, cycleVelo
             return (
               <div
                 key={`${inst.id}-${t.stepIndex}`}
-                onClick={() => cycleVelocity(inst.id, t.stepIndex)}
-                className={`w-7 h-7 border border-neutral-800 cursor-pointer ${VELOCITY_COLOR[val]}`}
+                data-gridcell='1'
+                onClick={(e) => { e.stopPropagation(); cycleVelocity(inst.id, t.stepIndex); }}
+                onMouseDown={(e) => {
+                  e.stopPropagation();
+                  if (loopRule) return;
+                  setDrag({ row: INSTRUMENTS.findIndex((x) => x.id === inst.id), col: t.stepIndex });
+                  const r = INSTRUMENTS.findIndex((x) => x.id === inst.id);
+                  setSelection({ rowStart: r, rowEnd: r, start: t.stepIndex, endExclusive: t.stepIndex + 1 });
+                }}
+                onMouseEnter={(e) => {
+                  if (e && e.stopPropagation) e.stopPropagation();
+                  if (loopRule) return;
+                  if (!drag) return;
+                  const r0 = drag.row;
+                  const c0 = drag.col;
+                  const r1 = INSTRUMENTS.findIndex((x) => x.id === inst.id);
+                  const c1 = t.stepIndex;
+                  const rowStart = Math.min(r0, r1);
+                  const rowEnd = Math.max(r0, r1);
+                  const start = Math.min(c0, c1);
+                  const endExclusive = Math.max(c0, c1) + 1;
+                  setSelection({ rowStart, rowEnd, start, endExclusive });
+                }}
+                onMouseUp={() => setDrag(null)}
+                className={`w-7 h-7 border cursor-pointer ${VELOCITY_COLOR[val]} ${(() => { const role = getCellRole(inst.id, t.stepIndex); if (role === "source") return "border-cyan-300 ring-2 ring-cyan-300/40"; if (role === "generated") return "border-neutral-600 opacity-70"; if (role === "selected") return "border-cyan-300 ring-2 ring-cyan-300/30"; return "border-neutral-800"; })()}`}
               />
             );
           })}
@@ -525,4 +738,5 @@ function Notation({ grid, resolution, bars, stepsPerBar, timeSig, mergeRests, me
   }, [grid, resolution, bars, stepsPerBar, timeSig, mergeRests, mergeNotes]);
 
   return <div ref={ref} />;
+
 }

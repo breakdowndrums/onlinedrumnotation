@@ -7,18 +7,20 @@ const { Renderer, Stave, StaveNote, Voice, Formatter, Beam, Fraction, Barline } 
 // ====================
 // INSTRUMENT SET (MVP+)
 // ====================
+
 const INSTRUMENTS = [
-  { id: "kick", label: "Kick", midi: 36 },
-  { id: "snare", label: "Snare", midi: 38 },
-  { id: "hihat", label: "Hi-Hat", midi: 42 },
-  { id: "hihatFoot", label: "HH Foot", midi: 44 },
-  { id: "tom2", label: "Tom 2", midi: 45 },
-  { id: "tom1", label: "Tom 1", midi: 48 },
-  { id: "floorTom", label: "Floor Tom", midi: 41 },
-  { id: "ride", label: "Ride", midi: 51 },
-  { id: "crash1", label: "Crash 1", midi: 49 },
   { id: "crash2", label: "Crash 2", midi: 57 },
+  { id: "crash1", label: "Crash 1", midi: 49 },
+  { id: "ride", label: "Ride", midi: 51 },
+  { id: "hihatFoot", label: "HH Foot", midi: 44 },
+  { id: "tom1", label: "Tom 1", midi: 48 },
+  { id: "tom2", label: "Tom 2", midi: 45 },
+  { id: "floorTom", label: "Floor Tom", midi: 41 },
+  { id: "hihat", label: "Hi-Hat", midi: 42 },
+  { id: "snare", label: "Snare", midi: 38 },
+  { id: "kick", label: "Kick", midi: 36 }
 ];
+
 
 const VELOCITY_CYCLE = [0, 100];
 
@@ -34,20 +36,24 @@ const NOTATION_MAP = {
 
   // Cymbals / hats use X noteheads
   hihat: { key: "g/5/x2", x: true },
-  hihatFoot: { key: "f/4/x2", x: true },
+  hihatFoot: { key: "d/4/x2", x: true },
   ride: { key: "f/5/x2", x: true },
   crash1: { key: "a/5/x2", x: true },
-  crash2: { key: "c/6/x2", x: true },
+  crash2: { key: "b/5/x2", x: true },
 
   // Toms
-  tom2: { key: "a/4" },
-  tom1: { key: "c/5" },
-  floorTom: { key: "f/4" },
+  tom2: { key: "d/5" },
+  tom1: { key: "e/5" },
+  floorTom: { key: "a/4" },
 };
 
 export default function App() {
   const [resolution, setResolution] = useState(8); // 4, 8, 16
   const [bars, setBars] = useState(2);
+  const [barsPerLine, setBarsPerLine] = useState(4);
+  const [gridBarsPerLine, setGridBarsPerLine] = useState(4);
+  const [layout, setLayout] = useState("grid-top");
+  const [activeTab, setActiveTab] = useState("timing"); // grid-right | grid-top | notation-right | notation-top
   const [timeSig, setTimeSig] = useState({ n: 4, d: 4 });
   const [keepTiming, setKeepTiming] = useState(true);
 
@@ -151,22 +157,19 @@ export default function App() {
     INSTRUMENTS.forEach((inst) => (next[inst.id] = [...(prevGrid[inst.id] || [])]));
 
     const { rowStart, rowEnd, start, length } = rule;
-    const step = length;
     const srcByRow = {};
     for (let r = rowStart; r <= rowEnd; r++) {
       const instId = INSTRUMENTS[r].id;
       srcByRow[instId] = next[instId].slice(start, start + length);
     }
 
-    // Repeat the pattern to the right. If the remaining space doesn't fit a full
-    // `length` block, still fill the remaining cells with the start of the pattern.
-    for (let pos = start + step; pos < columns; pos += step) {
-      for (let i = 0; i < length && pos + i < columns; i++) {
-        const idx = pos + i;
-        for (let r = rowStart; r <= rowEnd; r++) {
-          const instId = INSTRUMENTS[r].id;
-          next[instId][idx] = (srcByRow[instId]?.[i] ?? 0);
-        }
+    // Repeat the loop pattern all the way to the end, even if the remaining
+    // cells don't fit an exact multiple of `length`.
+    for (let idx = start + length; idx < columns; idx++) {
+      const i = (idx - start) % length;
+      for (let r = rowStart; r <= rowEnd; r++) {
+        const instId = INSTRUMENTS[r].id;
+        next[instId][idx] = (srcByRow[instId]?.[i] ?? 0);
       }
     }
     return next;
@@ -179,21 +182,19 @@ export default function App() {
     if (!loopRule || loopRule.length < 2) return g;
 
     const { rowStart, rowEnd, start, length } = loopRule;
-    const step = length;
     const srcByRow = {};
     for (let r = rowStart; r <= rowEnd; r++) {
       const instId = INSTRUMENTS[r].id;
       srcByRow[instId] = (baseGrid[instId] || []).slice(start, start + length);
     }
 
-    // Repeat the pattern to the right. If the remaining space doesn't fit a full
-    // `length` block, still fill the remaining cells with the start of the pattern.
-    for (let pos = start + step; pos < columns; pos += step) {
-      for (let i = 0; i < length && pos + i < columns; i++) {
-        for (let r = rowStart; r <= rowEnd; r++) {
-          const instId = INSTRUMENTS[r].id;
-          g[instId][pos + i] = (srcByRow[instId]?.[i] ?? 0); // overwrite, including 0
-        }
+    // Repeat the loop pattern all the way to the end, even if the remaining
+    // cells don't fit an exact multiple of `length`.
+    for (let idx = start + length; idx < columns; idx++) {
+      const i = (idx - start) % length;
+      for (let r = rowStart; r <= rowEnd; r++) {
+        const instId = INSTRUMENTS[r].id;
+        g[instId][idx] = (srcByRow[instId]?.[i] ?? 0); // overwrite, including 0
       }
     }
     return g;
@@ -261,134 +262,426 @@ export default function App() {
         setSelection(null);
       }}
     >
-      <header className="flex flex-wrap items-center gap-3" data-loopui='1'>
-        <h1 className="text-lg font-semibold mr-4">Drum Grid → Notation</h1>
+      
+      <header className="flex flex-col gap-3" data-loopui='1'>
+        <div className="flex flex-wrap items-center gap-3">
+          <h1 className="text-lg font-semibold mr-2">Drum Grid → Notation</h1>
 
-        <label className="text-sm text-neutral-300 flex items-center gap-2">
-          Resolution
-          <select
-            value={resolution}
-            onChange={(e) => handleResolutionChange(Number(e.target.value))}
-            className="bg-neutral-800 border border-neutral-700 rounded px-2 py-1"
-          >
-            <option value={4}>4th</option>
-            <option value={8}>8th</option>
-            <option value={16}>16th</option>
-          </select>
-        </label>
+          
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setActiveTab("timing")}
+              className={`px-3 py-1.5 rounded border text-sm capitalize ${
+                activeTab === "timing"
+                  ? "bg-neutral-800 border-neutral-600 text-white"
+                  : "bg-neutral-900 border-neutral-800 text-neutral-300 hover:bg-neutral-800/60"
+              }`}
+            >
+              timing
+            </button>
+            <button
+              onClick={() => setActiveTab("notation")}
+              className={`px-3 py-1.5 rounded border text-sm capitalize ${
+                activeTab === "notation"
+                  ? "bg-neutral-800 border-neutral-600 text-white"
+                  : "bg-neutral-900 border-neutral-800 text-neutral-300 hover:bg-neutral-800/60"
+              }`}
+            >
+              notation
+            </button>
+            <button
+              onClick={() => setActiveTab("looping")}
+              className={`px-3 py-1.5 rounded border text-sm capitalize ${
+                activeTab === "looping"
+                  ? "bg-neutral-800 border-neutral-600 text-white"
+                  : "bg-neutral-900 border-neutral-800 text-neutral-300 hover:bg-neutral-800/60"
+              }`}
+            >
+              looping
+            </button>
+          </div>
 
-        <label className="text-sm text-neutral-300 flex items-center gap-2">
-          <input
-            type="checkbox"
-            checked={keepTiming}
-            onChange={(e) => setKeepTiming(e.target.checked)}
-          />
-          Keep timing
-        </label>
 
-        <label className="text-sm text-neutral-300 flex items-center gap-2">
-          Time
-          <select
-            value={`${timeSig.n}/${timeSig.d}`}
-            onChange={(e) => {
-              const [n, d] = e.target.value.split("/").map(Number);
-              handleTimeSigChange({ n, d });
-            }}
-            className="bg-neutral-800 border border-neutral-700 rounded px-2 py-1"
-          >
-            <option value="4/4">4/4</option>
-            <option value="3/4">3/4</option>
-            <option value="6/8">6/8</option>
-          </select>
-        </label>
+          
+          <div className="flex items-center gap-2 ml-auto">
+            <button
+              onClick={() => setActiveTab("layout")}
+              className={`px-3 py-1.5 rounded border text-sm capitalize ${
+                activeTab === "layout"
+                  ? "bg-neutral-800 border-neutral-600 text-white"
+                  : "bg-neutral-900 border-neutral-800 text-neutral-300 hover:bg-neutral-800/60"
+              }`}
+            >
+              layout
+            </button>
+</div>
 
-        <label className="text-sm text-neutral-300 flex items-center gap-2">
-          Bars
-          <input
-            type="number"
-            min={1}
-            max={8}
-            value={bars}
-            onChange={(e) => setBars(Number(e.target.value))}
-            className="w-20 bg-neutral-800 border border-neutral-700 rounded px-2 py-1"
-          />
-        </label>
-
-        <button
-          onClick={() => setMergeRests((v) => !v)}
-          className={`px-3 py-2 rounded border text-sm ${mergeRests ? "bg-neutral-800 border-neutral-700" : "bg-neutral-900 border-neutral-700"} `}
-          title="Merge consecutive rests into larger rests"
-        >
-          Merge rests: {mergeRests ? "On" : "Off"}
-        </button>
-
-        <button
-          onClick={() => setMergeNotes((v) => !v)}
-          className={`px-3 py-2 rounded border text-sm ${mergeNotes ? "bg-neutral-800 border-neutral-700" : "bg-neutral-900 border-neutral-700"} `}
-          title="Merge notes across empty subdivisions (e.g., 8ths on 1 and 2 become quarters when & is empty)"
-        >
-          Merge notes: {mergeNotes ? "On" : "Off"}
-        </button>
-
-        <button
-          onClick={() => {
-            // Toggle looping
-            if (loopRule) {
-              setLoopRule(null);
-              setSelection(null);
-              return;
-            }
-            if (!selection) return;
-            const length = Math.max(1, selection.endExclusive - selection.start);
-            if (length < 2) return;
-            setLoopRule({ rowStart: selection.rowStart, rowEnd: selection.rowEnd, start: selection.start, length });
-          }}
-          disabled={(!loopRule && (!selection || (selection.endExclusive - selection.start) < 2))}
-          className={`px-3 py-2 rounded border text-sm ${
-            (!loopRule && (!selection || (selection.endExclusive - selection.start) < 2))
-              ? "bg-neutral-900 border-neutral-800 text-neutral-600"
-              : "bg-neutral-800 border-neutral-700"
-          }`}
-          title={loopRule ? "Turn looping off" : "Enable looping from the selected source region (min 2 cells wide)"}
-        >
-          Looping
-        </button>
-
-        <button
-          onMouseDown={(e) => e.stopPropagation()}
-          onClick={() => {
-            if (!loopRule) return;
-            setBaseGrid((prev) => bakeLoopInto(prev, loopRule));
-            setLoopRule(null);
-            setSelection(null);
-          }}
-          disabled={!loopRule}
-          className={`px-3 py-2 rounded border text-sm ${loopRule ? "bg-neutral-800 border-neutral-700" : "bg-neutral-900 border-neutral-800 text-neutral-600"}`}
-          title="Bake loop: commit repeated notes and remove the active loop"
-        >
-          Bake loop
-        </button>
-
-        <div className="text-xs text-neutral-400 ml-auto">
-          Click cell: Off → 100 → Off
         </div>
+
+        {activeTab === "timing" && (
+          <div className="flex flex-wrap items-center gap-4">
+            
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-neutral-300 whitespace-nowrap">Resolution</span>
+              <div className="flex items-stretch overflow-hidden rounded-md border border-neutral-700 bg-neutral-800">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const order = [4, 8, 16];
+                    const idx = order.indexOf(resolution);
+                    const next = order[(idx - 1 + order.length) % order.length];
+                    handleResolutionChange(next);
+                  }}
+                  className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                >
+                  −
+                </button>
+                <div className="min-w-[60px] px-3 py-1 flex items-center justify-center text-sm text-white bg-neutral-800 border-l border-r border-neutral-700">
+                  {resolution === 4 ? "4th" : resolution === 8 ? "8th" : "16th"}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const order = [4, 8, 16];
+                    const idx = order.indexOf(resolution);
+                    const next = order[(idx + 1) % order.length];
+                    handleResolutionChange(next);
+                  }}
+                  className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                >
+                  +
+                </button>
+              </div>
+            </div>
+
+
+            <button
+              type="button"
+              onClick={() => setKeepTiming((v) => !v)}
+              className={`px-3 py-[5px] rounded border text-sm ${
+                keepTiming
+                  ? "bg-neutral-800 border-neutral-700 text-white"
+                  : "bg-neutral-900 border-neutral-800 text-neutral-600"
+              }`}
+              title="Keep timing when changing resolution (remap steps)"
+            >
+              Keep timing
+            </button>
+
+
+            
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-neutral-300">Bars</span>
+              <div className="flex items-stretch overflow-hidden rounded-md border border-neutral-700 bg-neutral-800">
+                <button
+                  type="button"
+                  onClick={() => setBars((b) => Math.max(1, b - 1))}
+                  className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                  aria-label="Decrease bars"
+                >
+                  −
+                </button>
+                <div className="min-w-[44px] px-3 py-1 flex items-center justify-center text-sm text-white bg-neutral-800 border-l border-r border-neutral-700">
+                  {bars}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setBars((b) => Math.min(8, b + 1))}
+                  className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                  aria-label="Increase bars"
+                >
+                  +
+                </button>
+              </div>
+            </div>
+
+
+
+            
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-neutral-300 whitespace-nowrap">Time</span>
+              <div className="flex items-stretch overflow-hidden rounded-md border border-neutral-700 bg-neutral-800">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const order = [
+                      { n: 4, d: 4 },
+                      { n: 3, d: 4 },
+                      { n: 6, d: 8 },
+                    ];
+                    const idx = order.findIndex((x) => x.n === timeSig.n && x.d === timeSig.d);
+                    const next = order[(idx - 1 + order.length) % order.length];
+                    handleTimeSigChange(next);
+                  }}
+                  className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                  aria-label="Previous time signature"
+                >
+                  −
+                </button>
+                <div className="min-w-[64px] px-3 py-1 flex items-center justify-center text-sm text-white bg-neutral-800 border-l border-r border-neutral-700">
+                  {timeSig.n}/{timeSig.d}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const order = [
+                      { n: 4, d: 4 },
+                      { n: 3, d: 4 },
+                      { n: 6, d: 8 },
+                    ];
+                    const idx = order.findIndex((x) => x.n === timeSig.n && x.d === timeSig.d);
+                    const next = order[(idx + 1) % order.length];
+                    handleTimeSigChange(next);
+                  }}
+                  className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                  aria-label="Next time signature"
+                >
+                  +
+                </button>
+              </div>
+            </div>
+
+</div>
+        )}
+
+        {activeTab === "layout" && (
+          <div className="flex flex-wrap items-center gap-4">
+
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-neutral-300 whitespace-nowrap">Bars/line</span>
+              <div className="flex items-stretch overflow-hidden rounded-md border border-neutral-700 bg-neutral-800">
+                <button
+                  type="button"
+                  onClick={() => setBarsPerLine((v) => Math.max(1, v - 1))}
+                  className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                >
+                  −
+                </button>
+                <div className="min-w-[44px] px-3 py-1 flex items-center justify-center text-sm text-white bg-neutral-800 border-l border-r border-neutral-700">
+                  {barsPerLine}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setBarsPerLine((v) => Math.min(bars, v + 1))}
+                  className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                >
+                  +
+                </button>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-neutral-300 whitespace-nowrap">Grid bars/line</span>
+              <div className="flex items-stretch overflow-hidden rounded-md border border-neutral-700 bg-neutral-800">
+                <button
+                  type="button"
+                  onClick={() => setGridBarsPerLine((v) => Math.max(1, v - 1))}
+                  className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                >
+                  −
+                </button>
+                <div className="min-w-[44px] px-3 py-1 flex items-center justify-center text-sm text-white bg-neutral-800 border-l border-r border-neutral-700">
+                  {gridBarsPerLine}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setGridBarsPerLine((v) => Math.min(bars, v + 1))}
+                  className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                >
+                  +
+                </button>
+              </div>
+            </div>
+
+            <label className="text-sm text-neutral-300 flex items-center gap-2">
+              <span className="whitespace-nowrap">Layout</span>
+              <select
+                value={layout}
+                onChange={(e) => setLayout(e.target.value)}
+                className="bg-neutral-800 border border-neutral-700 rounded px-2 py-1"
+              >
+                <option value="grid-top">Grid top / Notation bottom</option>
+                <option value="notation-top">Notation top / Grid bottom</option>
+                <option value="grid-right">Grid left / Notation right</option>
+                <option value="notation-right">Notation left / Grid right</option>
+              </select>
+            </label>
+
+
+</div>
+        )}
+
+        {activeTab === "looping" && (
+          <div className="flex flex-wrap items-center gap-4">
+            <button
+              onClick={() => {
+                if (loopRule) {
+                  setLoopRule(null);
+                  setSelection(null);
+                  return;
+                }
+                if (!selection) return;
+                const length = Math.max(1, selection.endExclusive - selection.start);
+                if (length < 2) return;
+                setLoopRule({
+                  rowStart: selection.rowStart,
+                  rowEnd: selection.rowEnd,
+                  start: selection.start,
+                  length,
+                });
+              }}
+              disabled={(!loopRule && (!selection || (selection.endExclusive - selection.start) < 2))}
+              className={`px-3 py-[5px] rounded border text-sm ${
+                (!loopRule && (!selection || (selection.endExclusive - selection.start) < 2))
+                  ? "bg-neutral-900 border-neutral-800 text-neutral-600"
+                  : "bg-neutral-800 border-neutral-700"
+              }`}
+              title={loopRule ? "Turn looping off" : "Enable looping from the selected source region (min 2 cells wide)"}
+            >
+              Looping
+            </button>
+
+            <button
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={() => {
+                if (!loopRule) return;
+                setBaseGrid((prev) => bakeLoopInto(prev, loopRule));
+                setLoopRule(null);
+                setSelection(null);
+              }}
+              disabled={!loopRule}
+              className={`px-3 py-[5px] rounded border text-sm ${
+                loopRule ? "bg-neutral-800 border-neutral-700" : "bg-neutral-900 border-neutral-800 text-neutral-600"
+              }`}
+              title="Bake loop: commit repeated notes and remove the active loop"
+            >
+              Bake loop
+            </button>
+          </div>
+        )}
+
+        {activeTab === "notation" && (
+          <div className="flex flex-wrap items-center gap-4">
+            <button
+              type="button"
+              onClick={() => setMergeRests((v) => !v)}
+              className={`px-3 py-[5px] rounded border text-sm ${
+                mergeRests
+                  ? "bg-neutral-800 border-neutral-700 text-white"
+                  : "bg-neutral-900 border-neutral-800 text-neutral-600"
+              }`}
+              title="Merge consecutive rests (e.g., two 8th rests → one quarter rest)"
+            >
+              Merge rests
+            </button>
+
+
+            <button
+              type="button"
+              onClick={() => setMergeNotes((v) => !v)}
+              className={`px-3 py-[5px] rounded border text-sm ${
+                mergeNotes
+                  ? "bg-neutral-800 border-neutral-700 text-white"
+                  : "bg-neutral-900 border-neutral-800 text-neutral-600"
+              }`}
+              title="Merge notes across adjacent rests (e.g., 8ths on beats → quarters)"
+            >
+              Merge notes
+            </button>
+
+
+</div>
+        )}
       </header>
 
-      <main className="mt-6 grid grid-cols-1 xl:grid-cols-[auto_1fr] gap-6 items-start">
-        <div className="overflow-x-auto rounded-lg border border-neutral-800 p-3 bg-neutral-950/30">
-          <Grid grid={computedGrid} columns={columns} bars={bars} stepsPerBar={stepsPerBar} resolution={resolution} timeSig={timeSig} cycleVelocity={cycleVelocity} selection={selection} setSelection={setSelection} loopRule={loopRule} />
-        </div>
 
-        <div className="rounded-lg border border-neutral-800 p-3 bg-neutral-950/30">
-          <Notation grid={computedGrid} resolution={resolution} bars={bars} stepsPerBar={stepsPerBar} timeSig={timeSig} mergeRests={mergeRests} mergeNotes={mergeNotes} />
-        </div>
+      
+      
+      <main
+        className={`mt-6 ${
+          layout === "grid-right"
+            ? "grid grid-cols-1 xl:grid-cols-[auto_1fr] gap-6"
+            : layout === "notation-right"
+            ? "grid grid-cols-1 xl:grid-cols-[1fr_auto] gap-6"
+            : "flex flex-col gap-6 items-start"
+        }`}
+      >
+        {layout === "notation-right" || layout === "notation-top" ? (
+          <>
+            <div className="w-full">
+              <Notation
+                grid={computedGrid}
+                resolution={resolution}
+                bars={bars}
+                barsPerLine={barsPerLine}
+                stepsPerBar={stepsPerBar}
+                timeSig={timeSig}
+                mergeRests={mergeRests}
+                mergeNotes={mergeNotes}
+              />
+            </div>
+
+            <div className="w-full overflow-x-auto">
+              <div className="inline-block align-top">
+                <Grid
+                grid={computedGrid}
+                columns={columns}
+                bars={bars}
+                stepsPerBar={stepsPerBar}
+                resolution={resolution}
+                timeSig={timeSig}
+                gridBarsPerLine={gridBarsPerLine}
+                cycleVelocity={cycleVelocity}
+                selection={selection}
+                setSelection={setSelection}
+                loopRule={loopRule}
+              />
+            </div>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="w-full overflow-x-auto">
+              <div className="inline-block align-top">
+                <Grid
+                grid={computedGrid}
+                columns={columns}
+                bars={bars}
+                stepsPerBar={stepsPerBar}
+                resolution={resolution}
+                timeSig={timeSig}
+                gridBarsPerLine={gridBarsPerLine}
+                cycleVelocity={cycleVelocity}
+                selection={selection}
+                setSelection={setSelection}
+                loopRule={loopRule}
+              />
+            </div>
+            </div>
+
+            <div className="w-full">
+              <Notation
+                grid={computedGrid}
+                resolution={resolution}
+                bars={bars}
+                barsPerLine={barsPerLine}
+                stepsPerBar={stepsPerBar}
+                timeSig={timeSig}
+                mergeRests={mergeRests}
+                mergeNotes={mergeNotes}
+              />
+            </div>
+          </>
+        )}
       </main>
+
+
     </div>
   );
 }
 
 
-function Grid({ grid, columns, bars, stepsPerBar, resolution, timeSig, cycleVelocity, selection, setSelection, loopRule }) {
+function Grid({ grid, columns, bars, stepsPerBar, resolution, timeSig, gridBarsPerLine, cycleVelocity, selection, setSelection, loopRule }) {
   const [drag, setDrag] = useState(null); // { row, col }
   // Build a render timeline with a visual gap between bars.
   // Example for 2 bars of 8ths: [0..7, GAP, 8..15]
@@ -445,77 +738,131 @@ function Grid({ grid, columns, bars, stepsPerBar, resolution, timeSig, cycleVelo
 
 
   return (
-    <div className="grid gap-1" onMouseUp={() => setDrag(null)} style={{ gridTemplateColumns: `auto repeat(${timeline.length}, 28px)` }}>
-      <div />
-      {timeline.map((t, i) =>
-        t.type === "gap" ? (
-          <div key={`h-gap-${i}`} className="w-7 h-7" />
-        ) : (
-          <div
-            key={`h-${t.stepIndex}`}
-            className="text-[10px] text-center text-neutral-400 select-none px-1 whitespace-nowrap"
-            title={`Bar ${t.bar + 1}, step ${t.stepInBar + 1}`}
-          >
-            {labelFor(t.stepInBar)}
+    <div className="flex flex-col gap-6">
+      {Array.from({ length: Math.ceil(bars / Math.max(1, Math.min(bars, Number(gridBarsPerLine) || 1))) }).map((_, lineIdx) => {
+        const perLine = Math.max(1, Math.min(bars, Number(gridBarsPerLine) || 1));
+        const barStart = lineIdx * perLine;
+        const barEnd = Math.min(bars, (lineIdx + 1) * perLine);
+        const stepsInLine = (barEnd - barStart) * stepsPerBar;
+
+        // Build timeline for this line (with visual bar gaps)
+        const timeline = [];
+        for (let b = barStart; b < barEnd; b++) {
+          for (let s = 0; s < stepsPerBar; s++) {
+            timeline.push({
+              bar: b,
+              stepInBar: s,
+              stepIndex: b * stepsPerBar + s,
+              type: "cell",
+            });
+          }
+          if (b !== barEnd - 1) timeline.push({ type: "gap", key: `gap-${b}` });
+        }
+
+        return (
+          <div key={`gridline-${lineIdx}`} className="grid gap-1" onMouseUp={() => setDrag(null)} style={{ gridTemplateColumns: `auto repeat(${timeline.length}, 28px)` }}>
+            <div />
+            {timeline.map((t, i) => {
+              if (t.type === "gap") return <div key={t.key} />;
+              const label = labelFor(t.stepInBar);
+              return (
+                <div key={`h-${t.stepIndex}`} className="text-xs text-center text-neutral-400 select-none">
+                  {label}
+                </div>
+              );
+            })}
+
+            {INSTRUMENTS.map((inst) => (
+              <React.Fragment key={`${inst.id}-${lineIdx}`}>
+                <div className="pr-2 text-xs text-right whitespace-nowrap select-none">{inst.label}</div>
+                {timeline.map((t, i) => {
+                  if (t.type === "gap") return <div key={`g-${inst.id}-${lineIdx}-${i}`} />;
+                  const val = grid[inst.id]?.[t.stepIndex] ?? 0;
+                  return (
+                    <div
+                      key={`${inst.id}-${t.stepIndex}`}
+                      data-gridcell="1"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        cycleVelocity(inst.id, t.stepIndex);
+                      }}
+                      onMouseDown={(e) => {
+                        e.stopPropagation();
+                        if (loopRule) return;
+                        setDrag({ row: INSTRUMENTS.findIndex((x) => x.id === inst.id), col: t.stepIndex });
+                        const r = INSTRUMENTS.findIndex((x) => x.id === inst.id);
+                        setSelection({ rowStart: r, rowEnd: r, start: t.stepIndex, endExclusive: t.stepIndex + 1 });
+                      }}
+                      onMouseEnter={(e) => {
+                        if (e && e.stopPropagation) e.stopPropagation();
+                        if (loopRule) return;
+                        if (!drag) return;
+                        const r0 = drag.row;
+                        const c0 = drag.col;
+                        const r1 = INSTRUMENTS.findIndex((x) => x.id === inst.id);
+                        const c1 = t.stepIndex;
+                        const rowStart = Math.min(r0, r1);
+                        const rowEnd = Math.max(r0, r1);
+                        const start = Math.min(c0, c1);
+                        const endExclusive = Math.max(c0, c1) + 1;
+                        setSelection({ rowStart, rowEnd, start, endExclusive });
+                      }}
+                      onMouseUp={() => setDrag(null)}
+                      className={`w-7 h-7 border cursor-pointer ${VELOCITY_COLOR[val]} ${(() => {
+                        const role = getCellRole(inst.id, t.stepIndex);
+                        if (role === "source") return "border-cyan-300 ring-2 ring-cyan-300/40";
+                        if (role === "generated") return "border-neutral-600 opacity-70";
+                        if (role === "selected") return "border-cyan-300 ring-2 ring-cyan-300/30";
+                        return "border-neutral-800";
+                      })()}`}
+                    />
+                  );
+                })}
+              </React.Fragment>
+            ))}
           </div>
-        )
-      )}
-
-      {[...INSTRUMENTS].reverse().map((inst) => (
-        <React.Fragment key={inst.id}>
-          <div className="pr-2 pl-2 text-xs text-right whitespace-nowrap">{inst.label}</div>
-
-          {timeline.map((t, i) => {
-            if (t.type === "gap") return <div key={`${inst.id}-gap-${i}`} className="w-7 h-7" />;
-
-            const val = grid[inst.id][t.stepIndex];
-            return (
-              <div
-                key={`${inst.id}-${t.stepIndex}`}
-                data-gridcell='1'
-                onClick={(e) => { e.stopPropagation(); cycleVelocity(inst.id, t.stepIndex); }}
-                onMouseDown={(e) => {
-                  e.stopPropagation();
-                  if (loopRule) return;
-                  setDrag({ row: INSTRUMENTS.findIndex((x) => x.id === inst.id), col: t.stepIndex });
-                  const r = INSTRUMENTS.findIndex((x) => x.id === inst.id);
-                  setSelection({ rowStart: r, rowEnd: r, start: t.stepIndex, endExclusive: t.stepIndex + 1 });
-                }}
-                onMouseEnter={(e) => {
-                  if (e && e.stopPropagation) e.stopPropagation();
-                  if (loopRule) return;
-                  if (!drag) return;
-                  const r0 = drag.row;
-                  const c0 = drag.col;
-                  const r1 = INSTRUMENTS.findIndex((x) => x.id === inst.id);
-                  const c1 = t.stepIndex;
-                  const rowStart = Math.min(r0, r1);
-                  const rowEnd = Math.max(r0, r1);
-                  const start = Math.min(c0, c1);
-                  const endExclusive = Math.max(c0, c1) + 1;
-                  setSelection({ rowStart, rowEnd, start, endExclusive });
-                }}
-                onMouseUp={() => setDrag(null)}
-                className={`w-7 h-7 border cursor-pointer ${VELOCITY_COLOR[val]} ${(() => { const role = getCellRole(inst.id, t.stepIndex); if (role === "source") return "border-cyan-300 ring-2 ring-cyan-300/40"; if (role === "generated") return "border-neutral-600 opacity-70"; if (role === "selected") return "border-cyan-300 ring-2 ring-cyan-300/30"; return "border-neutral-800"; })()}`}
-              />
-            );
-          })}
-        </React.Fragment>
-      ))}
+        );
+      })}
     </div>
   );
 }
 
-function Notation({ grid, resolution, bars, stepsPerBar, timeSig, mergeRests, mergeNotes }) {
+function Notation({ grid, resolution, bars, barsPerLine, stepsPerBar, timeSig, mergeRests, mergeNotes }) {
   const ref = useRef(null);
 
   useEffect(() => {
     if (!ref.current) return;
     ref.current.innerHTML = "";
 
-    const barWidth = 300;
-    const height = 240;
-    const width = 20 + bars * barWidth;
+    
+    const calcBarWidth = () => {
+      // Give dense measures (e.g., 16ths with explicit rests) more horizontal room
+      // so VexFlow doesn't squeeze glyphs into overlaps/cutoffs.
+      const dense16 = resolution === 16 && !mergeRests;
+      const dense8 = resolution === 8 && !mergeRests;
+
+      // Per-step spacing in pixels
+      const perStep =
+        dense16 ? 22 :
+        dense8 ? 20 :
+        resolution === 16 ? 16 :
+        resolution === 8 ? 18 :
+        34; // quarters
+
+      // Base padding per bar (clef/time sig consume extra room on the first bar)
+      const base = 90;
+
+      const min = 240;
+      return Math.max(min, Math.round(base + stepsPerBar * perStep));
+    };
+
+    const barWidth = calcBarWidth();
+
+    const perLine = Math.max(1, Math.min(bars, Number(barsPerLine) || 1));
+    const rows = Math.ceil(bars / perLine);
+    const systemHeight = 160;
+    const height = 60 + rows * systemHeight;
+    const width = 20 + perLine * barWidth;
 
     const renderer = new Renderer(ref.current, Renderer.Backends.SVG);
     renderer.resize(width, height);
@@ -528,11 +875,14 @@ function Notation({ grid, resolution, bars, stepsPerBar, timeSig, mergeRests, me
     const allBeams = [];
 
     for (let b = 0; b < bars; b++) {
-      const x = 10 + b * barWidth;
-      const stave = new Stave(x, 40, barWidth);
+      const row = Math.floor(b / perLine);
+      const col = b % perLine;
+      const x = 10 + col * barWidth;
+      const y = 30 + row * systemHeight;
+      const stave = new Stave(x, y, barWidth);
 
       // Remove repeated left barline so bars connect visually
-      if (b > 0) stave.setBegBarType(Barline.type.NONE);
+      if (col > 0) stave.setBegBarType(Barline.type.NONE);
 
       if (b === 0) {
         stave.addClef("percussion");
@@ -739,7 +1089,7 @@ function Notation({ grid, resolution, bars, stepsPerBar, timeSig, mergeRests, me
         el.setAttribute("fill", "white");
       });
     }
-  }, [grid, resolution, bars, stepsPerBar, timeSig, mergeRests, mergeNotes]);
+  }, [grid, resolution, bars, barsPerLine, stepsPerBar, timeSig, mergeRests, mergeNotes]);
 
   return <div ref={ref} />;
 

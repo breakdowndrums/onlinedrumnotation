@@ -2,15 +2,10 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Keep the canvas behind the app dark even when the browser is zoomed out
-   (otherwise the default page background can appear as white margins). */
-html,
-body,
-#root {
-  height: 100%;
-  background-color: rgb(23 23 23); /* Tailwind neutral-900 */
-}
-
-body {
-  margin: 0;
+@layer base {
+  html,
+  body,
+  #root {
+    @apply bg-neutral-900;
+  }
 }

@@ -57,7 +57,31 @@ export default function App() {
   const [timeSig, setTimeSig] = useState({ n: 4, d: 4 });
   const [keepTiming, setKeepTiming] = useState(true);
 
-  const [selection, setSelection] = useState(null); // { rowStart, rowEnd, start, endExclusive } (row indices into INSTRUMENTS)
+  const [selection, setSelection] = useState(null);
+  // Keyboard shortcut: Backspace/Delete clears current selection (like Clear button)
+  useEffect(() => {
+    const onKey = (e) => {
+      if ((e.key === "Backspace" || e.key === "Delete") && selection) {
+        e.preventDefault();
+        setBaseGrid((prev) => {
+          const next = {};
+          for (const instId of Object.keys(prev)) next[instId] = [...prev[instId]];
+          const start = selection.start;
+          const end = selection.endExclusive;
+          for (let r = selection.rowStart; r <= selection.rowEnd; r++) {
+            const instId = INSTRUMENTS[r].id;
+            for (let c = start; c < end; c++) next[instId][c] = 0;
+          }
+          return next;
+        });
+        setLoopRule(null);
+        setSelection(null);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selection]);
+ // { rowStart, rowEnd, start, endExclusive } (row indices into INSTRUMENTS)
   const [loopRule, setLoopRule] = useState(null);
 
   // If selection collapses to a single cell while looping is active, drop the loop.
@@ -69,27 +93,7 @@ export default function App() {
     }
   }, [selection, loopRule]);
 
-
-  // Auto-enable looping after holding a valid selection for 200ms
-  useEffect(() => {
-    if (loopRule) return;
-    if (!selection) return;
-    const width = selection.endExclusive - selection.start;
-    if (width < 2) return;
-
-    const timer = setTimeout(() => {
-      setLoopRule({
-        rowStart: selection.rowStart,
-        rowEnd: selection.rowEnd,
-        start: selection.start,
-        length: width,
-      });
-    }, 200);
-
-    return () => clearTimeout(timer);
-  }, [selection, loopRule]);
-
- // { rowStart, rowEnd, start, length }
+// { rowStart, rowEnd, start, length }
   const [mergeRests, setMergeRests] = useState(true);
   const [mergeNotes, setMergeNotes] = useState(true);
 
@@ -290,14 +294,14 @@ export default function App() {
               notation
             </button>
             <button
-              onClick={() => setActiveTab("looping")}
+              onClick={() => setActiveTab("selection")}
               className={`px-3 py-1.5 rounded border text-sm capitalize ${
-                activeTab === "looping"
+                activeTab === "selection"
                   ? "bg-neutral-800 border-neutral-600 text-white"
                   : "bg-neutral-900 border-neutral-800 text-neutral-300 hover:bg-neutral-800/60"
               }`}
             >
-              looping
+              selection
             </button>
           </div>
 
@@ -511,7 +515,7 @@ export default function App() {
 </div>
         )}
 
-        {activeTab === "looping" && (
+        {activeTab === "selection" && (
           <div className="flex flex-wrap items-center gap-4">
             <button
               onClick={() => {
@@ -557,6 +561,37 @@ export default function App() {
             >
               Bake loop
             </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                if (!selection) return;
+                // Clear base grid in selection area (ignores any active loop overlay)
+                setBaseGrid((prev) => {
+                  const next = {};
+                  for (const instId of Object.keys(prev)) next[instId] = [...prev[instId]];
+                  const start = selection.start;
+                  const end = selection.endExclusive;
+                  for (let r = selection.rowStart; r <= selection.rowEnd; r++) {
+                    const instId = INSTRUMENTS[r].id;
+                    for (let c = start; c < end; c++) next[instId][c] = 0;
+                  }
+                  return next;
+                });
+                setLoopRule(null);
+                setSelection(null);
+              }}
+              disabled={!selection}
+              className={`px-3 py-[5px] rounded border text-sm ${
+                selection
+                  ? "bg-neutral-800 border-neutral-700 text-white"
+                  : "bg-neutral-900 border-neutral-800 text-neutral-600"
+              }`}
+              title="Clear notes in the selected region"
+            >
+              Clear
+            </button>
+
           </div>
         )}
 
@@ -635,6 +670,7 @@ export default function App() {
                 selection={selection}
                 setSelection={setSelection}
                 loopRule={loopRule}
+                setLoopRule={setLoopRule}
               />
             </div>
             </div>
@@ -655,6 +691,7 @@ export default function App() {
                 selection={selection}
                 setSelection={setSelection}
                 loopRule={loopRule}
+                setLoopRule={setLoopRule}
               />
             </div>
             </div>
@@ -681,7 +718,7 @@ export default function App() {
 }
 
 
-function Grid({ grid, columns, bars, stepsPerBar, resolution, timeSig, gridBarsPerLine, cycleVelocity, selection, setSelection, loopRule }) {
+function Grid({ grid, columns, bars, stepsPerBar, resolution, timeSig, gridBarsPerLine, cycleVelocity, selection, setSelection, loopRule, setLoopRule }) {
   const [drag, setDrag] = useState(null); // { row, col }
   // Build a render timeline with a visual gap between bars.
   // Example for 2 bars of 8ths: [0..7, GAP, 8..15]
@@ -760,7 +797,21 @@ function Grid({ grid, columns, bars, stepsPerBar, resolution, timeSig, gridBarsP
         }
 
         return (
-          <div key={`gridline-${lineIdx}`} className="grid gap-1" onMouseUp={() => setDrag(null)} style={{ gridTemplateColumns: `auto repeat(${timeline.length}, 28px)` }}>
+          <div key={`gridline-${lineIdx}`} className="grid gap-1" onMouseUp={(e) => {
+                        if (e && e.stopPropagation) e.stopPropagation();
+                        setDrag(null);
+                        // Auto-enable looping when mouse is released after selecting a valid region.
+                        if (loopRule) return;
+                        if (!selection) return;
+                        const width = selection.endExclusive - selection.start;
+                        if (width < 2) return;
+                        setLoopRule({
+                          rowStart: selection.rowStart,
+                          rowEnd: selection.rowEnd,
+                          start: selection.start,
+                          length: width,
+                        });
+                      }} style={{ gridTemplateColumns: `auto repeat(${timeline.length}, 28px)` }}>
             <div />
             {timeline.map((t, i) => {
               if (t.type === "gap") return <div key={t.key} />;
@@ -807,7 +858,21 @@ function Grid({ grid, columns, bars, stepsPerBar, resolution, timeSig, gridBarsP
                         const endExclusive = Math.max(c0, c1) + 1;
                         setSelection({ rowStart, rowEnd, start, endExclusive });
                       }}
-                      onMouseUp={() => setDrag(null)}
+                      onMouseUp={(e) => {
+                        if (e && e.stopPropagation) e.stopPropagation();
+                        setDrag(null);
+                        // Auto-enable looping when mouse is released after selecting a valid region.
+                        if (loopRule) return;
+                        if (!selection) return;
+                        const width = selection.endExclusive - selection.start;
+                        if (width < 2) return;
+                        setLoopRule({
+                          rowStart: selection.rowStart,
+                          rowEnd: selection.rowEnd,
+                          start: selection.start,
+                          length: width,
+                        });
+                      }}
                       className={`w-7 h-7 border cursor-pointer ${VELOCITY_COLOR[val]} ${(() => {
                         const role = getCellRole(inst.id, t.stepIndex);
                         if (role === "source") return "border-cyan-300 ring-2 ring-cyan-300/40";

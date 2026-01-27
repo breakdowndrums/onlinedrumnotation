@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import Vex from "vexflow";
+import * as Vex from "vexflow";
 
 // VexFlow API
 const { Renderer, Stave, StaveNote, Voice, Formatter, Beam, Fraction, Barline } = Vex.Flow;
@@ -48,7 +48,7 @@ const NOTATION_MAP = {
 };
 
 export default function App() {
-  const [resolution, setResolution] = useState(8); // 4, 8, 16
+  const [resolution, setResolution] = useState(8); // 4, 8, 16, 32
   const [bars, setBars] = useState(2);
   const [barsPerLine, setBarsPerLine] = useState(4);
   const [gridBarsPerLine, setGridBarsPerLine] = useState(4);
@@ -58,7 +58,13 @@ export default function App() {
   const [keepTiming, setKeepTiming] = useState(true);
 
   const [selection, setSelection] = useState(null);
-  // Keyboard shortcut: Backspace/Delete clears current selection (like Clear button)
+  
+  const selectionCellCount = selection
+    ? (Math.max(0, (selection.endExclusive ?? 0) - (selection.start ?? 0)) *
+       Math.max(1, (selection.rowEnd ?? selection.rowStart ?? 0) - (selection.rowStart ?? 0) + 1))
+    : 0;
+  const canClearSelection = selectionCellCount >= 2;
+// Keyboard shortcut: Backspace/Delete clears current selection (like Clear button)
   useEffect(() => {
     const onKey = (e) => {
       if ((e.key === "Backspace" || e.key === "Delete") && selection) {
@@ -84,7 +90,10 @@ export default function App() {
  // { rowStart, rowEnd, start, endExclusive } (row indices into INSTRUMENTS)
   const [loopRule, setLoopRule] = useState(null);
 
-  // If selection collapses to a single cell while looping is active, drop the loop.
+  
+  // Whether new selections should auto-generate a loop.
+  const [loopModeEnabled, setLoopModeEnabled] = useState(true);
+// If selection collapses to a single cell while looping is active, drop the loop.
   useEffect(() => {
     if (!loopRule) return;
     const width = selection ? (selection.endExclusive - selection.start) : 0;
@@ -93,9 +102,16 @@ export default function App() {
     }
   }, [selection, loopRule]);
 
+
+  useEffect(() => {
+    if (loopModeEnabled) return;
+    if (loopRule) setLoopRule(null);
+  }, [loopModeEnabled, loopRule]);
 // { rowStart, rowEnd, start, length }
   const [mergeRests, setMergeRests] = useState(true);
   const [mergeNotes, setMergeNotes] = useState(true);
+  const [dottedNotes, setDottedNotes] = useState(true);
+// "fast" (>=16ths) | "all"
 
   const stepsPerBar = Math.max(1, Math.round((timeSig.n * resolution) / timeSig.d));
   const columns = bars * stepsPerBar;
@@ -331,7 +347,7 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => {
-                    const order = [4, 8, 16];
+                    const order = [4, 8, 16, 32];
                     const idx = order.indexOf(resolution);
                     const next = order[(idx - 1 + order.length) % order.length];
                     handleResolutionChange(next);
@@ -341,12 +357,12 @@ export default function App() {
                   −
                 </button>
                 <div className="min-w-[60px] px-3 py-1 flex items-center justify-center text-sm text-white bg-neutral-800 border-l border-r border-neutral-700">
-                  {resolution === 4 ? "4th" : resolution === 8 ? "8th" : "16th"}
+                  {resolution === 4 ? "4th" : resolution === 8 ? "8th" : resolution === 16 ? "16th" : "32th"}
                 </div>
                 <button
                   type="button"
                   onClick={() => {
-                    const order = [4, 8, 16];
+                    const order = [4, 8, 16, 32];
                     const idx = order.indexOf(resolution);
                     const next = order[(idx + 1) % order.length];
                     handleResolutionChange(next);
@@ -518,54 +534,11 @@ export default function App() {
         {activeTab === "selection" && (
           <div className="flex flex-wrap items-center gap-4">
             <button
-              onClick={() => {
-                if (loopRule) {
-                  setLoopRule(null);
-                  setSelection(null);
-                  return;
-                }
-                if (!selection) return;
-                const length = Math.max(1, selection.endExclusive - selection.start);
-                if (length < 2) return;
-                setLoopRule({
-                  rowStart: selection.rowStart,
-                  rowEnd: selection.rowEnd,
-                  start: selection.start,
-                  length,
-                });
-              }}
-              disabled={(!loopRule && (!selection || (selection.endExclusive - selection.start) < 2))}
-              className={`px-3 py-[5px] rounded border text-sm ${
-                (!loopRule && (!selection || (selection.endExclusive - selection.start) < 2))
-                  ? "bg-neutral-900 border-neutral-800 text-neutral-600"
-                  : "bg-neutral-800 border-neutral-700"
-              }`}
-              title={loopRule ? "Turn looping off" : "Enable looping from the selected source region (min 2 cells wide)"}
-            >
-              Looping
-            </button>
-
-            <button
-              onMouseDown={(e) => e.stopPropagation()}
-              onClick={() => {
-                if (!loopRule) return;
-                setBaseGrid((prev) => bakeLoopInto(prev, loopRule));
-                setLoopRule(null);
-                setSelection(null);
-              }}
-              disabled={!loopRule}
-              className={`px-3 py-[5px] rounded border text-sm ${
-                loopRule ? "bg-neutral-800 border-neutral-700" : "bg-neutral-900 border-neutral-800 text-neutral-600"
-              }`}
-              title="Bake loop: commit repeated notes and remove the active loop"
-            >
-              Bake loop
-            </button>
-
-            <button
               type="button"
+              disabled={!canClearSelection}
               onClick={() => {
-                if (!selection) return;
+                if (!canClearSelection) return;
+if (!selection) return;
                 // Clear base grid in selection area (ignores any active loop overlay)
                 setBaseGrid((prev) => {
                   const next = {};
@@ -581,21 +554,57 @@ export default function App() {
                 setLoopRule(null);
                 setSelection(null);
               }}
-              disabled={!selection}
-              className={`px-3 py-[5px] rounded border text-sm ${
-                selection
-                  ? "bg-neutral-800 border-neutral-700 text-white"
-                  : "bg-neutral-900 border-neutral-800 text-neutral-600"
+              className={`px-3 py-[5px] rounded border text-sm   ${
+                canClearSelection ? "bg-neutral-800 border-neutral-700 text-white" : "bg-neutral-900 border-neutral-800 text-neutral-600"
               }`}
               title="Clear notes in the selected region"
             >
               Clear
             </button>
 
-          </div>
-        )}
+            <button
+              onClick={() => {
+                setLoopModeEnabled((v) => !v);
 
-        {activeTab === "notation" && (
+                // If enabling looping mode and we already have a valid selection,
+                // generate the loop immediately (no need to re-select).
+                if (!loopModeEnabled) {
+                  if (selection && selection.endExclusive - selection.start >= 2) {
+                    setLoopRule({
+                      rowStart: selection.rowStart,
+                      rowEnd: selection.rowEnd,
+                      start: selection.start,
+                      length: selection.endExclusive - selection.start,
+                    });
+                  }
+                } else {
+                  // Turning looping mode off also removes any active loop.
+                  setLoopRule(null);
+                }
+              }}
+              className={`px-3 py-[5px] rounded border text-sm ${loopModeEnabled ? "bg-neutral-800 border-neutral-700 text-white" : "bg-neutral-900 border-neutral-800 text-neutral-600"}`}
+              title={loopModeEnabled ? "Selection looping: ON" : "Selection looping: OFF"}
+            >
+              Looping
+            </button>
+
+            <button
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={() => {
+if (!loopRule) return;
+                setBaseGrid((prev) => bakeLoopInto(prev, loopRule));
+                setLoopRule(null);
+                setSelection(null);
+              }}
+              className={`px-3 py-[5px] rounded border text-sm ${
+                loopRule ? "bg-neutral-800 border-neutral-700" : "bg-neutral-900 border-neutral-800 text-neutral-600"
+              }`}
+              title="Bake loop: commit repeated notes and remove the active loop"
+            >
+              Bake loop
+            </button>
+          </div>
+        )}{activeTab === "notation" && (
           <div className="flex flex-wrap items-center gap-4">
             <button
               type="button"
@@ -610,7 +619,6 @@ export default function App() {
               Merge rests
             </button>
 
-
             <button
               type="button"
               onClick={() => setMergeNotes((v) => !v)}
@@ -624,8 +632,23 @@ export default function App() {
               Merge notes
             </button>
 
+            {mergeNotes && (
+              <button
+                type="button"
+                onClick={() => setDottedNotes((v) => !v)}
+                className={`px-3 py-[5px] rounded border text-sm ${
+                  dottedNotes
+                    ? "bg-neutral-800 border-neutral-700 text-white"
+                    : "bg-neutral-900 border-neutral-800 text-neutral-600"
+                }`}
+                title="Convert note + following rest into a dotted note (when possible)"
+              >
+                Dotted notes
+              </button>
+            )}
 
-</div>
+            
+          </div>
         )}
       </header>
 
@@ -653,6 +676,7 @@ export default function App() {
                 timeSig={timeSig}
                 mergeRests={mergeRests}
                 mergeNotes={mergeNotes}
+                dottedNotes={dottedNotes}
               />
             </div>
 
@@ -706,6 +730,7 @@ export default function App() {
                 timeSig={timeSig}
                 mergeRests={mergeRests}
                 mergeNotes={mergeNotes}
+                dottedNotes={dottedNotes}
               />
             </div>
           </>
@@ -892,33 +917,83 @@ function Grid({ grid, columns, bars, stepsPerBar, resolution, timeSig, gridBarsP
   );
 }
 
-function Notation({ grid, resolution, bars, barsPerLine, stepsPerBar, timeSig, mergeRests, mergeNotes }) {
+function Notation({grid, resolution, bars, barsPerLine, stepsPerBar, timeSig, mergeRests, mergeNotes, dottedNotes}) {
+  const VF = Vex.Flow;
   const ref = useRef(null);
 
   useEffect(() => {
+  const Flow = Vex.Flow;
+
+    const attachDot = (note) => {
+      // VexFlow API differs between versions. Prefer the modern Dot helper if available.
+      if (note && typeof note.addDotToAll === "function") {
+        note.addDotToAll();
+        return;
+      }
+      if (Flow.Dot && typeof Flow.Dot.buildAndAttach === "function") {
+        Flow.Dot.buildAndAttach([note], { all: true });
+        return;
+      }
+      // Fallback: attach a Dot modifier to each key.
+      try {
+        const keys = note.getKeys ? note.getKeys() : note.keys || [];
+        for (let i = 0; i < keys.length; i++) {
+          note.addModifier(new Flow.Dot(), i);
+        }
+      } catch (e) {
+        // ignore
+      }
+    };
+
     if (!ref.current) return;
     ref.current.innerHTML = "";
+
+      // Beam grouping per bar (used for beaming and dotted-note limits)
+      const beamGroupsPerBar = (() => {
+        // Compound meters like 6/8, 9/8, 12/8: group in dotted quarters (3 eighths)
+        if (timeSig.d === 8 && timeSig.n % 3 === 0 && timeSig.n > 3) return timeSig.n / 3;
+        // Simple meters: group by beats in the numerator (e.g., 4/4 -> 4, 3/4 -> 3)
+        return timeSig.n;
+      })();
+    
+    // Compute steps per beat from the current grid resolution.
+    const stepsPerBeatBase = stepsPerBar / timeSig.n;
+
+    // Prefer the simplest readable notation: if we're on a 32nd grid but no hits use odd 32nd positions,
+    // engrave as 16ths to avoid unnecessary 32nd rests (keeps dotted/rest spelling stable).
+    const canDownsample32to16 = false;
+
+    const notationFactor = 1;
+    const notationResolution = resolution;
+    const stepsPerBeatN = stepsPerBeatBase;
+    const stepsPerBarN = stepsPerBar;
+
+    const notationGrid = grid;
+
 
     
     const calcBarWidth = () => {
       // Give dense measures (e.g., 16ths with explicit rests) more horizontal room
       // so VexFlow doesn't squeeze glyphs into overlaps/cutoffs.
-      const dense16 = resolution === 16 && !mergeRests;
-      const dense8 = resolution === 8 && !mergeRests;
+      const dense32 = notationResolution === 32 && !mergeRests;
+      const dense16 = notationResolution === 16 && !mergeRests;
+      const dense8 = notationResolution === 8 && !mergeRests;
 
       // Per-step spacing in pixels
       const perStep =
+        dense32 ? 24 :
         dense16 ? 22 :
         dense8 ? 20 :
-        resolution === 16 ? 16 :
-        resolution === 8 ? 18 :
+        notationResolution === 32 ? 14 :
+        notationResolution === 16 ? 16 :
+        notationResolution === 8 ? 18 :
         34; // quarters
 
       // Base padding per bar (clef/time sig consume extra room on the first bar)
       const base = 90;
 
       const min = 240;
-      return Math.max(min, Math.round(base + stepsPerBar * perStep));
+      return Math.max(min, Math.round(base + stepsPerBarN * perStep));
     };
 
     const barWidth = calcBarWidth();
@@ -933,7 +1008,7 @@ function Notation({ grid, resolution, bars, barsPerLine, stepsPerBar, timeSig, m
     renderer.resize(width, height);
     const ctx = renderer.getContext();
 
-    const dur = resolution === 4 ? "q" : resolution === 8 ? "8" : "16";
+    const dur = notationResolution === 4 ? "q" : notationResolution === 8 ? "8" : notationResolution === 16 ? "16" : "32";
 
     const staves = [];
     const voices = [];
@@ -958,6 +1033,8 @@ function Notation({ grid, resolution, bars, barsPerLine, stepsPerBar, timeSig, m
       staves.push(stave);
 
       const notes = [];
+      const noteStarts = [];
+      const pushNote = (n) => { notes.push(n); noteStarts.push(s); };
 
       let s = 0;
       while (s < stepsPerBar) {
@@ -975,44 +1052,68 @@ function Notation({ grid, resolution, bars, barsPerLine, stepsPerBar, timeSig, m
         const isRest = keys.length === 0;
 
         // Merge notes/rests to larger durations (optional)
-        const stepsPerBeat = Math.max(1, Math.round(resolution / timeSig.d));
-        const subInBeat = stepsPerBeat === 0 ? 0 : (s % stepsPerBeat);
+        const stepsPerBeatN = Math.max(1, Math.round(notationResolution / timeSig.d));
+        const subInBeat = stepsPerBeatN === 0 ? 0 : (s % stepsPerBeatN);
 
         const hasAnyHitAt = (absIdx) => {
-          for (const inst of INSTRUMENTS) {
-            if (grid[inst.id][absIdx] !== 0) return true;
-          }
-          return false;
-        };
+      for (const inst of INSTRUMENTS) {
+        if ((notationGrid[inst.id]?.[absIdx] ?? 0) !== 0) return true;
+      }
+      return false;
+    };
 
         const isStepEmpty = (absIdx) => !hasAnyHitAt(absIdx);
+
+        const allowDotted = dottedNotes && ("all" === "all" || notationResolution > 8);
+        // Dotted notes should not cross the "beam group" divisions of the bar.
+        // Example: in 4/4, don't dot across quarter-note beats; in 6/8, don't dot across the 3+3 grouping.
+        const beamGroupsPerBar = (() => {
+          // Compound meters like 6/8, 9/8, 12/8: group in dotted quarters (3 eighths)
+          if (timeSig.d === 8 && timeSig.n % 3 === 0 && timeSig.n > 3) return timeSig.n / 3;
+          // Simple meters: group by beats in the numerator (e.g., 4/4 -> 4, 3/4 -> 3)
+          return timeSig.n;
+        })();
+        const groupSizeSteps = stepsPerBar / beamGroupsPerBar;
+        const inSameBeamGroup = (startStep, endExclusiveStep) => {
+          const last = endExclusiveStep - 1;
+          return Math.floor(startStep / groupSizeSteps) === Math.floor(last / groupSizeSteps);
+        };
+
 
         // --- Merge NOTES ---
         if (mergeNotes && !isRest) {
           // 8ths in x/4: beat is a quarter, pattern: [hit][empty] -> quarter note
-          if (resolution === 8 && stepsPerBeat === 2 && subInBeat === 0 && s + 1 < stepsPerBar) {
+          if (notationResolution === 8 && stepsPerBeatN === 2 && subInBeat === 0 && s + 1 < stepsPerBar) {
             if (isStepEmpty(b * stepsPerBar + (s + 1))) {
               const noteQ = new StaveNote({ keys, duration: "q", clef: "percussion" });
               noteQ.setStemDirection(1);
-              notes.push(noteQ);
-              s += 2;
-              continue;
+              pushNote(noteQ);
+                if (allowDotted && mergeNotes) {
+                  const after = b * stepsPerBarN + (s + 2);
+                  if (s + 2 < stepsPerBar && isStepEmpty(after) && inSameBeamGroup(s, s + 3)) {
+                    attachDot(noteQ);
+                    s += 3;
+                    continue;
+                  }
+                }
+                s += 2;
+                continue;
             }
           }
 
           // 16ths:
-          // - In x/4 (stepsPerBeat=4):
+          // - In x/4 (stepsPerBeatN=4):
           //   * [hit][empty][empty][empty] at beat start -> quarter note
           //   * [hit][empty] at 8th boundaries (sub 0 or 2) -> eighth note
-          if (resolution === 16 && stepsPerBeat === 4) {
+          if (notationResolution === 16 && stepsPerBeatN === 4) {
             if (subInBeat === 0 && s + 3 < stepsPerBar) {
-              const a = b * stepsPerBar + (s + 1);
+              const a = b * stepsPerBarN + (s + 1);
               const b2 = b * stepsPerBar + (s + 2);
               const c = b * stepsPerBar + (s + 3);
               if (isStepEmpty(a) && isStepEmpty(b2) && isStepEmpty(c)) {
                 const noteQ = new StaveNote({ keys, duration: "q", clef: "percussion" });
                 noteQ.setStemDirection(1);
-                notes.push(noteQ);
+                pushNote(noteQ);
                 s += 4;
                 continue;
               }
@@ -1022,21 +1123,103 @@ function Notation({ grid, resolution, bars, barsPerLine, stepsPerBar, timeSig, m
               if (isStepEmpty(next)) {
                 const note8 = new StaveNote({ keys, duration: "8", clef: "percussion" });
                 note8.setStemDirection(1);
-                notes.push(note8);
+                pushNote(note8);
+                if (allowDotted && mergeNotes) {
+                  const after = b * stepsPerBarN + (s + 2);
+                  if (s + 2 < stepsPerBar && isStepEmpty(after) && inSameBeamGroup(s, s + 3)) {
+                    attachDot(note8);
+                    s += 3;
+                    continue;
+                  }
+                }
                 s += 2;
                 continue;
               }
             }
           }
 
-          // 16ths in x/8 (stepsPerBeat=2): [hit][empty] -> eighth note (beat unit)
-          if (resolution === 16 && stepsPerBeat === 2 && subInBeat === 0 && s + 1 < stepsPerBar) {
+          
+          // 32nds:
+          // - In x/4 (stepsPerBeatN=8):
+          //   * [hit][empty x7] at beat start -> quarter note
+          //   * [hit][empty x3] at 8th boundaries (sub 0 or 4) -> eighth note
+          //   * [hit][empty] at 16th boundaries (sub 0,2,4,6) -> 16th note
+          if (notationResolution === 32 && (stepsPerBeatN === 8 || stepsPerBeatN === 4)) {
+            // 32nd-grid per-hit downsampling (32 -> 16 -> 8 -> 4) based on silence to the right.
+            // This keeps bar math correct and prefers the longest simple value to minimize rests.
+            const abs = b * stepsPerBarN + s;
+
+            // Choose longest power-of-two length (in 32nd steps) that:
+            // 1) starts aligned (s % len === 0),
+            // 2) has no hits in the covered window (excluding the first step),
+            // 3) does not cross the current beam group division.
+            const canLen = (len) => {
+              if (s % len !== 0) return false;
+              if (s + (len - 1) >= stepsPerBarN) return false;
+              if (!inSameBeamGroup(s, s + len)) return false;
+              for (let k = 1; k < len; k++) {
+                if (!isStepEmpty(abs + k)) return false;
+              }
+              return true;
+            };
+
+            let len = 1;
+            if (canLen(2)) len = 2;
+            if (canLen(4)) len = 4;
+            if (canLen(8)) len = 8;
+
+            // Optional dotted extension (adds half the base length), only if it fits in-group and is silent.
+            // dotted 16th: 2+1=3, dotted 8th: 4+2=6, dotted quarter: 8+4=12
+            let dotted = false;
+            if (allowDotted && len >= 2) {
+              const extra = len / 2;
+              if (s + (len + extra - 1) < stepsPerBarN && inSameBeamGroup(s, s + len + extra)) {
+                let ok = true;
+                for (let k = len; k < len + extra; k++) {
+                  if (!isStepEmpty(abs + k)) { ok = false; break; }
+                }
+                if (ok) dotted = true;
+              }
+            }
+
+            const dur =
+              len === 8 ? "q" :
+              len === 4 ? "8" :
+              len === 2 ? "16" :
+              "32";
+
+            const note = new StaveNote({ keys, duration: dur, clef: "percussion" });
+            note.setStemDirection(1);
+            if (dotted) attachDot(note);
+            pushNote(note);
+
+            s += dotted ? (len + len / 2) : len;
+            continue;
+          }
+
+
+          // 32nds in x/8 (stepsPerBeatN=4):
+          //   * [hit][empty x3] at beat start -> eighth note
+          //   * [hit][empty] at 16th boundaries (sub 0 or 2) -> 16th note
+          
+
+
+// 16ths in x/8 (stepsPerBeatN=2): [hit][empty] -> eighth note (beat unit)
+          if (notationResolution === 16 && stepsPerBeatN === 2 && subInBeat === 0 && s + 1 < stepsPerBar) {
             if (isStepEmpty(b * stepsPerBar + (s + 1))) {
               const note8 = new StaveNote({ keys, duration: "8", clef: "percussion" });
               note8.setStemDirection(1);
-              notes.push(note8);
-              s += 2;
-              continue;
+              pushNote(note8);
+                if (allowDotted && mergeNotes) {
+                  const after = b * stepsPerBarN + (s + 2);
+                  if (s + 2 < stepsPerBar && isStepEmpty(after) && inSameBeamGroup(s, s + 3)) {
+                    attachDot(note8);
+                    s += 3;
+                    continue;
+                  }
+                }
+                s += 2;
+                continue;
             }
           }
         }
@@ -1044,9 +1227,9 @@ function Notation({ grid, resolution, bars, barsPerLine, stepsPerBar, timeSig, m
         // --- Merge RESTS ---
         if (mergeRests && isRest) {
           // 8ths in x/4: [rest][rest] at beat start -> quarter rest
-          if (resolution === 8 && stepsPerBeat === 2 && subInBeat === 0 && s + 1 < stepsPerBar) {
+          if (notationResolution === 8 && stepsPerBeatN === 2 && subInBeat === 0 && s + 1 < stepsPerBar) {
             if (isStepEmpty(b * stepsPerBar + (s + 1))) {
-              notes.push(new StaveNote({ keys: ["b/4"], duration: "qr", clef: "percussion" }));
+              pushNote(new StaveNote({ keys: ["b/4"], duration: "qr", clef: "percussion" }));
               s += 2;
               continue;
             }
@@ -1055,13 +1238,13 @@ function Notation({ grid, resolution, bars, barsPerLine, stepsPerBar, timeSig, m
           // 16ths in x/4:
           //  * [rest][rest][rest][rest] at beat start -> quarter rest
           //  * [rest][rest] at 8th boundaries (sub 0 or 2) -> eighth rest
-          if (resolution === 16 && stepsPerBeat === 4) {
+          if (notationResolution === 16 && stepsPerBeatN === 4) {
             if (subInBeat === 0 && s + 3 < stepsPerBar) {
-              const a = b * stepsPerBar + (s + 1);
+              const a = b * stepsPerBarN + (s + 1);
               const b2 = b * stepsPerBar + (s + 2);
               const c = b * stepsPerBar + (s + 3);
               if (isStepEmpty(a) && isStepEmpty(b2) && isStepEmpty(c)) {
-                notes.push(new StaveNote({ keys: ["b/4"], duration: "qr", clef: "percussion" }));
+                pushNote(new StaveNote({ keys: ["b/4"], duration: "qr", clef: "percussion" }));
                 s += 4;
                 continue;
               }
@@ -1069,17 +1252,76 @@ function Notation({ grid, resolution, bars, barsPerLine, stepsPerBar, timeSig, m
             if ((subInBeat === 0 || subInBeat === 2) && s + 1 < stepsPerBar) {
               const next = b * stepsPerBar + (s + 1);
               if (isStepEmpty(next)) {
-                notes.push(new StaveNote({ keys: ["b/4"], duration: "8r", clef: "percussion" }));
+                pushNote(new StaveNote({ keys: ["b/4"], duration: "8r", clef: "percussion" }));
                 s += 2;
                 continue;
               }
             }
           }
 
-          // 16ths in x/8 (stepsPerBeat=2): [rest][rest] -> eighth rest
-          if (resolution === 16 && stepsPerBeat === 2 && subInBeat === 0 && s + 1 < stepsPerBar) {
+          
+          // 32nds in x/4 (stepsPerBeatN=8):
+          //  * [rest x8] at beat start -> quarter rest
+          //  * [rest x4] at 8th boundaries (sub 0 or 4) -> eighth rest
+          //  * [rest x2] at 16th boundaries (sub 0,2,4,6) -> 16th rest
+          if (notationResolution === 32 && stepsPerBeatN === 8) {
+            if (subInBeat === 0 && s + 7 < stepsPerBar) {
+              const empties = Array.from({ length: 7 }, (_, i) => b * stepsPerBar + (s + 1 + i));
+              if (empties.every(isStepEmpty)) {
+                pushNote(new StaveNote({ keys: ["b/4"], duration: "qr", clef: "percussion" }));
+                s += 8;
+                continue;
+              }
+            }
+            if ((subInBeat === 0 || subInBeat === 4) && s + 3 < stepsPerBar) {
+              const a = b * stepsPerBarN + (s + 1);
+              const b2 = b * stepsPerBar + (s + 2);
+              const c = b * stepsPerBar + (s + 3);
+              if (isStepEmpty(a) && isStepEmpty(b2) && isStepEmpty(c)) {
+                pushNote(new StaveNote({ keys: ["b/4"], duration: "8r", clef: "percussion" }));
+                s += 4;
+                continue;
+              }
+            }
+            if ((subInBeat === 0 || subInBeat === 2 || subInBeat === 4 || subInBeat === 6) && s + 1 < stepsPerBar) {
+              const next = b * stepsPerBar + (s + 1);
+              if (isStepEmpty(next)) {
+                pushNote(new StaveNote({ keys: ["b/4"], duration: "16r", clef: "percussion" }));
+                s += 2;
+                continue;
+              }
+            }
+          }
+
+          // 32nds in x/8 (stepsPerBeatN=4):
+          //  * [rest x4] -> eighth rest
+          //  * [rest x2] -> 16th rest
+          if (notationResolution === 32 && stepsPerBeatN === 4) {
+            if (subInBeat === 0 && s + 3 < stepsPerBar) {
+              const a = b * stepsPerBarN + (s + 1);
+              const b2 = b * stepsPerBar + (s + 2);
+              const c = b * stepsPerBar + (s + 3);
+              if (isStepEmpty(a) && isStepEmpty(b2) && isStepEmpty(c)) {
+                pushNote(new StaveNote({ keys: ["b/4"], duration: "8r", clef: "percussion" }));
+                s += 4;
+                continue;
+              }
+            }
+            if ((subInBeat === 0 || subInBeat === 2) && s + 1 < stepsPerBar) {
+              const next = b * stepsPerBar + (s + 1);
+              if (isStepEmpty(next)) {
+                pushNote(new StaveNote({ keys: ["b/4"], duration: "16r", clef: "percussion" }));
+                s += 2;
+                continue;
+              }
+            }
+          }
+
+
+// 16ths in x/8 (stepsPerBeatN=2): [rest][rest] -> eighth rest
+          if (notationResolution === 16 && stepsPerBeatN === 2 && subInBeat === 0 && s + 1 < stepsPerBar) {
             if (isStepEmpty(b * stepsPerBar + (s + 1))) {
-              notes.push(new StaveNote({ keys: ["b/4"], duration: "8r", clef: "percussion" }));
+              pushNote(new StaveNote({ keys: ["b/4"], duration: "8r", clef: "percussion" }));
               s += 2;
               continue;
             }
@@ -1087,7 +1329,7 @@ function Notation({ grid, resolution, bars, barsPerLine, stepsPerBar, timeSig, m
         }
 
         if (isRest) {
-          notes.push(new StaveNote({ keys: ["b/4"], duration: dur + "r", clef: "percussion" }));
+          pushNote(new StaveNote({ keys: ["b/4"], duration: dur + "r", clef: "percussion" }));
           s += 1;
           continue;
         }
@@ -1099,7 +1341,7 @@ function Notation({ grid, resolution, bars, barsPerLine, stepsPerBar, timeSig, m
         // MVP: if any cymbal is present in this slice, use X noteheads for the chord.
         // Next upgrade: per-key notehead types.
 
-        notes.push(note);
+        pushNote(note);
         s += 1;
       }
 
@@ -1124,11 +1366,23 @@ function Notation({ grid, resolution, bars, barsPerLine, stepsPerBar, timeSig, m
           if (typeof n.isRest === "function" ? !n.isRest() : !String(n.getDuration?.() ?? "").includes("r")) {
             n.setStemDirection?.(1);
           }
-        } catch {}
+        } catch (e) {}
       });
 
-      const beams = Beam.generateBeams(notes, { groups, stem_direction: 1 });
-      allBeams.push(...beams);
+      // Generate beams *within* each beam group division only (never across groups).
+      // This prevents later beats from affecting earlier beaming (e.g., dotted 8th + 16th in beat 1).
+      const groupBuckets = Array.from({ length: beamGroupsPerBar }, () => []);
+            const groupSizeSteps = stepsPerBar / beamGroupsPerBar;
+for (let i = 0; i < notes.length; i++) {
+        const st = noteStarts[i] ?? 0;
+        const g = Math.max(0, Math.min(beamGroupsPerBar - 1, Math.floor(st / groupSizeSteps)));
+        groupBuckets[g].push(notes[i]);
+      }
+      groupBuckets.forEach((bucket) => {
+        if (!bucket.length) return;
+        const beams = Beam.generateBeams(bucket, { groups, stem_direction: 1, beam_rests: false });
+        allBeams.push(...beams);
+      });
     }
 
     // Format and draw each bar independently (format to stave so barlines stay correct)
@@ -1154,7 +1408,7 @@ function Notation({ grid, resolution, bars, barsPerLine, stepsPerBar, timeSig, m
         el.setAttribute("fill", "white");
       });
     }
-  }, [grid, resolution, bars, barsPerLine, stepsPerBar, timeSig, mergeRests, mergeNotes]);
+  }, [grid, resolution, bars, barsPerLine, stepsPerBar, timeSig, mergeRests, mergeNotes, dottedNotes]);
 
   return <div ref={ref} />;
 

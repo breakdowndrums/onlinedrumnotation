@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
+import { usePlayback } from "./audio/usePlayback";
 import * as Vex from "vexflow";
 
 // VexFlow API
@@ -56,6 +57,8 @@ export default function App() {
   const [activeTab, setActiveTab] = useState("timing"); // grid-right | grid-top | notation-right | notation-top
   const [timeSig, setTimeSig] = useState({ n: 4, d: 4 });
   const [keepTiming, setKeepTiming] = useState(true);
+
+  const [bpm, setBpm] = useState(120);
 
   const [selection, setSelection] = useState(null);
   
@@ -220,6 +223,41 @@ export default function App() {
     return g;
   }, [baseGrid, loopRule, columns]);
 
+  const playback = usePlayback({
+    instruments: INSTRUMENTS,
+    grid: computedGrid,
+    columns,
+    bpm,
+    resolution,
+  });
+
+  // Spacebar toggles Play/Stop (avoid stealing space when typing)
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.code !== "Space" && e.key !== " ") return;
+
+      const el = e.target;
+      const tag = (el?.tagName || "").toLowerCase();
+      const isTyping = tag === "input" || tag === "textarea" || el?.isContentEditable;
+      if (isTyping) return;
+
+      e.preventDefault();
+      if (playback.isPlaying) playback.stop();
+      else {
+        playback.setPlayhead(0);
+        playback.play({ startStep: 0 });
+      }
+    };
+
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [playback.isPlaying, playback.play, playback.stop]);
+
+  useEffect(() => {
+    playback.setPlayhead((prev) => Math.max(0, Math.min(columns - 1, prev)));
+  }, [columns]);
+
+
 
   // Resize grid when resolution/bars change (preserve existing hits)
   useEffect(() => {
@@ -323,7 +361,43 @@ export default function App() {
 
 
           
-          <div className="flex items-center gap-2 ml-auto">
+          <div className="flex items-center gap-2 ml-auto" data-loopui='1'>
+            <button
+              onClick={() => (playback.isPlaying ? playback.stop() : playback.play())}
+              className={`px-3 py-1.5 rounded border text-sm capitalize ${
+                playback.isPlaying
+                  ? "bg-neutral-800 border-neutral-600 text-white"
+                  : "bg-neutral-900 border-neutral-800 text-neutral-300 hover:bg-neutral-800/60"
+              }`}
+            >
+              {playback.isPlaying ? "stop" : "play"}
+            </button>
+
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-neutral-300">BPM</span>
+              <div className="flex items-stretch overflow-hidden rounded-md border border-neutral-700 bg-neutral-800">
+                <button
+                  type="button"
+                  onClick={() => setBpm((v) => Math.max(30, v - 1))}
+                  className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                  aria-label="Decrease BPM"
+                >
+                  −
+                </button>
+                <div className="min-w-[56px] px-3 py-1 flex items-center justify-center text-sm text-white bg-neutral-800 border-l border-r border-neutral-700">
+                  {bpm}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setBpm((v) => Math.min(300, v + 1))}
+                  className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                  aria-label="Increase BPM"
+                >
+                  +
+                </button>
+              </div>
+            </div>
+
             <button
               onClick={() => setActiveTab("layout")}
               className={`px-3 py-1.5 rounded border text-sm capitalize ${
@@ -334,7 +408,7 @@ export default function App() {
             >
               layout
             </button>
-</div>
+          </div>
 
         </div>
 
@@ -695,6 +769,7 @@ if (!loopRule) return;
                 setSelection={setSelection}
                 loopRule={loopRule}
                 setLoopRule={setLoopRule}
+                playhead={playback.playhead}
               />
             </div>
             </div>
@@ -716,6 +791,7 @@ if (!loopRule) return;
                 setSelection={setSelection}
                 loopRule={loopRule}
                 setLoopRule={setLoopRule}
+                playhead={playback.playhead}
               />
             </div>
             </div>
@@ -743,7 +819,7 @@ if (!loopRule) return;
 }
 
 
-function Grid({ grid, columns, bars, stepsPerBar, resolution, timeSig, gridBarsPerLine, cycleVelocity, selection, setSelection, loopRule, setLoopRule }) {
+function Grid({ grid, columns, bars, stepsPerBar, resolution, timeSig, gridBarsPerLine, cycleVelocity, selection, setSelection, loopRule, setLoopRule, playhead }) {
   const [drag, setDrag] = useState(null); // { row, col }
   // Build a render timeline with a visual gap between bars.
   // Example for 2 bars of 8ths: [0..7, GAP, 8..15]
@@ -842,8 +918,18 @@ function Grid({ grid, columns, bars, stepsPerBar, resolution, timeSig, gridBarsP
               if (t.type === "gap") return <div key={t.key} />;
               const label = labelFor(t.stepInBar);
               return (
-                <div key={`h-${t.stepIndex}`} className="text-xs text-center text-neutral-400 select-none">
-                  {label}
+                <div
+                  key={`h-${t.stepIndex}`}
+                  className="relative h-6 text-xs text-center text-neutral-400 select-none overflow-visible"
+                >
+                  {/* Playhead indicator: kept within header row to avoid clipping/overlap. */}
+                  {playhead === t.stepIndex && (
+                    <span
+                      className="pointer-events-none absolute top-0 left-1/2 -translate-x-1/2 h-1 w-1 rounded-full bg-neutral-700"
+                      aria-hidden="true"
+                    />
+                  )}
+                  <span className="absolute bottom-0 inset-x-0">{label}</span>
                 </div>
               );
             })}

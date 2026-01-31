@@ -23,12 +23,25 @@ const INSTRUMENTS = [
 ];
 
 
-const VELOCITY_CYCLE = [0, 100];
-
-const VELOCITY_COLOR = {
-  0: "bg-neutral-800",
-  100: "bg-[#00b3ba]",
+const CELL = {
+  OFF: "off",
+  ON: "on",
+  GHOST: "ghost",
 };
+
+const GHOST_NOTATION_ENABLED = new Set(["snare", "tom1", "tom2", "floorTom", "hihat"]);
+
+const CELL_CYCLE = [CELL.OFF, CELL.ON];
+
+// Visuals
+const CELL_COLOR = {
+  [CELL.OFF]: "bg-neutral-800",
+  [CELL.ON]: "bg-[#00b3ba]",
+  [CELL.GHOST]: "bg-[#00b3ba]/35",
+};
+
+// Ghost note support (MVP)
+const GHOST_ENABLED = new Set(["snare", "tom1", "tom2", "floorTom", "hihat"]);
 
 // NOTE: mapping is a starting point; we'll refine staff positions later.
 const NOTATION_MAP = {
@@ -79,7 +92,7 @@ export default function App() {
           const end = selection.endExclusive;
           for (let r = selection.rowStart; r <= selection.rowEnd; r++) {
             const instId = INSTRUMENTS[r].id;
-            for (let c = start; c < end; c++) next[instId][c] = 0;
+            for (let c = start; c < end; c++) next[instId][c] = CELL.OFF;
           }
           return next;
         });
@@ -125,18 +138,21 @@ export default function App() {
   const remapGrid = (prevGrid, oldStepsPerBar, newStepsPerBar) => {
     const next = {};
     INSTRUMENTS.forEach((inst) => {
-      const out = Array(bars * newStepsPerBar).fill(0);
+      const out = Array(bars * newStepsPerBar).fill(CELL.OFF);
       for (let b = 0; b < bars; b++) {
         for (let s = 0; s < oldStepsPerBar; s++) {
           const oldGlobal = b * oldStepsPerBar + s;
-          const val = prevGrid[inst.id]?.[oldGlobal] ?? 0;
-          if (val === 0) continue;
+          const val = prevGrid[inst.id]?.[oldGlobal] ?? CELL.OFF;
+          if (val === CELL.OFF) continue;
 
           const newLocal = Math.round((s * newStepsPerBar) / oldStepsPerBar);
           const clamped = Math.min(newStepsPerBar - 1, Math.max(0, newLocal));
           const newGlobal = b * newStepsPerBar + clamped;
 
-          out[newGlobal] = Math.max(out[newGlobal] ?? 0, val);
+          // Merge collisions: prefer ON over GHOST over OFF
+          const cur = out[newGlobal] ?? CELL.OFF;
+          const rank = (v) => (v === CELL.ON ? 2 : v === CELL.GHOST ? 1 : 0);
+          out[newGlobal] = rank(val) >= rank(cur) ? val : cur;
         }
       }
       next[inst.id] = out;
@@ -170,7 +186,7 @@ export default function App() {
 
   const [baseGrid, setBaseGrid] = useState(() => {
     const g = {};
-    INSTRUMENTS.forEach((i) => (g[i.id] = Array(columns).fill(0)));
+    INSTRUMENTS.forEach((i) => (g[i.id] = Array(columns).fill(CELL.OFF)));
     return g;
   });
 
@@ -192,7 +208,7 @@ export default function App() {
       const i = (idx - start) % length;
       for (let r = rowStart; r <= rowEnd; r++) {
         const instId = INSTRUMENTS[r].id;
-        next[instId][idx] = (srcByRow[instId]?.[i] ?? 0);
+        next[instId][idx] = (srcByRow[instId]?.[i] ?? CELL.OFF);
       }
     }
     return next;
@@ -217,7 +233,7 @@ export default function App() {
       const i = (idx - start) % length;
       for (let r = rowStart; r <= rowEnd; r++) {
         const instId = INSTRUMENTS[r].id;
-        g[instId][idx] = (srcByRow[instId]?.[i] ?? 0); // overwrite, including 0
+        g[instId][idx] = (srcByRow[instId]?.[i] ?? CELL.OFF); // overwrite, including 0
       }
     }
     return g;
@@ -231,6 +247,16 @@ export default function App() {
     resolution,
   });
 
+  // Unified transport toggle: matches Spacebar + Play button behavior exactly.
+  const togglePlaybackFromBeginning = React.useCallback(() => {
+    if (playback.isPlaying) {
+      playback.stop();
+    } else {
+      playback.setPlayhead(0);
+      playback.play({ startStep: 0 });
+    }
+  }, [playback.isPlaying, playback.play, playback.stop, playback.setPlayhead]);
+
   // Spacebar toggles Play/Stop (avoid stealing space when typing)
   useEffect(() => {
     const onKey = (e) => {
@@ -242,16 +268,12 @@ export default function App() {
       if (isTyping) return;
 
       e.preventDefault();
-      if (playback.isPlaying) playback.stop();
-      else {
-        playback.setPlayhead(0);
-        playback.play({ startStep: 0 });
-      }
+      togglePlaybackFromBeginning();
     };
 
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [playback.isPlaying, playback.play, playback.stop]);
+  }, [togglePlaybackFromBeginning]);
 
   useEffect(() => {
     playback.setPlayhead((prev) => Math.max(0, Math.min(columns - 1, prev)));
@@ -265,8 +287,8 @@ export default function App() {
       const next = {};
       INSTRUMENTS.forEach((i) => {
         next[i.id] = Array(columns)
-          .fill(0)
-          .map((_, idx) => prev[i.id]?.[idx] ?? 0);
+          .fill(CELL.OFF)
+          .map((_, idx) => prev[i.id]?.[idx] ?? CELL.OFF);
       });
       return next;
     });
@@ -299,13 +321,49 @@ export default function App() {
     setBaseGrid((prev) => {
       const next = { ...prev };
       const current = prev[inst][idx];
-      const nextVal =
-        VELOCITY_CYCLE[(VELOCITY_CYCLE.indexOf(current) + 1) % VELOCITY_CYCLE.length];
+      // Ghost behaves like "on" for regular toggling.
+      const normalized = current === CELL.GHOST ? CELL.ON : current;
+      const nextVal = normalized === CELL.OFF ? CELL.ON : CELL.OFF;
       next[inst] = [...prev[inst]];
       next[inst][idx] = nextVal;
       return next;
     });
   };
+
+  const toggleGhost = (inst, idx) => {
+    if (!GHOST_ENABLED.has(inst)) return;
+
+    if (loopRule) {
+      const r = INSTRUMENTS.findIndex((x) => x.id === inst);
+      const inLoopRows = r >= loopRule.rowStart && r <= loopRule.rowEnd;
+      const inSourceCols = idx >= loopRule.start && idx < loopRule.start + loopRule.length;
+      const inSource = inLoopRows && inSourceCols;
+      const inGenerated = inLoopRows && idx >= loopRule.start + loopRule.length;
+
+      // Match click behavior: long-pressing outside the source bakes & exits without toggling.
+      if (!inSource || inGenerated) {
+        setBaseGrid((prev) => bakeLoopInto(prev, loopRule));
+        setLoopRule(null);
+        setSelection(null);
+        return;
+      }
+    }
+
+    setBaseGrid((prev) => {
+      const next = { ...prev };
+      const current = prev[inst][idx];
+
+      // Only toggle ghost on active cells.
+      if (current === CELL.OFF) return prev;
+
+      const nextVal = current === CELL.GHOST ? CELL.ON : CELL.GHOST;
+
+      next[inst] = [...prev[inst]];
+      next[inst][idx] = nextVal;
+      return next;
+    });
+  };
+
 
   return (
     <div
@@ -338,7 +396,7 @@ export default function App() {
               timing
             </button>
             <button
-              onClick={() => setActiveTab("notation")}
+              onClick={() => setActiveTab((t) => (t === "notation" ? "timing" : "notation"))}
               className={`px-3 py-1.5 rounded border text-sm capitalize ${
                 activeTab === "notation"
                   ? "bg-neutral-800 border-neutral-600 text-white"
@@ -348,7 +406,7 @@ export default function App() {
               notation
             </button>
             <button
-              onClick={() => setActiveTab("selection")}
+              onClick={() => setActiveTab((t) => (t === "selection" ? "timing" : "selection"))}
               className={`px-3 py-1.5 rounded border text-sm capitalize ${
                 activeTab === "selection"
                   ? "bg-neutral-800 border-neutral-600 text-white"
@@ -363,7 +421,7 @@ export default function App() {
           
           <div className="flex items-center gap-2 ml-auto" data-loopui='1'>
             <button
-              onClick={() => (playback.isPlaying ? playback.stop() : playback.play())}
+              onClick={togglePlaybackFromBeginning}
               className={`px-3 py-1.5 rounded border text-sm capitalize ${
                 playback.isPlaying
                   ? "bg-neutral-800 border-neutral-600 text-white"
@@ -399,7 +457,7 @@ export default function App() {
             </div>
 
             <button
-              onClick={() => setActiveTab("layout")}
+              onClick={() => setActiveTab((t) => (t === "layout" ? "timing" : "layout"))}
               className={`px-3 py-1.5 rounded border text-sm capitalize ${
                 activeTab === "layout"
                   ? "bg-neutral-800 border-neutral-600 text-white"
@@ -621,7 +679,7 @@ if (!selection) return;
                   const end = selection.endExclusive;
                   for (let r = selection.rowStart; r <= selection.rowEnd; r++) {
                     const instId = INSTRUMENTS[r].id;
-                    for (let c = start; c < end; c++) next[instId][c] = 0;
+                    for (let c = start; c < end; c++) next[instId][c] = CELL.OFF;
                   }
                   return next;
                 });
@@ -765,6 +823,7 @@ if (!loopRule) return;
                 timeSig={timeSig}
                 gridBarsPerLine={gridBarsPerLine}
                 cycleVelocity={cycleVelocity}
+                toggleGhost={toggleGhost}
                 selection={selection}
                 setSelection={setSelection}
                 loopRule={loopRule}
@@ -787,6 +846,7 @@ if (!loopRule) return;
                 timeSig={timeSig}
                 gridBarsPerLine={gridBarsPerLine}
                 cycleVelocity={cycleVelocity}
+                toggleGhost={toggleGhost}
                 selection={selection}
                 setSelection={setSelection}
                 loopRule={loopRule}
@@ -819,7 +879,13 @@ if (!loopRule) return;
 }
 
 
-function Grid({ grid, columns, bars, stepsPerBar, resolution, timeSig, gridBarsPerLine, cycleVelocity, selection, setSelection, loopRule, setLoopRule, playhead }) {
+function Grid({
+  grid, columns, bars, stepsPerBar, resolution, timeSig, gridBarsPerLine,
+  cycleVelocity, toggleGhost, selection, setSelection, loopRule,
+  setLoopRule, playhead
+}) {
+
+  const longPress = React.useRef({ timer: null, did: false });
   const [drag, setDrag] = useState(null); // { row, col }
   // Build a render timeline with a visual gap between bars.
   // Example for 2 bars of 8ths: [0..7, GAP, 8..15]
@@ -939,13 +1005,43 @@ function Grid({ grid, columns, bars, stepsPerBar, resolution, timeSig, gridBarsP
                 <div className="pr-2 text-xs text-right whitespace-nowrap select-none">{inst.label}</div>
                 {timeline.map((t, i) => {
                   if (t.type === "gap") return <div key={`g-${inst.id}-${lineIdx}-${i}`} />;
-                  const val = grid[inst.id]?.[t.stepIndex] ?? 0;
+                  const val = grid[inst.id]?.[t.stepIndex] ?? CELL.OFF;
                   return (
                     <div
                       key={`${inst.id}-${t.stepIndex}`}
                       data-gridcell="1"
+                      onPointerDown={(e) => {
+                        e.stopPropagation();
+                        // Long-press (250ms) on an active cell toggles ghost notes (where enabled).
+                        const v = val;
+                        if (v !== CELL.OFF && GHOST_ENABLED.has(inst.id)) {
+                          longPress.current.did = false;
+                          if (longPress.current.timer) window.clearTimeout(longPress.current.timer);
+                          longPress.current.timer = window.setTimeout(() => {
+                            longPress.current.did = true;
+                            toggleGhost(inst.id, t.stepIndex);
+                          }, 250);
+                        }
+                      }}
+                      onPointerUp={() => {
+                        if (longPress.current.timer) window.clearTimeout(longPress.current.timer);
+                        longPress.current.timer = null;
+                      }}
+                      onPointerCancel={() => {
+                        if (longPress.current.timer) window.clearTimeout(longPress.current.timer);
+                        longPress.current.timer = null;
+                      }}
+                      onPointerLeave={() => {
+                        if (longPress.current.timer) window.clearTimeout(longPress.current.timer);
+                        longPress.current.timer = null;
+                      }}
                       onClick={(e) => {
                         e.stopPropagation();
+                        // If the long-press fired, suppress the normal toggle.
+                        if (longPress.current.did) {
+                          longPress.current.did = false;
+                          return;
+                        }
                         cycleVelocity(inst.id, t.stepIndex);
                       }}
                       onMouseDown={(e) => {
@@ -984,7 +1080,7 @@ function Grid({ grid, columns, bars, stepsPerBar, resolution, timeSig, gridBarsP
                           length: width,
                         });
                       }}
-                      className={`w-7 h-7 border cursor-pointer ${VELOCITY_COLOR[val]} ${(() => {
+                      className={`w-7 h-7 border cursor-pointer ${CELL_COLOR[val]} ${(() => {
                         const role = getCellRole(inst.id, t.stepIndex);
                         if (role === "source") return "border-cyan-300 ring-2 ring-cyan-300/40";
                         if (role === "generated") return "border-neutral-600 opacity-70";
@@ -1029,7 +1125,33 @@ function Notation({grid, resolution, bars, barsPerLine, stepsPerBar, timeSig, me
       } catch (e) {
         // ignore
       }
+    }
+
+    const applyGhostStyling = (note, ghostKeyIndices) => {
+      if (!note || !ghostKeyIndices || ghostKeyIndices.length === 0) return;
+
+      try {
+        const Parenthesis = Flow.Parenthesis || VF.Parenthesis;
+        const ModifierPosition = Flow.ModifierPosition || VF.ModifierPosition;
+        if (Parenthesis && ModifierPosition && typeof note.addModifier === "function") {
+          ghostKeyIndices.forEach((i) => {
+            try {
+              note.addModifier(new Parenthesis(ModifierPosition.LEFT), i);
+              note.addModifier(new Parenthesis(ModifierPosition.RIGHT), i);
+            } catch (_) {}
+          });
+        }
+      } catch (_) {}
+
+      // Try to shrink only the ghosted noteheads.
+      ghostKeyIndices.forEach((i) => {
+        try {
+          const nh = note.note_heads?.[i] || note.noteHeads?.[i];
+          if (nh && typeof nh.setScale === "function") nh.setScale(0.7, 0.7);
+        } catch (_) {}
+      });
     };
+;
 
     if (!ref.current) return;
     ref.current.innerHTML = "";
@@ -1120,22 +1242,25 @@ function Notation({grid, resolution, bars, barsPerLine, stepsPerBar, timeSig, me
 
       const notes = [];
       const noteStarts = [];
-      const pushNote = (n) => { notes.push(n); noteStarts.push(s); };
+      const pushNote = (n, ghostKeyIndices) => { applyGhostStyling(n, ghostKeyIndices); notes.push(n); noteStarts.push(s); };
 
       let s = 0;
       while (s < stepsPerBar) {
         const globalIdx = b * stepsPerBar + s;
 
         const keys = [];
-        
+        const ghostKeyIndices = [];
+
         INSTRUMENTS.forEach((inst) => {
           const val = grid[inst.id][globalIdx];
-          if (val !== 0) {
+          if (val !== CELL.OFF) {
             keys.push(NOTATION_MAP[inst.id].key);
+            if (val === CELL.GHOST && GHOST_NOTATION_ENABLED.has(inst.id)) {
+              ghostKeyIndices.push(keys.length - 1);
+            }
           }
         });
-
-        const isRest = keys.length === 0;
+const isRest = keys.length === 0;
 
         // Merge notes/rests to larger durations (optional)
         const stepsPerBeatN = Math.max(1, Math.round(notationResolution / timeSig.d));
@@ -1143,7 +1268,7 @@ function Notation({grid, resolution, bars, barsPerLine, stepsPerBar, timeSig, me
 
         const hasAnyHitAt = (absIdx) => {
       for (const inst of INSTRUMENTS) {
-        if ((notationGrid[inst.id]?.[absIdx] ?? 0) !== 0) return true;
+        if ((notationGrid[inst.id]?.[absIdx] ?? CELL.OFF) !== CELL.OFF) return true;
       }
       return false;
     };
@@ -1173,7 +1298,7 @@ function Notation({grid, resolution, bars, barsPerLine, stepsPerBar, timeSig, me
             if (isStepEmpty(b * stepsPerBar + (s + 1))) {
               const noteQ = new StaveNote({ keys, duration: "q", clef: "percussion" });
               noteQ.setStemDirection(1);
-              pushNote(noteQ);
+              pushNote(noteQ, ghostKeyIndices);
                 if (allowDotted && mergeNotes) {
                   const after = b * stepsPerBarN + (s + 2);
                   if (s + 2 < stepsPerBar && isStepEmpty(after) && inSameBeamGroup(s, s + 3)) {
@@ -1199,7 +1324,7 @@ function Notation({grid, resolution, bars, barsPerLine, stepsPerBar, timeSig, me
               if (isStepEmpty(a) && isStepEmpty(b2) && isStepEmpty(c)) {
                 const noteQ = new StaveNote({ keys, duration: "q", clef: "percussion" });
                 noteQ.setStemDirection(1);
-                pushNote(noteQ);
+                pushNote(noteQ, ghostKeyIndices);
                 s += 4;
                 continue;
               }
@@ -1209,7 +1334,7 @@ function Notation({grid, resolution, bars, barsPerLine, stepsPerBar, timeSig, me
               if (isStepEmpty(next)) {
                 const note8 = new StaveNote({ keys, duration: "8", clef: "percussion" });
                 note8.setStemDirection(1);
-                pushNote(note8);
+                pushNote(note8, ghostKeyIndices);
                 if (allowDotted && mergeNotes) {
                   const after = b * stepsPerBarN + (s + 2);
                   if (s + 2 < stepsPerBar && isStepEmpty(after) && inSameBeamGroup(s, s + 3)) {
@@ -1277,7 +1402,7 @@ function Notation({grid, resolution, bars, barsPerLine, stepsPerBar, timeSig, me
             const note = new StaveNote({ keys, duration: dur, clef: "percussion" });
             note.setStemDirection(1);
             if (dotted) attachDot(note);
-            pushNote(note);
+            pushNote(note, ghostKeyIndices);
 
             s += dotted ? (len + len / 2) : len;
             continue;
@@ -1295,7 +1420,7 @@ function Notation({grid, resolution, bars, barsPerLine, stepsPerBar, timeSig, me
             if (isStepEmpty(b * stepsPerBar + (s + 1))) {
               const note8 = new StaveNote({ keys, duration: "8", clef: "percussion" });
               note8.setStemDirection(1);
-              pushNote(note8);
+              pushNote(note8, ghostKeyIndices);
                 if (allowDotted && mergeNotes) {
                   const after = b * stepsPerBarN + (s + 2);
                   if (s + 2 < stepsPerBar && isStepEmpty(after) && inSameBeamGroup(s, s + 3)) {
@@ -1427,7 +1552,7 @@ function Notation({grid, resolution, bars, barsPerLine, stepsPerBar, timeSig, me
         // MVP: if any cymbal is present in this slice, use X noteheads for the chord.
         // Next upgrade: per-key notehead types.
 
-        pushNote(note);
+        pushNote(note, ghostKeyIndices);
         s += 1;
       }
 
@@ -1460,7 +1585,7 @@ function Notation({grid, resolution, bars, barsPerLine, stepsPerBar, timeSig, me
       const groupBuckets = Array.from({ length: beamGroupsPerBar }, () => []);
             const groupSizeSteps = stepsPerBar / beamGroupsPerBar;
 for (let i = 0; i < notes.length; i++) {
-        const st = noteStarts[i] ?? 0;
+        const st = noteStarts[i] ?? CELL.OFF;
         const g = Math.max(0, Math.min(beamGroupsPerBar - 1, Math.floor(st / groupSizeSteps)));
         groupBuckets[g].push(notes[i]);
       }

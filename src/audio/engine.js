@@ -11,6 +11,7 @@ export function makeAudioEngine() {
   let currentStep = 0;
   let nextNoteTime = 0;
   let timerId = null;
+  let activeSources = new Set();
 
   // Lookahead
   const lookaheadMs = 25;
@@ -50,16 +51,18 @@ export function makeAudioEngine() {
     return (60 / bpm) * (4 / resolution);
   }
 
-  function trigger(instId, time, velocity = 100) {
+  function trigger(instId, time, gainValue = 1) {
     if (!audioCtx || !master) return;
     const buf = buffers[instId];
     if (!buf) return;
 
     const src = audioCtx.createBufferSource();
     src.buffer = buf;
+    activeSources.add(src);
+    src.onended = () => activeSources.delete(src);
 
     const gain = audioCtx.createGain();
-    gain.gain.value = Math.max(0, Math.min(1, velocity / 127));
+    gain.gain.value = Math.max(0, Math.min(1, gainValue));
 
     src.connect(gain);
     gain.connect(master);
@@ -69,8 +72,26 @@ export function makeAudioEngine() {
 
   function scheduleStep(grid, instruments, stepIndex, time) {
     for (const inst of instruments) {
-      const vel = grid[inst.id]?.[stepIndex] ?? 0;
-      if (vel > 0) trigger(inst.id, time, vel);
+      const state = grid[inst.id]?.[stepIndex] ?? "off";
+      if (state === "off") continue;
+
+      // Ghost notes: instrument-specific gain
+      if (state === "ghost") {
+        if (inst.id === "snare" && buffers["snare_ghost"]) {
+          trigger("snare_ghost", time, 0.6);
+        } else if (inst.id === "hihat") {
+          trigger(inst.id, time, 0.3);
+        } else if (inst.id === "tom1" || inst.id === "tom2" || inst.id === "floorTom") {
+          trigger(inst.id, time, 0.15);
+        } else {
+          // fallback ghost gain
+          trigger(inst.id, time, 0.1);
+        }
+        continue;
+      }
+
+      // Normal hit
+      trigger(inst.id, time, 0.9);
     }
     if (onStep) onStep(stepIndex);
   }
@@ -104,9 +125,23 @@ export function makeAudioEngine() {
 
   function stop() {
     if (!isPlaying) return;
+
     isPlaying = false;
-    if (timerId) window.clearInterval(timerId);
-    timerId = null;
+
+    if (timerId) {
+      window.clearInterval(timerId);
+      timerId = null;
+    }
+
+    // Kill any already-scheduled sounds
+    activeSources.forEach((src) => {
+      try { src.stop(0); } catch (e) {}
+    });
+    activeSources.clear();
+
+    // Reset transport so next play always starts from beginning
+    currentStep = 0;
+    nextNoteTime = 0;
   }
 
   function setOnStep(fn) {

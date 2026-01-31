@@ -1,6 +1,7 @@
 export const SAMPLE_MAP = {
   kick: "samples/kick.ogg",
   snare: "samples/snare.ogg",
+  snare_ghost: "samples/snare_ghost.ogg",
   hihat: "samples/hihat_closed.ogg",
   hihatFoot: "samples/hihat_foot.ogg",
   ride: "samples/ride.ogg",

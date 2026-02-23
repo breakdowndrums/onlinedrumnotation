@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { makeAudioEngine } from "./engine";
 import { loadSamples } from "./sampleLoader";
 import { SAMPLE_MAP } from "./sampleMap";
+import { primeIOSAudioSync } from "./iosPrime";
 
 export function usePlayback({ instruments, grid, columns, bpm, resolution }) {
   const engine = useMemo(() => makeAudioEngine(), []);
@@ -11,6 +12,7 @@ export function usePlayback({ instruments, grid, columns, bpm, resolution }) {
   const [error, setError] = useState(null);
 
   const snapRef = useRef({ instruments, grid, columns });
+
   useEffect(() => {
     snapRef.current = { instruments, grid, columns };
   }, [instruments, grid, columns]);
@@ -23,43 +25,65 @@ export function usePlayback({ instruments, grid, columns, bpm, resolution }) {
     engine.setOnStep((step) => setPlayhead(step));
   }, [engine]);
 
-  async function initSamples() {
+  const initSamples = useCallback(async () => {
     try {
       setError(null);
+      // iOS: prime audio session via HTMLMediaElement
+      primeIOSAudioSync();
+      engine.unlock();
       engine.ensureContext();
       const ctx = engine.getContext();
       const buffers = await loadSamples(ctx, SAMPLE_MAP);
       engine.setBuffers(buffers);
       setIsReady(true);
     } catch (e) {
-      console.error(e);
-      setError(e);
+      const msg = e?.message || String(e);
+      setError(msg);
       setIsReady(false);
       throw e;
     }
-  }
+  }, [engine]);
 
-  async function play(opts = {}) {
-    if (!isReady) await initSamples();
-    setIsPlaying(true);
-    const startStep = typeof opts.startStep === "number" ? opts.startStep : playhead;
-    if (typeof opts.startStep === "number") setPlayhead(startStep);
-    await engine.play(() => snapRef.current, { startStep });
-  }
+  const play = useCallback(
+    async (opts = {}) => {
+      try {
+        // iOS: prime audio session via HTMLMediaElement
+        primeIOSAudioSync();
+        engine.unlock();
+        if (!isReady) {
+          await initSamples();
+        }
 
-  function stop() {
+        const startStep =
+          typeof opts.startStep === "number" ? opts.startStep : playhead;
+
+        if (typeof opts.startStep === "number") {
+          setPlayhead(startStep);
+        }
+
+        await engine.play(() => snapRef.current, { startStep });
+        setIsPlaying(true);
+      } catch (e) {
+        setIsPlaying(false);
+        throw e;
+      }
+    },
+    [engine, initSamples, isReady, playhead]
+  );
+
+  const stop = useCallback(() => {
     engine.stop();
     setIsPlaying(false);
-  }
+  }, [engine]);
 
   return {
     isReady,
     isPlaying,
     playhead,
     error,
-    setPlayhead,
     play,
     stop,
     initSamples,
+    setPlayhead,
   };
 }

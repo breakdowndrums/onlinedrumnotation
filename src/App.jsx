@@ -73,6 +73,34 @@ export default function App() {
   const [keepTiming, setKeepTiming] = useState(true);
 
   const [bpm, setBpm] = useState(120);
+  const [bpmDraft, setBpmDraft] = useState("120");
+
+  useEffect(() => {
+    setBpmDraft(String(bpm));
+  }, [bpm]);
+
+  const clampBpm = (n) => Math.min(400, Math.max(20, n));
+  const stepBpm = (delta) => setBpm((v) => clampBpm(v + delta));
+
+  const bpmRepeatRef = React.useRef({ timer: null, interval: null });
+  const stopBpmRepeat = React.useCallback(() => {
+    const r = bpmRepeatRef.current;
+    if (r.timer) window.clearTimeout(r.timer);
+    if (r.interval) window.clearInterval(r.interval);
+    r.timer = null;
+    r.interval = null;
+  }, []);
+  const startBpmRepeat = React.useCallback(
+    (delta) => {
+      stopBpmRepeat();
+      stepBpm(delta); // immediate step
+      bpmRepeatRef.current.timer = window.setTimeout(() => {
+        bpmRepeatRef.current.interval = window.setInterval(() => stepBpm(delta), 50);
+      }, 130);
+    },
+    [stopBpmRepeat]
+  );
+
 
   const [selection, setSelection] = useState(null);
   const [selectionFinalized, setSelectionFinalized] = useState(0);
@@ -84,21 +112,8 @@ export default function App() {
        Math.max(1, (selection.rowEnd ?? selection.rowStart ?? 0) - (selection.rowStart ?? 0) + 1))
     : 0;
   const canClearSelection = selectionCellCount >= 2;
+  const canLoopSelection = selectionCellCount >= 2;
 // Keyboard shortcut: Backspace/Delete clears current selection (like Clear button)
-  
-  // Ensure desktop drag-selection always ends, even if mouseup happens outside the grid.
-  useEffect(() => {
-    const onMouseUp = () => {
-      setDrag(null);
-      // cancel any pending desktop long-press timers (ghost)
-      // (safe even if not used)
-      try {
-        // longPress ref exists inside Grid; if not in scope, ignore
-      } catch (_) {}
-    };
-    window.addEventListener("mouseup", onMouseUp);
-    return () => window.removeEventListener("mouseup", onMouseUp);
-  }, []);
 
   // Used to apply loop rules only when the user finishes a selection gesture (prevents mid-drag activation).
   useEffect(() => {
@@ -110,7 +125,7 @@ useEffect(() => {
     const onKey = (e) => {
       if ((e.key === "Backspace" || e.key === "Delete") && selection) {
         if (e.pointerType !== "mouse") e.preventDefault();
-        setBaseGrid((prev) => {
+        setBaseGridWithUndo((prev) => {
           const next = {};
           for (const instId of Object.keys(prev)) next[instId] = [...prev[instId]];
           const start = selection.start;
@@ -133,7 +148,15 @@ useEffect(() => {
 
   
   // Whether new selections should auto-generate a loop.
-  const [loopModeEnabled, setLoopModeEnabled] = useState(true);
+  const [loopRepeats, setLoopRepeats] = useState("all"); // "off" | "all" | "1".."8"
+  const lastNonAllLoopRepeats = React.useRef("1");
+  React.useEffect(() => {
+    // Remember the last non-"all" value so clicking the center can toggle all <-> last value.
+    if (loopRepeats !== "all") lastNonAllLoopRepeats.current = loopRepeats;
+  }, [loopRepeats]);
+
+  const loopModeEnabled = loopRepeats !== "off";
+
 // If selection collapses to a single cell while looping is active, drop the loop.
   useEffect(() => {
     if (!loopRule) return;
@@ -178,10 +201,39 @@ useEffect(() => {
   const [mergeRests, setMergeRests] = useState(true);
   const [mergeNotes, setMergeNotes] = useState(true);
   const [dottedNotes, setDottedNotes] = useState(true);
+  const [flatBeams, setFlatBeams] = useState(true);
 // "fast" (>=16ths) | "all"
 
   const stepsPerBar = Math.max(1, Math.round((timeSig.n * resolution) / timeSig.d));
   const columns = bars * stepsPerBar;
+
+  const clearAll = React.useCallback(() => {
+    setBaseGridWithUndo(() => {
+      const g = {};
+      INSTRUMENTS.forEach((i) => (g[i.id] = Array(columns).fill(CELL.OFF)));
+      return g;
+    });
+    setSelection(null);
+    setLoopRule(null);
+  }, [columns]);
+
+  const clearSelection = React.useCallback(() => {
+    if (!selection || selectionCellCount < 2) return;
+    setBaseGridWithUndo((prev) => {
+      const next = {};
+      INSTRUMENTS.forEach((i) => (next[i.id] = [...(prev[i.id] || [])]));
+      for (let r = selection.rowStart; r <= selection.rowEnd; r++) {
+        const instId = INSTRUMENTS[r].id;
+        for (let c = selection.start; c < selection.endExclusive; c++) {
+          next[instId][c] = CELL.OFF;
+        }
+      }
+      return next;
+    });
+    setSelection(null);
+  }, [selection, selectionCellCount]);
+
+
 
 
   const computeStepsPerBar = (ts, res) => Math.max(1, Math.round((ts.n * res) / ts.d));
@@ -218,7 +270,7 @@ useEffect(() => {
     }
     const oldSPB = stepsPerBar;
     const newSPB = computeStepsPerBar(timeSig, newRes);
-    setBaseGrid((prev) => remapGrid(prev, oldSPB, newSPB));
+    setBaseGridWithUndo((prev) => remapGrid(prev, oldSPB, newSPB));
     setResolution(newRes);
   };
 
@@ -229,7 +281,7 @@ useEffect(() => {
     }
     const oldSPB = stepsPerBar;
     const newSPB = computeStepsPerBar(newTS, resolution);
-    setBaseGrid((prev) => remapGrid(prev, oldSPB, newSPB));
+    setBaseGridWithUndo((prev) => remapGrid(prev, oldSPB, newSPB));
     setTimeSig(newTS);
   };
 
@@ -241,8 +293,71 @@ useEffect(() => {
     return g;
   });
 
+  
+  // Grid-only undo/redo (minimal): tracks baseGrid snapshots only.
+  const [gridPast, setGridPast] = useState([]);
+  const [gridFuture, setGridFuture] = useState([]);
 
-  const bakeLoopInto = (prevGrid, rule) => {
+  const gridPastRef = React.useRef([]);
+  const gridFutureRef = React.useRef([]);
+  const baseGridRef = React.useRef(null);
+
+  React.useEffect(() => {
+    baseGridRef.current = baseGrid;
+  }, [baseGrid]);
+
+  const snapshotGrid = React.useCallback((g) => {
+    const snap = {};
+    INSTRUMENTS.forEach((i) => {
+      snap[i.id] = [...(g?.[i.id] || [])];
+    });
+    return snap;
+  }, []);
+
+  const syncHistoryState = React.useCallback(() => {
+    setGridPast([...gridPastRef.current]);
+    setGridFuture([...gridFutureRef.current]);
+  }, []);
+
+  const pushGridHistory = React.useCallback(() => {
+    gridPastRef.current = [...gridPastRef.current, snapshotGrid(baseGridRef.current)];
+    // clear redo stack on new edit
+    gridFutureRef.current = [];
+    // optional cap to keep memory bounded
+    if (gridPastRef.current.length > 200) {
+      gridPastRef.current = gridPastRef.current.slice(gridPastRef.current.length - 200);
+    }
+    syncHistoryState();
+  }, [snapshotGrid, syncHistoryState]);
+
+  const undoGrid = React.useCallback(() => {
+    if (gridPastRef.current.length === 0) return;
+    const prev = gridPastRef.current[gridPastRef.current.length - 1];
+    gridPastRef.current = gridPastRef.current.slice(0, -1);
+    gridFutureRef.current = [snapshotGrid(baseGridRef.current), ...gridFutureRef.current];
+    setBaseGrid(prev);
+    syncHistoryState();
+  }, [snapshotGrid, syncHistoryState]);
+
+  const redoGrid = React.useCallback(() => {
+    if (gridFutureRef.current.length === 0) return;
+    const next = gridFutureRef.current[0];
+    gridFutureRef.current = gridFutureRef.current.slice(1);
+    gridPastRef.current = [...gridPastRef.current, snapshotGrid(baseGridRef.current)];
+    setBaseGrid(next);
+    syncHistoryState();
+  }, [snapshotGrid, syncHistoryState]);
+
+  const setBaseGridWithUndo = React.useCallback(
+    (updater) => {
+      pushGridHistory();
+      setBaseGrid(updater);
+    },
+    [pushGridHistory]
+  );
+
+
+  const bakeLoopInto = (prevGrid, rule, repeats = "all") => {
     const next = {};
     INSTRUMENTS.forEach((inst) => (next[inst.id] = [...(prevGrid[inst.id] || [])]));
 
@@ -253,19 +368,32 @@ useEffect(() => {
       srcByRow[instId] = next[instId].slice(start, start + length);
     }
 
-    // Repeat the loop pattern all the way to the end, even if the remaining
-    // cells don't fit an exact multiple of `length`.
-    for (let idx = start + length; idx < columns; idx++) {
+    // Repeat the loop pattern after the selected region.
+    // repeats: "all" or 1..8 (number of repeats after the original selection)
+    const maxRepeats =
+      repeats === "off"
+        ? 0
+        : repeats === "all"
+          ? Infinity
+          : Math.max(1, Math.min(8, Number(repeats) || 1));
+    const endExclusive =
+      maxRepeats === 0
+        ? Math.min(columns, start + length)
+        : maxRepeats === Infinity
+          ? columns
+          : Math.min(columns, start + length * (1 + maxRepeats));
+
+    for (let idx = start + length; idx < endExclusive; idx++) {
       const i = (idx - start) % length;
       for (let r = rowStart; r <= rowEnd; r++) {
         const instId = INSTRUMENTS[r].id;
-        next[instId][idx] = (srcByRow[instId]?.[i] ?? CELL.OFF);
+        next[instId][idx] = srcByRow[instId]?.[i] ?? CELL.OFF;
       }
     }
     return next;
   };
 
-  const computedGrid = React.useMemo(() => {
+    const computedGrid = React.useMemo(() => {
     const g = {};
     INSTRUMENTS.forEach((inst) => (g[inst.id] = [...(baseGrid[inst.id] || [])]));
 
@@ -278,17 +406,38 @@ useEffect(() => {
       srcByRow[instId] = (baseGrid[instId] || []).slice(start, start + length);
     }
 
-    // Repeat the loop pattern all the way to the end, even if the remaining
-    // cells don't fit an exact multiple of `length`.
+    const maxRepeats =
+      loopRepeats === "off"
+        ? 0
+        : loopRepeats === "all"
+          ? Infinity
+          : Math.max(1, Math.min(8, Number(loopRepeats) || 1));
+
+    // Repeat the loop pattern starting right after the selected region.
+    // If maxRepeats is finite, only apply that many repeats (1..8).
+    let repeatsApplied = 0;
+    if (maxRepeats === 0) return g;
+
     for (let idx = start + length; idx < columns; idx++) {
+      const repeatIndex = Math.floor((idx - start) / length) - 0; // 1 for first repeat
+      if (repeatIndex > 0) {
+        if (repeatIndex > maxRepeats) break;
+        // Only count when we enter a new repeat block
+        // (repeatIndex is 1..)
+      }
+
+      const currentRepeat = Math.floor((idx - start) / length);
+      if (currentRepeat >= 1 && currentRepeat > maxRepeats) break;
+
       const i = (idx - start) % length;
       for (let r = rowStart; r <= rowEnd; r++) {
         const instId = INSTRUMENTS[r].id;
-        g[instId][idx] = (srcByRow[instId]?.[i] ?? CELL.OFF); // overwrite, including 0
+        g[instId][idx] = srcByRow[instId]?.[i] ?? CELL.OFF;
       }
     }
     return g;
-  }, [baseGrid, loopRule, columns]);
+  }, [baseGrid, loopRule, columns, loopRepeats]);
+
 
   const playback = usePlayback({
     instruments: INSTRUMENTS,
@@ -340,7 +489,7 @@ useEffect(() => {
 
   // Resize grid when resolution/bars change (preserve existing hits)
   useEffect(() => {
-    setBaseGrid((prev) => {
+    setBaseGridWithUndo((prev) => {
       const next = {};
       INSTRUMENTS.forEach((i) => {
         next[i.id] = Array(columns)
@@ -367,7 +516,7 @@ useEffect(() => {
       // - Click inside source: edit source live (no bake)
       // - Click anywhere else (including generated area): bake loop and exit loop mode (NO toggle on this click)
       if (!inSource || inGenerated) {
-        setBaseGrid((prev) => bakeLoopInto(prev, loopRule));
+        setBaseGridWithUndo((prev) => bakeLoopInto(prev, loopRule, loopRepeats));
         setLoopRule(null);
         setSelection(null);
         return;
@@ -375,7 +524,7 @@ useEffect(() => {
     }
 
     // Normal edit (or edit within loop source)
-    setBaseGrid((prev) => {
+    setBaseGridWithUndo((prev) => {
       const next = { ...prev };
       const current = prev[inst][idx];
       // Ghost behaves like "on" for regular toggling.
@@ -399,14 +548,14 @@ useEffect(() => {
 
       // Match click behavior: long-pressing outside the source bakes & exits without toggling.
       if (!inSource || inGenerated) {
-        setBaseGrid((prev) => bakeLoopInto(prev, loopRule));
+        setBaseGridWithUndo((prev) => bakeLoopInto(prev, loopRule, loopRepeats));
         setLoopRule(null);
         setSelection(null);
         return;
       }
     }
 
-    setBaseGrid((prev) => {
+    setBaseGridWithUndo((prev) => {
       const next = { ...prev };
       const current = prev[inst][idx];
 
@@ -469,14 +618,66 @@ useEffect(() => {
                   ? "bg-neutral-800 border-neutral-600 text-white"
                   : "bg-neutral-900 border-neutral-800 text-neutral-300 hover:bg-neutral-800/60"
               }`}
+            >looping</button>
+            <button
+              type="button"
+              onClick={() => {
+                if (canClearSelection) clearSelection();
+                else clearAll();
+              }}
+              className={`touch-none select-none px-3 py-1.5 rounded border text-sm capitalize ${
+                canClearSelection
+                  ? "bg-neutral-800 border-neutral-600 text-white"
+                  : "bg-neutral-900 border-neutral-800 text-neutral-300 hover:bg-neutral-800/60"
+              }`}
+              title={canClearSelection ? "Clear selection" : "Clear all notes"}
             >
-              selection
+              {canClearSelection ? "clear" : "clear all"}
+            </button>
+
+            <button
+              type="button"
+              onClick={undoGrid}
+              disabled={gridPast.length === 0}
+              className={`touch-none select-none px-3 py-1.5 rounded border text-sm bg-neutral-900 border-neutral-800 text-neutral-300 hover:bg-neutral-800/60 ${
+                gridPast.length === 0 ? "opacity-40 cursor-not-allowed" : ""
+              }`}
+              title="Undo (grid only)"
+            >
+              ←
+            </button>
+            <button
+              type="button"
+              onClick={redoGrid}
+              disabled={gridFuture.length === 0}
+              className={`touch-none select-none px-3 py-1.5 rounded border text-sm bg-neutral-900 border-neutral-800 text-neutral-300 hover:bg-neutral-800/60 ${
+                gridFuture.length === 0 ? "opacity-40 cursor-not-allowed" : ""
+              }`}
+              title="Redo (grid only)"
+            >
+              →
             </button>
           </div>
 
 
           
           <div className="flex items-center gap-2 ml-auto" data-loopui='1'>
+            <button
+              type="button"
+              onClick={async () => {
+                try {
+                  await exportNotationPdf(notationExportRef.current, { title: "Drum Notation" });
+                } catch (e) {
+                  console.error(e);
+                  alert(e?.message || "Failed to export PDF");
+                }
+              }}
+              className="touch-none select-none px-3 py-1.5 rounded border text-sm bg-neutral-900 border-neutral-800 text-neutral-300 hover:bg-neutral-800/60 capitalize"
+              title="Print the current notation"
+            >
+              print
+            </button>
+
             <button
               onClick={togglePlaybackFromBeginning}
               className={`touch-none select-none px-3 py-1.5 rounded border text-sm capitalize ${
@@ -493,18 +694,63 @@ useEffect(() => {
               <div className="flex items-stretch overflow-hidden rounded-md border border-neutral-700 bg-neutral-800">
                 <button
                   type="button"
-                  onClick={() => setBpm((v) => Math.max(30, v - 1))}
+                  onPointerDown={() => startBpmRepeat(-1)}
+                  onPointerUp={stopBpmRepeat}
+                  onPointerCancel={stopBpmRepeat}
+                  onPointerLeave={stopBpmRepeat}
                   className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
                   aria-label="Decrease BPM"
                 >
                   −
                 </button>
-                <div className="min-w-[56px] px-3 py-1 flex items-center justify-center text-sm text-white bg-neutral-800 border-l border-r border-neutral-700">
-                  {bpm}
-                </div>
+
+                <input
+                  type="number"
+                  inputMode="numeric"
+                  min={20}
+                  max={400}
+                  value={bpmDraft}
+                  onFocus={(e) => e.target.select()}
+                  onClick={(e) => e.target.select()}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setBpmDraft(v);
+                    if (v === "") return;
+                    const n = Number(v);
+                    // Allow partial typing (e.g. "3" -> "33" -> "333") without snapping to min.
+                    // Only live-update BPM when the typed number is already in-range.
+                    if (Number.isFinite(n)) {
+                      const rounded = Math.round(n);
+                      if (rounded >= 20 && rounded <= 400) setBpm(rounded);
+                    }
+                  }}
+                  onBlur={() => {
+                    if (bpmDraft === "") {
+                      setBpmDraft(String(bpm));
+                      return;
+                    }
+                    const n = Number(bpmDraft);
+                    if (!Number.isFinite(n)) {
+                      setBpmDraft(String(bpm));
+                      return;
+                    }
+                    const clamped = clampBpm(Math.round(n));
+                    setBpm(clamped);
+                    setBpmDraft(String(clamped));
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") e.currentTarget.blur();
+                  }}
+                  className="w-[70px] px-3 py-1 text-center text-sm text-white bg-neutral-800 border-l border-r border-neutral-700 outline-none appearance-none no-spinner"
+                  aria-label="BPM"
+                />
+
                 <button
                   type="button"
-                  onClick={() => setBpm((v) => Math.min(300, v + 1))}
+                  onPointerDown={() => startBpmRepeat(1)}
+                  onPointerUp={stopBpmRepeat}
+                  onPointerCancel={stopBpmRepeat}
+                  onPointerLeave={stopBpmRepeat}
                   className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
                   aria-label="Increase BPM"
                 >
@@ -722,66 +968,107 @@ useEffect(() => {
 
         {activeTab === "selection" && (
           <div className="flex flex-wrap items-center gap-4">
-            <button
-              type="button"
-              disabled={!canClearSelection}
-              onClick={() => {
-                if (!canClearSelection) return;
-if (!selection) return;
-                // Clear base grid in selection area (ignores any active loop overlay)
-                setBaseGrid((prev) => {
-                  const next = {};
-                  for (const instId of Object.keys(prev)) next[instId] = [...prev[instId]];
-                  const start = selection.start;
-                  const end = selection.endExclusive;
-                  for (let r = selection.rowStart; r <= selection.rowEnd; r++) {
-                    const instId = INSTRUMENTS[r].id;
-                    for (let c = start; c < end; c++) next[instId][c] = CELL.OFF;
-                  }
-                  return next;
-                });
-                setLoopRule(null);
-                setSelection(null);
-              }}
-              className={`touch-none select-none px-3 py-[5px] rounded border text-sm   ${
-                canClearSelection ? "bg-neutral-800 border-neutral-700 text-white" : "bg-neutral-900 border-neutral-800 text-neutral-600"
-              }`}
-              title="Clear notes in the selected region"
-            >
-              Clear
-            </button>
+            
 
-            <button
-              onClick={() => {
-                setLoopModeEnabled((v) => !v);
+            
 
-                // If enabling looping mode and we already have a valid selection,
-                // generate the loop immediately (no need to re-select).
-                if (!loopModeEnabled) {
-                  if (selection && selection.endExclusive - selection.start >= 2) {
-                    setLoopRule({
-                      rowStart: selection.rowStart,
-                      rowEnd: selection.rowEnd,
-                      start: selection.start,
-                      length: selection.endExclusive - selection.start,
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-neutral-300">Looping</span>
+
+              <div className={`flex items-stretch overflow-hidden rounded-md border border-neutral-700 bg-neutral-800 ${!canLoopSelection ? "opacity-40" : ""}`}>
+                <button
+                  type="button"
+                  onMouseDown={(e) => {
+                    // match other steppers: single step on click, rapid after 130ms hold
+                    e.preventDefault();
+                    const order = ["all", "off", "1", "2", "3", "4", "5", "6", "7", "8"];
+                    const stepOnce = () => {
+                      setLoopRepeats((prev) => {
+                        const i = Math.max(0, order.indexOf(String(prev)));
+                        return order[(i - 1 + order.length) % order.length];
+                      });
+                    };
+                    stepOnce();
+                    let interval = null;
+                    let timeout = window.setTimeout(() => {
+                      interval = window.setInterval(stepOnce, 160);
+                    }, 130);
+                    const stop = () => {
+                      if (timeout) window.clearTimeout(timeout);
+                      timeout = null;
+                      if (interval) window.clearInterval(interval);
+                      interval = null;
+                      window.removeEventListener("mouseup", stop);
+                      window.removeEventListener("touchend", stop);
+                      window.removeEventListener("touchcancel", stop);
+                    };
+                    window.addEventListener("mouseup", stop);
+                    window.addEventListener("touchend", stop, { passive: true });
+                    window.addEventListener("touchcancel", stop, { passive: true });
+                  }}
+                  className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                  title="Decrease loop repeats"
+                >
+                  –
+                </button>
+
+                <div
+                  onClick={() => {
+                    setLoopRepeats((prev) => {
+                      if (prev === "all") {
+                        return lastNonAllLoopRepeats.current || "1";
+                      }
+                      return "all";
                     });
-                  }
-                } else {
-                  // Turning looping mode off also removes any active loop.
-                  setLoopRule(null);
-                }
-              }}
-              className={`touch-none select-none px-3 py-[5px] rounded border text-sm ${loopModeEnabled ? "bg-neutral-800 border-neutral-700 text-white" : "bg-neutral-900 border-neutral-800 text-neutral-600"}`}
-              title={loopModeEnabled ? "Selection looping: ON" : "Selection looping: OFF"}
-            >
-              Looping
-            </button>
+                  }}
+                  className="min-w-[44px] px-3 py-1 flex items-center justify-center text-sm text-white bg-neutral-800 cursor-pointer hover:bg-neutral-700/60 border-l border-r border-neutral-700 capitalize"
+                  title="How many times the selection repeats"
+                >
+                  {loopRepeats}
+                </div>
 
-            <button
+                <button
+                  type="button"
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    const order = ["all", "off", "1", "2", "3", "4", "5", "6", "7", "8"];
+                    const stepOnce = () => {
+                      setLoopRepeats((prev) => {
+                        const i = Math.max(0, order.indexOf(String(prev)));
+                        return order[(i + 1) % order.length];
+                      });
+                    };
+                    stepOnce();
+                    let interval = null;
+                    let timeout = window.setTimeout(() => {
+                      interval = window.setInterval(stepOnce, 160);
+                    }, 130);
+                    const stop = () => {
+                      if (timeout) window.clearTimeout(timeout);
+                      timeout = null;
+                      if (interval) window.clearInterval(interval);
+                      interval = null;
+                      window.removeEventListener("mouseup", stop);
+                      window.removeEventListener("touchend", stop);
+                      window.removeEventListener("touchcancel", stop);
+                    };
+                    window.addEventListener("mouseup", stop);
+                    window.addEventListener("touchend", stop, { passive: true });
+                    window.addEventListener("touchcancel", stop, { passive: true });
+                  }}
+                  className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                  title="Increase loop repeats"
+                >
+                  +
+                </button>
+              </div>
+            </div>
+
+<button
               onMouseDown={(e) => e.stopPropagation()}
               onClick={() => {
 if (!loopRule) return;
-                setBaseGrid((prev) => bakeLoopInto(prev, loopRule));
+                setBaseGridWithUndo((prev) => bakeLoopInto(prev, loopRule, loopRepeats));
                 setLoopRule(null);
                 setSelection(null);
               }}
@@ -836,23 +1123,22 @@ if (!loopRule) return;
               </button>
             )}
 
+            <button
+              type="button"
+              onClick={() => setFlatBeams((v) => !v)}
+              className={`touch-none select-none px-3 py-[5px] rounded border text-sm ${
+                flatBeams
+                  ? "bg-neutral-800 border-neutral-700 text-white"
+                  : "bg-neutral-900 border-neutral-800 text-neutral-600"
+              }`}
+              title="Render beams horizontally (no tilt)"
+            >
+              Flat beams
+            </button>
+
+
             
 
-            <button
-              onClick={async () => {
-                try {
-                  await exportNotationPdf(notationExportRef.current, { title: "drum-notation" });
-                } catch (e) {
-                  console.error(e);
-                  alert(e?.message || "Failed to export PDF");
-                }
-              }}
-              className="px-3 py-[5px] rounded border text-sm bg-neutral-900 border-neutral-800 text-neutral-600 hover:bg-neutral-800/60"
-              title="Download the current notation as a PDF"
-              type="button"
-            >
-              Download PDF
-            </button>
           </div>
         )}
       </header>
@@ -882,6 +1168,7 @@ if (!loopRule) return;
                 mergeRests={mergeRests}
                 mergeNotes={mergeNotes}
                 dottedNotes={dottedNotes}
+                flatBeams={flatBeams}
               />
             </div>
 
@@ -900,6 +1187,7 @@ if (!loopRule) return;
                 selection={selection}
                 setSelection={setSelection}
                 loopRule={loopRule}
+                loopRepeats={loopRepeats}
                 setLoopRule={setLoopRule}
                 playhead={playback.playhead}
       />
@@ -923,6 +1211,7 @@ if (!loopRule) return;
                 selection={selection}
                 setSelection={setSelection}
                 loopRule={loopRule}
+                loopRepeats={loopRepeats}
                 setLoopRule={setLoopRule}
                 playhead={playback.playhead}
               />
@@ -940,6 +1229,7 @@ if (!loopRule) return;
                 mergeRests={mergeRests}
                 mergeNotes={mergeNotes}
                 dottedNotes={dottedNotes}
+                flatBeams={flatBeams}
               />
             </div>
           </>
@@ -955,6 +1245,7 @@ if (!loopRule) return;
 function Grid({
   grid, columns, bars, stepsPerBar, resolution, timeSig, gridBarsPerLine,
   cycleVelocity, toggleGhost, selection, setSelection, loopRule,
+    loopRepeats,
   setLoopRule, playhead
 }) {
 
@@ -972,6 +1263,16 @@ function Grid({
         window.clearTimeout(longPress.current.timer);
         longPress.current.timer = null;
       }
+      // If a selection drag was in progress and the user released outside the grid,
+      // we still need to end the drag so clicks work again.
+      setDrag((d) => {
+        if (d) {
+          // finalize selection gesture
+          try { notifySelectionFinalized(); } catch (_) {}
+          return null;
+        }
+        return d;
+      });
     };
     window.addEventListener("mouseup", onGlobalMouseUp);
     window.addEventListener("blur", onGlobalMouseUp);
@@ -980,6 +1281,95 @@ function Grid({
       window.removeEventListener("blur", onGlobalMouseUp);
     };
   }, []);
+
+  // Desktop: allow long-press ghost on active cells, but if the user moves away while holding,
+  // start a selection instead and revert the ghost toggle.
+  useEffect(() => {
+    const onMove = (e) => {
+      if (!press.current.active) return;
+      if (press.current.pointerId !== "mouse") return;
+
+      // Only react while the mouse button is still held down.
+      if ((e.buttons & 1) !== 1) return;
+
+      // Require a small movement threshold to avoid accidental selection from small cursor drift.
+      const dx = e.clientX - press.current.startX;
+      const dy = e.clientY - press.current.startY;
+      if (dx * dx + dy * dy < 36) return; // < 6px
+
+      const el = document.elementFromPoint(e.clientX, e.clientY);
+      const cell = el?.closest?.("[data-gridcell='1']");
+      if (!cell) return;
+
+      const r1 = Number(cell.getAttribute("data-row"));
+      const c1 = Number(cell.getAttribute("data-col"));
+      if (Number.isNaN(r1) || Number.isNaN(c1)) return;
+
+      const r0 = press.current.startRow;
+      const c0 = press.current.startCol;
+
+      if (r1 === r0 && c1 === c0) return;
+
+      if (press.current.mode === "ghostArmed" || press.current.mode === "ghostDone") {
+        if (longPress.current.timer) {
+          window.clearTimeout(longPress.current.timer);
+          longPress.current.timer = null;
+        }
+        if (press.current.mode === "ghostDone" && press.current.ghostToggled && press.current.instId) {
+          try { toggleGhost(press.current.instId, c0); } catch (_) {}
+        }
+        longPress.current.did = false;
+        press.current.active = false;
+        press.current.pointerId = null;
+        longPress.current.did = false;
+        press.current.mode = "none";
+        setDrag({ row: r0, col: c0 });
+        press.current.didSelect = true;
+        setSelection({ rowStart: Math.min(r0, r1), rowEnd: Math.max(r0, r1), start: Math.min(c0, c1), endExclusive: Math.max(c0, c1) + 1 });
+      } else if (press.current.mode === "select") {
+        setSelection({ rowStart: Math.min(r0, r1), rowEnd: Math.max(r0, r1), start: Math.min(c0, c1), endExclusive: Math.max(c0, c1) + 1 });
+      }
+    };
+
+    const onUp = () => {
+      if (!press.current.active) return;
+      if (press.current.pointerId !== "mouse") return;
+
+      if (longPress.current.timer) {
+        window.clearTimeout(longPress.current.timer);
+        longPress.current.timer = null;
+      }
+
+      // If we switched into selection mode while holding, finalize it on release.
+      // This handler only runs for the special long-press/ghost path (active ghost-enabled cells).
+      if (press.current.mode === "select" || press.current.didSelect) {
+        setDrag(null);
+        notifySelectionFinalized();
+      }
+
+      press.current.active = false;
+      press.current.pointerId = null;
+      press.current.mode = "none";
+                        press.current.ghostToggled = false;
+                        press.current.didSelect = false;
+                        longPress.current.did = false;
+      press.current.didSelect = false;
+      press.current.instId = null;
+      press.current.ghostToggled = false;
+      press.current.didSelect = false;
+      longPress.current.did = false;
+      press.current.startX = 0;
+      press.current.startY = 0;
+      press.current.startTime = 0;
+    };
+
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, [notifySelectionFinalized]);
   const press = React.useRef({
     active: false,
     pointerId: null,
@@ -989,6 +1379,8 @@ function Grid({
     startRow: 0,
     startCol: 0,
     instId: null,
+    ghostToggled: false,
+    didSelect: false,
   });
   const [drag, setDrag] = useState(null); // { row, col }
   // Build a render timeline with a visual gap between bars.
@@ -1019,9 +1411,28 @@ function Grid({
     if (loopRule) {
       const r = INSTRUMENTS.findIndex((x) => x.id === instId);
       if (r >= loopRule.rowStart && r <= loopRule.rowEnd) {
-        const inSrc = stepIndex >= loopRule.start && stepIndex < loopRule.start + loopRule.length;
+        const inSrc =
+          stepIndex >= loopRule.start && stepIndex < loopRule.start + loopRule.length;
         if (inSrc) return "source";
-        if (stepIndex >= loopRule.start + loopRule.length) return "generated";
+
+        const maxRepeats =
+          loopRepeats === "off"
+            ? 0
+            : loopRepeats === "all"
+              ? Infinity
+              : Math.max(1, Math.min(8, Number(loopRepeats) || 1));
+        const loopEndExclusive =
+          maxRepeats === Infinity
+            ? columns
+            : Math.min(columns, loopRule.start + loopRule.length * (1 + maxRepeats));
+
+        if (maxRepeats !== 0) {
+          if (
+            stepIndex >= loopRule.start + loopRule.length &&
+            stepIndex < loopEndExclusive
+          )
+            return "generated";
+        }
       }
     }
 
@@ -1071,17 +1482,7 @@ function Grid({
           <div key={`gridline-${lineIdx}`} className="grid gap-1" onMouseUp={(e) => {
                         if (e && e.stopPropagation) e.stopPropagation();
                         setDrag(null);
-                        // Auto-enable looping when mouse is released after selecting a valid region.
-                        if (loopRule) return;
-                        if (!selection) return;
-                        const width = selection.endExclusive - selection.start;
-                        if (width < 2) return;
-                        setLoopRule({
-                          rowStart: selection.rowStart,
-                          rowEnd: selection.rowEnd,
-                          start: selection.start,
-                          length: width,
-                        });
+                        notifySelectionFinalized();
                       }} style={{ gridTemplateColumns: `auto repeat(${timeline.length}, 28px)` }}>
             <div />
             {timeline.map((t, i) => {
@@ -1120,27 +1521,49 @@ function Grid({
                         // Mobile/touch-only gesture handling.
                         if (e.pointerType === "mouse") return;
 
-                        // Alternative loop/selection end: while holding a long-press selection,
+                        // Alternative loop/selection end: while holding a long-press (or ghost) gesture,
                         // tap another cell with a second finger to set the end of the region.
-                        if (press.current.active && press.current.mode === "select" && press.current.pointerId !== e.pointerId) {
+                        // This must also work when starting on an *active* ghost-enabled cell (snare/toms/hihat):
+                        // if ghost already toggled, revert it before switching into selection.
+                        if (
+                          press.current.active &&
+                          (press.current.mode === "select" || press.current.mode === "ghostArmed" || press.current.mode === "ghostDone") &&
+                          press.current.pointerId !== e.pointerId
+                        ) {
                           const el = e.target?.closest?.("[data-gridcell='1']");
                           if (el) {
                             const r1 = Number(el.getAttribute("data-row"));
                             const c1 = Number(el.getAttribute("data-col"));
                             const r0 = press.current.startRow;
                             const c0 = press.current.startCol;
+
+                            // If we were arming/toggling a ghost note, cancel/revert that.
+                            if (press.current.mode === "ghostArmed") {
+                              if (longPress.current.timer) window.clearTimeout(longPress.current.timer);
+                              longPress.current.timer = null;
+                              longPress.current.did = false;
+                            } else if (press.current.mode === "ghostDone") {
+                              if (press.current.ghostToggled && press.current.instId) {
+                                try { toggleGhost(press.current.instId, c0); } catch (_) {}
+                              }
+                              longPress.current.did = false;
+                            }
+
                             const rowStart = Math.min(r0, r1);
                             const rowEnd = Math.max(r0, r1);
                             const start = Math.min(c0, c1);
                             const endExclusive = Math.max(c0, c1) + 1;
+
                             setSelection({ rowStart, rowEnd, start, endExclusive });
                             setDrag(null);
                             notifySelectionFinalized();
-                            notifySelectionFinalized();
                           }
+
                           // end the hold gesture
                           press.current.active = false;
                           press.current.pointerId = null;
+                          press.current.mode = "none";
+                          press.current.ghostToggled = false;
                           if (longPress.current.timer) window.clearTimeout(longPress.current.timer);
                           longPress.current.timer = null;
                           return;
@@ -1156,6 +1579,12 @@ function Grid({
                         press.current.startX = e.clientX;
                         press.current.startY = e.clientY;
                         press.current.mode = "none";
+                        press.current.ghostToggled = false;
+      press.current.didSelect = false;
+      longPress.current.did = false;
+      press.current.startX = 0;
+      press.current.startY = 0;
+      press.current.startTime = 0;
                         press.current.startRow = r;
                         press.current.startCol = c;
                         press.current.instId = inst.id;
@@ -1175,6 +1604,7 @@ function Grid({
                             longPress.current.did = true;
                             toggleGhost(inst.id, c);
                             press.current.mode = "ghostDone";
+                            press.current.ghostToggled = true;
                             return;
                           }
 
@@ -1190,6 +1620,47 @@ function Grid({
                         if (!press.current.active) return;
                         if (press.current.pointerId !== e.pointerId) return;
                         e.preventDefault();
+
+
+                        // If we long-pressed an active ghost-enabled cell and then move away,
+                        // switch into selection mode and revert the ghost toggle.
+                        const el0 = document.elementFromPoint(e.clientX, e.clientY);
+                        const cell0 = el0?.closest?.("[data-gridcell='1']");
+                        if (cell0) {
+                          const r1 = Number(cell0.getAttribute("data-row"));
+                          const c1 = Number(cell0.getAttribute("data-col"));
+                          const r0 = press.current.startRow;
+                          const c0 = press.current.startCol;
+
+                          if (!Number.isNaN(r1) && !Number.isNaN(c1) && (r1 !== r0 || c1 !== c0)) {
+                            if (press.current.mode === "ghostArmed") {
+                              if (longPress.current.timer) window.clearTimeout(longPress.current.timer);
+                              longPress.current.timer = null;
+                              longPress.current.did = false;
+                              press.current.active = false;
+                              press.current.pointerId = null;
+                              longPress.current.did = false;
+                              press.current.mode = "none";
+                              setDrag({ row: r0, col: c0 });
+        press.current.didSelect = true;
+                              setSelection({ rowStart: Math.min(r0, r1), rowEnd: Math.max(r0, r1), start: Math.min(c0, c1), endExclusive: Math.max(c0, c1) + 1 });
+                            } else if (press.current.mode === "ghostDone") {
+                              longPress.current.did = false;
+                              if (press.current.ghostToggled && press.current.instId) {
+                                try { toggleGhost(press.current.instId, c0); } catch (_) {}
+                              }
+                              press.current.active = false;
+                              press.current.pointerId = null;
+                              longPress.current.did = false;
+                              press.current.mode = "none";
+                              setDrag({ row: r0, col: c0 });
+        press.current.didSelect = true;
+                              setSelection({ rowStart: Math.min(r0, r1), rowEnd: Math.max(r0, r1), start: Math.min(c0, c1), endExclusive: Math.max(c0, c1) + 1 });
+                            } else if (press.current.mode === "select") {
+                              setSelection({ rowStart: Math.min(r0, r1), rowEnd: Math.max(r0, r1), start: Math.min(c0, c1), endExclusive: Math.max(c0, c1) + 1 });
+                            }
+                          }
+                        }
 
                         // Only drag after selection mode has begun (after long-press).
                         if (press.current.mode !== "select") return;
@@ -1257,16 +1728,37 @@ function Grid({
                         const c = t.stepIndex;
 
                         // Desktop long-press ghost toggle (130ms) on eligible active cells.
+                        // If the user moves away while holding, we switch into selection mode and revert the ghost toggle.
                         const val = grid[inst.id][c];
                         const ghostAllowed = GHOST_ENABLED.has(inst.id);
                         if (ghostAllowed && (val === CELL.ON || val === CELL.GHOST)) {
+                          press.current.active = true;
+                          press.current.pointerId = "mouse";
+                          press.current.startRow = r;
+                          press.current.startCol = c;
+                          press.current.startX = e.clientX;
+                          press.current.startY = e.clientY;
+                          press.current.startTime = Date.now();
+                          press.current.instId = inst.id;
+                          press.current.mode = "ghostArmed";
+                          press.current.ghostToggled = false;
+      press.current.didSelect = false;
+      longPress.current.did = false;
+      press.current.startX = 0;
+      press.current.startY = 0;
+      press.current.startTime = 0;
+
                           if (longPress.current.timer) window.clearTimeout(longPress.current.timer);
                           longPress.current.did = false;
                           longPress.current.timer = window.setTimeout(() => {
+                            if (!press.current.active || press.current.pointerId !== "mouse") return;
+                            if (press.current.mode !== "ghostArmed") return;
                             longPress.current.did = true;
                             toggleGhost(inst.id, c);
+                            press.current.mode = "ghostDone";
+                            press.current.ghostToggled = true;
                           }, 130);
-                          return; // don't start selection drag for ghost-eligible active cells
+                          return; // wait: either long-press becomes ghost, or movement turns into selection
                         }
 
                         // Default desktop behavior: click-drag to select
@@ -1290,17 +1782,7 @@ function Grid({
                       onMouseUp={(e) => {
                         if (e && e.stopPropagation) e.stopPropagation();
                         setDrag(null);
-                        // Auto-enable looping when mouse is released after selecting a valid region.
-                        if (loopRule) return;
-                        if (!selection) return;
-                        const width = selection.endExclusive - selection.start;
-                        if (width < 2) return;
-                        setLoopRule({
-                          rowStart: selection.rowStart,
-                          rowEnd: selection.rowEnd,
-                          start: selection.start,
-                          length: width,
-                        });
+                        notifySelectionFinalized();
                       }}
                       className={`w-7 h-7 border cursor-pointer ${CELL_COLOR[val]} ${(() => {
                         const role = getCellRole(inst.id, t.stepIndex);
@@ -1321,7 +1803,7 @@ function Grid({
   );
 }
 
-function Notation({grid, resolution, bars, barsPerLine, stepsPerBar, timeSig, mergeRests, mergeNotes, dottedNotes}) {
+function Notation({grid, resolution, bars, barsPerLine, stepsPerBar, timeSig, mergeRests, mergeNotes, dottedNotes, flatBeams}) {
   const VF = Vex.Flow;
   const ref = useRef(null);
 
@@ -1385,6 +1867,14 @@ function Notation({grid, resolution, bars, barsPerLine, stepsPerBar, timeSig, me
         // Simple meters: group by beats in the numerator (e.g., 4/4 -> 4, 3/4 -> 3)
         return timeSig.n;
       })();
+
+      // VexFlow beam grouping fraction (repeated across the bar).
+      const beamGroupsFraction = (() => {
+        if (timeSig.d === 8 && timeSig.n % 3 === 0 && timeSig.n > 3) return new Fraction(3, 8);
+        return new Fraction(1, timeSig.d);
+      })();
+      const groups = [beamGroupsFraction];
+
     
     // Compute steps per beat from the current grid resolution.
     const stepsPerBeatBase = stepsPerBar / timeSig.n;
@@ -1442,7 +1932,8 @@ function Notation({grid, resolution, bars, barsPerLine, stepsPerBar, timeSig, me
 
     const staves = [];
     const voices = [];
-    const allBeams = [];
+    const beamsByBar = Array.from({ length: bars }, () => []);
+    const beamBucketsByBar = Array.from({ length: bars }, () => []);
 
     for (let b = 0; b < bars; b++) {
       const row = Math.floor(b / perLine);
@@ -1784,13 +2275,10 @@ const isRest = keys.length === 0;
       voices.push(voice);
 
       // Beaming groups
-      let groups;
       if (timeSig.n === 6 && timeSig.d === 8) {
         // Typical 6/8: 3+3 grouping
-        groups = [new Fraction(3, 8)];
       } else {
         // Beam by beat unit
-        groups = [new Fraction(1, timeSig.d)];
       }
 
       // Safety: enforce stem up on all non-rest notes before beaming
@@ -1802,7 +2290,7 @@ const isRest = keys.length === 0;
         } catch (e) {}
       });
 
-      // Generate beams *within* each beam group division only (never across groups).
+// Generate beams *within* each beam group division only (never across groups).
       // This prevents later beats from affecting earlier beaming (e.g., dotted 8th + 16th in beat 1).
       const groupBuckets = Array.from({ length: beamGroupsPerBar }, () => []);
             const groupSizeSteps = stepsPerBar / beamGroupsPerBar;
@@ -1813,8 +2301,10 @@ for (let i = 0; i < notes.length; i++) {
       }
       groupBuckets.forEach((bucket) => {
         if (!bucket.length) return;
-        const beams = Beam.generateBeams(bucket, { groups, stem_direction: 1, beam_rests: false });
-        allBeams.push(...beams);
+        const beams = Beam.generateBeams(bucket, { groups, stem_direction: 1, beam_rests: false, flat_beams: !!flatBeams });
+        beamsByBar[b].push(...beams);
+        // Store buckets so we can regenerate beams cleanly for bar-level alignment.
+        beamBucketsByBar[b].push(bucket.slice());
       });
     }
 
@@ -1826,7 +2316,66 @@ for (let i = 0; i < notes.length; i++) {
     }
 
     // Draw beams last for clarity
-    allBeams.forEach((beam) => beam.setContext(ctx).draw());
+    for (let b = 0; b < bars; b++) {
+      let barBeams = beamsByBar[b] || [];
+      if (flatBeams && barBeams.length) {
+        // First pass: compute the highest beam Y in this bar.
+        barBeams.forEach((beam) => {
+          try { beam.postFormat?.(); } catch (_) {}
+        });
+
+        const ys = barBeams
+          .map((beam) => {
+            try { return beam.getBeamYToDraw?.(); } catch (_) { return null; }
+          })
+          .filter((y) => typeof y === "number");
+
+        if (ys.length) {
+          const targetY = Math.round(Math.min(...ys));
+
+          // Second pass: regenerate beams (fresh objects) and apply flat_beam_offset BEFORE final postFormat/draw.
+          const fresh = [];
+          const buckets = beamBucketsByBar[b] || [];
+
+          buckets.forEach((bucket) => {
+            if (!bucket.length) return;
+
+            // Clear any previously associated beam metadata on notes (helps avoid drawing/geometry artifacts).
+            bucket.forEach((n) => {
+              try { n.setBeam?.(null); } catch (_) {}
+            });
+
+            const beams = Beam.generateBeams(bucket, { groups, stem_direction: 1, beam_rests: false, flat_beams: true });
+            beams.forEach((beam) => {
+              try {
+                beam.setContext(ctx);
+                // First postFormat to compute beam geometry for the current note layout.
+                beam.postFormat?.();
+                beam.applyStemExtensions?.();
+
+                const currentY = beam.getBeamYToDraw?.();
+                if (typeof currentY === "number") {
+                  const delta = targetY - currentY;
+                  const snappedDelta = Math.round(delta);
+                  beam.render_options.flat_beam_offset = (beam.render_options.flat_beam_offset ?? 0) + snappedDelta;
+                }
+
+                // Recompute after shifting the flat beam offset so stems match.
+                beam.postFormat?.();
+                beam.applyStemExtensions?.();
+              } catch (_) {}
+              fresh.push(beam);
+            });
+          });
+
+          // Use regenerated beams for drawing (gives cleaner geometry).
+          barBeams = fresh;
+        }
+      }
+
+      barBeams.forEach((beam) => beam.setContext(ctx).draw());
+    }
+
 
 
     // White notation on dark UI
@@ -1841,7 +2390,7 @@ for (let i = 0; i < notes.length; i++) {
         el.setAttribute("fill", "white");
       });
     }
-  }, [grid, resolution, bars, barsPerLine, stepsPerBar, timeSig, mergeRests, mergeNotes, dottedNotes]);
+  }, [grid, resolution, bars, barsPerLine, stepsPerBar, timeSig, mergeRests, mergeNotes, dottedNotes, flatBeams]);
 
   return <div ref={ref} />;
 

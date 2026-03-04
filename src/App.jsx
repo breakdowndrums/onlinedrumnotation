@@ -463,6 +463,7 @@ export default function App() {
 
   const [selection, setSelection] = useState(null);
   const [selectionFinalized, setSelectionFinalized] = useState(0);
+  const lastHandledSelectionFinalizedRef = React.useRef(0);
   const tupletBaselineGridRef = React.useRef(null);
   const tupletBaselineSubsByBarRef = React.useRef(null);
   const applyingTupletRemapRef = React.useRef(false);
@@ -472,6 +473,8 @@ export default function App() {
   const moveInitialPayloadRef = React.useRef(null);
   const moveBaseGridRef = React.useRef(null);
   const [wrappedSelectionCells, setWrappedSelectionCells] = useState(null);
+  // { rowStart, rowEnd, start, endExclusive } (row indices into active instruments)
+  const [loopRule, setLoopRule] = useState(null);
 
 
   
@@ -491,7 +494,7 @@ export default function App() {
   }, []);
 useEffect(() => {
     const onKey = (e) => {
-      if (e.key === "Enter" && selection) {
+      if (e.key === "Enter" && selection && !loopRule) {
         const el = e.target;
         const tag = (el?.tagName || "").toLowerCase();
         const isTyping = tag === "input" || tag === "textarea" || el?.isContentEditable;
@@ -521,10 +524,8 @@ useEffect(() => {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [selection, instruments]);
+  }, [selection, loopRule, instruments]);
 
- // { rowStart, rowEnd, start, endExclusive } (row indices into active instruments)
-  const [loopRule, setLoopRule] = useState(null);
   useEffect(() => {
     if (!selection && !loopRule) return;
     const onKey = (e) => {
@@ -581,9 +582,11 @@ useEffect(() => {
   useEffect(() => {
     if (!loopModeEnabled) return;
     if (!selection) return;
+    if (selectionFinalized <= 0) return;
+    if (selectionFinalized === lastHandledSelectionFinalizedRef.current) return;
 
     const width = selection.endExclusive - selection.start;
-    if (width < 2) return;
+    if (width < 2) return; // keep waiting; selection may still settle for this finalized gesture
 
     setLoopRule((prev) => {
       const next = {
@@ -603,7 +606,8 @@ useEffect(() => {
       }
       return next;
     });
-  }, [loopModeEnabled, selectionFinalized]);
+    lastHandledSelectionFinalizedRef.current = selectionFinalized;
+  }, [loopModeEnabled, selectionFinalized, selection]);
 useEffect(() => {
     if (loopModeEnabled) return;
     if (loopRule) setLoopRule(null);
@@ -1626,6 +1630,32 @@ useEffect(() => {
     }
     return next;
   };
+
+  useEffect(() => {
+    if (!loopRule) return;
+    const onKey = (e) => {
+      if (e.key !== "Enter") return;
+      if (pendingPresetChange || isKitEditorOpen || isPrintDialogOpen || isMidiDialogOpen) return;
+      const el = e.target;
+      const tag = (el?.tagName || "").toLowerCase();
+      const isTyping = tag === "input" || tag === "textarea" || el?.isContentEditable;
+      if (isTyping) return;
+      e.preventDefault();
+      setBaseGridWithUndo((prev) => bakeLoopInto(prev, loopRule, loopRepeats, loopOverlapMode));
+      setLoopRule(null);
+      setSelection(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [
+    loopRule,
+    loopRepeats,
+    loopOverlapMode,
+    pendingPresetChange,
+    isKitEditorOpen,
+    isPrintDialogOpen,
+    isMidiDialogOpen,
+  ]);
 
   const computedGrid = React.useMemo(() => {
     const g = {};
@@ -3194,14 +3224,14 @@ function Grid({
   }, []);
   const longPress = React.useRef({ timer: null, did: false });
   const mouseDragRef = React.useRef({
-    active: false,
-    selecting: false,
-    suppressClick: false,
+    phase: "idle", // idle | pending | selecting
+    suppressClickUntil: 0,
     startX: 0,
     startY: 0,
     anchorRow: 0,
     anchorCol: 0,
   });
+  const skipNextGlobalMouseUpFinalizeRef = React.useRef(false);
 
   // Ensure pending long-press timers don't leak across clicks (desktop).
   useEffect(() => {
@@ -3210,15 +3240,19 @@ function Grid({
         window.clearTimeout(longPress.current.timer);
         longPress.current.timer = null;
       }
-      mouseDragRef.current.active = false;
-      mouseDragRef.current.suppressClick = false;
-      mouseDragRef.current.selecting = false;
+      const wasSelecting = mouseDragRef.current.phase === "selecting";
+      mouseDragRef.current.phase = "idle";
+      if (skipNextGlobalMouseUpFinalizeRef.current) {
+        skipNextGlobalMouseUpFinalizeRef.current = false;
+        return;
+      }
       // If a selection drag was in progress and the user released outside the grid,
       // we still need to end the drag so clicks work again.
       setDrag((d) => {
-        if (d) {
+        if (d || wasSelecting) {
           // finalize selection gesture
           try { notifySelectionFinalized(); } catch (_) {}
+          mouseDragRef.current.suppressClickUntil = Date.now() + 220;
           return null;
         }
         return d;
@@ -3235,23 +3269,21 @@ function Grid({
   useEffect(() => {
     const onMouseMove = (e) => {
       const md = mouseDragRef.current;
-      if (!md.active || md.selecting) return;
+      if (md.phase === "idle") return;
       if ((e.buttons & 1) !== 1) return;
-      const dx = e.clientX - md.startX;
-      const dy = e.clientY - md.startY;
-      if (dx * dx + dy * dy < 36) return; // < 6px: treat as click, not selection drag
-      md.selecting = true;
-      md.suppressClick = true;
-      setDrag({ row: md.anchorRow, col: md.anchorCol });
+
+      if (md.phase === "pending") {
+        const dx = e.clientX - md.startX;
+        const dy = e.clientY - md.startY;
+        if (dx * dx + dy * dy < 36) return; // < 6px: treat as click, not selection drag
+        md.phase = "selecting";
+        setDrag({ row: md.anchorRow, col: md.anchorCol });
+      }
+      if (md.phase !== "selecting") return;
+
       const el = document.elementFromPoint(e.clientX, e.clientY);
       const cell = el?.closest?.("[data-gridcell='1']");
       if (!cell) {
-        setSelection({
-          rowStart: md.anchorRow,
-          rowEnd: md.anchorRow,
-          start: md.anchorCol,
-          endExclusive: md.anchorCol + 1,
-        });
         return;
       }
       const r1 = Number(cell.getAttribute("data-row"));
@@ -3267,9 +3299,13 @@ function Grid({
 
     const onMouseUp = () => {
       const md = mouseDragRef.current;
-      md.active = false;
-      if (!md.selecting) return;
-      md.selecting = false;
+      if (md.phase !== "selecting") {
+        md.phase = "idle";
+        return;
+      }
+      md.phase = "idle";
+      md.suppressClickUntil = Date.now() + 220;
+      skipNextGlobalMouseUpFinalizeRef.current = true;
       notifySelectionFinalized();
       setDrag(null);
     };
@@ -3318,14 +3354,25 @@ function Grid({
         if (press.current.mode === "ghostDone" && press.current.ghostToggled && press.current.instId) {
           try { toggleGhost(press.current.instId, c0); } catch (_) {}
         }
+        // Hand off cleanly into the normal desktop drag-selection flow,
+        // so dragging can continue across multiple cells from ghost-enabled starts.
         longPress.current.did = false;
         press.current.active = false;
         press.current.pointerId = null;
-        longPress.current.did = false;
         press.current.mode = "none";
+        press.current.didSelect = false;
+        mouseDragRef.current.phase = "selecting";
+        mouseDragRef.current.anchorRow = r0;
+        mouseDragRef.current.anchorCol = c0;
+        mouseDragRef.current.startX = press.current.startX;
+        mouseDragRef.current.startY = press.current.startY;
         setDrag({ row: r0, col: c0 });
-        press.current.didSelect = true;
-        setSelection({ rowStart: Math.min(r0, r1), rowEnd: Math.max(r0, r1), start: Math.min(c0, c1), endExclusive: Math.max(c0, c1) + 1 });
+        setSelection({
+          rowStart: Math.min(r0, r1),
+          rowEnd: Math.max(r0, r1),
+          start: Math.min(c0, c1),
+          endExclusive: Math.max(c0, c1) + 1,
+        });
       } else if (press.current.mode === "select") {
         setSelection({ rowStart: Math.min(r0, r1), rowEnd: Math.max(r0, r1), start: Math.min(c0, c1), endExclusive: Math.max(c0, c1) + 1 });
       }
@@ -3352,12 +3399,10 @@ function Grid({
       press.current.mode = "none";
                         press.current.ghostToggled = false;
                         press.current.didSelect = false;
-                        longPress.current.did = false;
       press.current.didSelect = false;
       press.current.instId = null;
       press.current.ghostToggled = false;
       press.current.didSelect = false;
-      longPress.current.did = false;
       press.current.startX = 0;
       press.current.startY = 0;
       press.current.startTime = 0;
@@ -3493,11 +3538,7 @@ function Grid({
         }
 
         return (
-          <div key={`gridline-${lineIdx}`} className="grid gap-1" onMouseUp={(e) => {
-                        if (e && e.stopPropagation) e.stopPropagation();
-                        setDrag(null);
-                        notifySelectionFinalized();
-                      }} style={{ gridTemplateColumns: `auto repeat(${timeline.length}, 28px)` }}>
+          <div key={`gridline-${lineIdx}`} className="grid gap-1" style={{ gridTemplateColumns: `auto repeat(${timeline.length}, 28px)` }}>
             <div />
             {timeline.map((t, i) => {
               if (t.type === "gap") return <div key={t.key} />;
@@ -3759,8 +3800,10 @@ function Grid({
                           longPress.current.did = false;
                           return;
                         }
-                        if (mouseDragRef.current.suppressClick) {
-                          mouseDragRef.current.suppressClick = false;
+                        if (Date.now() < (mouseDragRef.current.suppressClickUntil || 0)) {
+                          return;
+                        }
+                        if (wrappedSelectionCells && wrappedSelectionCells.length > 0) {
                           setLoopRule(null);
                           setSelection(null);
                           return;
@@ -3819,34 +3862,11 @@ function Grid({
                         }
 
                         // Default desktop behavior: click-drag to select
-                        mouseDragRef.current.active = true;
-                        mouseDragRef.current.selecting = false;
+                        mouseDragRef.current.phase = "pending";
                         mouseDragRef.current.startX = e.clientX;
                         mouseDragRef.current.startY = e.clientY;
                         mouseDragRef.current.anchorRow = r;
                         mouseDragRef.current.anchorCol = c;
-                      }}
-                      onMouseEnter={(e) => {
-                        if (e && e.stopPropagation) e.stopPropagation();
-                        if (loopRule) return;
-                        if (!drag) return;
-                        const r0 = drag.row;
-                        const c0 = drag.col;
-                        const r1 = instruments.findIndex((x) => x.id === inst.id);
-                        const c1 = t.stepIndex;
-                        const rowStart = Math.min(r0, r1);
-                        const rowEnd = Math.max(r0, r1);
-                        const start = Math.min(c0, c1);
-                        const endExclusive = Math.max(c0, c1) + 1;
-                        setSelection({ rowStart, rowEnd, start, endExclusive });
-                      }}
-                      onMouseUp={(e) => {
-                        if (e && e.stopPropagation) e.stopPropagation();
-                        mouseDragRef.current.active = false;
-                        const wasSelecting = mouseDragRef.current.selecting;
-                        mouseDragRef.current.selecting = false;
-                        setDrag(null);
-                        if (wasSelecting) notifySelectionFinalized();
                       }}
                       className={`w-7 h-7 border cursor-pointer ${CELL_COLOR[val]} ${(() => {
                         const role = getCellRole(inst.id, t.stepIndex);

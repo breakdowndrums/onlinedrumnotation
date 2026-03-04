@@ -1,27 +1,108 @@
 import React, { useEffect, useRef, useState } from "react";
 import { exportNotationPdf } from "./utils/exportNotationPdf";
+import { exportDrumMidi } from "./utils/exportMidi";
 import { usePlayback } from "./audio/usePlayback";
 import * as Vex from "vexflow";
+import customSmuflFont from "./fonts/customSmuflFont.json";
+import { DndContext, PointerSensor, closestCenter, useSensor, useSensors } from "@dnd-kit/core";
+import {
+  SortableContext,
+  arrayMove,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 
 // VexFlow API
 const { Renderer, Stave, StaveNote, Voice, Formatter, Beam, Fraction, Barline } = Vex.Flow;
+const CUSTOM_MUSIC_FONT_NAME = "DrumGridCustomSmufl";
+const CUSTOM_GHOST_GLYPHS = {
+  black: "noteheadBlackParensCustom",
+  x: "noteheadXBlackGhostSmallCustom",
+  circleX: "noteheadXBlackGhostSmallCustom",
+};
+const CUSTOM_CIRCLED_X_LARGE_GLYPH = "noteheadCircleX115FreshCustom";
+
+let customSmuflInstalled = false;
+
+function ensureCustomSmuflFontInstalled() {
+  if (customSmuflInstalled) return;
+  try {
+    const currentStack = (Vex.Flow.getMusicFont && Vex.Flow.getMusicFont()) || [];
+    if (!currentStack.length) {
+      Vex.Flow.setMusicFont("Bravura", "Gonville", "Custom");
+    }
+    Vex.Flow.Font.load(CUSTOM_MUSIC_FONT_NAME, customSmuflFont.data, customSmuflFont.metrics);
+    const names = (Vex.Flow.getMusicFont && Vex.Flow.getMusicFont()) || ["Bravura", "Gonville", "Custom"];
+    const nextStack = [CUSTOM_MUSIC_FONT_NAME, ...names.filter((n) => n !== CUSTOM_MUSIC_FONT_NAME)];
+    Vex.Flow.setMusicFont(...nextStack);
+    customSmuflInstalled = true;
+  } catch (_) {
+    // Keep existing music font stack if custom overlay fails.
+  }
+}
+
+ensureCustomSmuflFontInstalled();
 
 // ====================
 // INSTRUMENT SET (MVP+)
 // ====================
 
-const INSTRUMENTS = [
+const ALL_INSTRUMENTS = [
+  { id: "splash", label: "Splash", midi: 55 },
+  { id: "china", label: "China", midi: 52 },
   { id: "crash2", label: "Crash 2", midi: 57 },
   { id: "crash1", label: "Crash 1", midi: 49 },
   { id: "ride", label: "Ride", midi: 51 },
+  { id: "rideBell", label: "Ride Bell", midi: 53 },
+
+  { id: "hihatOpen", label: "HH Open", midi: 46 },
+  { id: "hihat", label: "Hi-Hat", midi: 42 },
   { id: "hihatFoot", label: "HH Foot", midi: 44 },
+
+  { id: "cowbell", label: "Cowbell", midi: 56 },
+
   { id: "tom1", label: "Tom 1", midi: 48 },
   { id: "tom2", label: "Tom 2", midi: 45 },
   { id: "floorTom", label: "Floor Tom", midi: 41 },
-  { id: "hihat", label: "Hi-Hat", midi: 42 },
+
+  { id: "sideStick", label: "Sidestick", midi: 37 },
   { id: "snare", label: "Snare", midi: 38 },
   { id: "kick", label: "Kick", midi: 36 }
 ];
+
+const INSTRUMENT_BY_ID = Object.fromEntries(ALL_INSTRUMENTS.map((i) => [i.id, i]));
+
+const DRUMKIT_PRESETS = {
+  standard: ["crash2", "crash1", "ride", "hihatFoot", "tom1", "tom2", "floorTom", "hihat", "snare", "kick"],
+  full: [
+    "splash",
+    "cowbell",
+    "china",
+    "crash2",
+    "crash1",
+    "rideBell",
+    "ride",
+    "hihatFoot",
+    "tom1",
+    "tom2",
+    "floorTom",
+    "hihatOpen",
+    "hihat",
+    "sideStick",
+    "snare",
+    "kick",
+  ],
+  ksh: ["hihat", "snare", "kick"],
+};
+
+const BUILTIN_PRESET_ORDER = ["standard", "full", "ksh"];
+const PRESET_LABELS = {
+  standard: "Standard",
+  full: "Full",
+  ksh: "Minimal",
+};
+const USER_PRESETS_STORAGE_KEY = "drum-grid-user-presets-v1";
 
 
 const CELL = {
@@ -33,6 +114,184 @@ const CELL = {
 const GHOST_NOTATION_ENABLED = new Set(["snare", "tom1", "tom2", "floorTom", "hihat"]);
 
 const CELL_CYCLE = [CELL.OFF, CELL.ON];
+const MOVE_OVERLAP_MODES = [
+  { id: "all-to-all", label: "All overwrites" },
+  { id: "active-to-all", label: "Hits ovewrite" },
+  { id: "active-to-empty", label: "Fill in gaps" },
+];
+
+const TUPLET_OPTIONS = [null, 3, 5, 6, 7, 9];
+const TUPLET_COLOR_CLASS = {
+  3: "bg-amber-900/25",
+  5: "bg-indigo-700/25",
+  6: "bg-amber-700/25",
+  7: "bg-emerald-700/25",
+  9: "bg-fuchsia-700/25",
+};
+
+function getQuarterBeatsPerBar(ts) {
+  return Math.max(1, Math.round((ts.n * 4) / ts.d));
+}
+
+function getBaseSubdivPerQuarter(resolution) {
+  return Math.max(1, Math.round(resolution / 4));
+}
+
+function buildTupletOverrides(count) {
+  return Array.from({ length: count }, () => null);
+}
+
+function clampTupletValue(v) {
+  if (v == null) return null;
+  const n = Number(v);
+  if (!Number.isFinite(n)) return null;
+  return Math.max(2, Math.min(12, Math.round(n)));
+}
+
+function resolveQuarterSubdivisions(tupletOverrides, baseSubdiv) {
+  return (tupletOverrides || []).map((v) => clampTupletValue(v) ?? baseSubdiv);
+}
+
+function buildTupletOverridesByBar(barCount, quarterCount) {
+  return Array.from({ length: Math.max(1, barCount) }, () => buildTupletOverrides(quarterCount));
+}
+
+function buildStepMeta(quarterSubdivisions) {
+  const quarterCount = Math.max(1, quarterSubdivisions.length);
+  const meta = [];
+  quarterSubdivisions.forEach((subdiv, q) => {
+    const s = Math.max(1, Number(subdiv) || 1);
+    for (let sub = 0; sub < s; sub++) {
+      const startNorm = (q + sub / s) / quarterCount;
+      const centerNorm = (q + (sub + 0.5) / s) / quarterCount;
+      meta.push({ quarterIndex: q, subIndex: sub, subdiv: s, startNorm, centerNorm });
+    }
+  });
+  return meta;
+}
+
+function remapGridByStepMeta(prevGrid, oldMeta, newMeta, bars, cellOff, allInstruments, rankFn) {
+  const oldStepsPerBar = Math.max(1, oldMeta.length);
+  const newStepsPerBar = Math.max(1, newMeta.length);
+  const out = {};
+  allInstruments.forEach((inst) => {
+    const row = Array(bars * newStepsPerBar).fill(cellOff);
+    for (let b = 0; b < bars; b++) {
+      for (let oldStep = 0; oldStep < oldStepsPerBar; oldStep++) {
+        const oldGlobal = b * oldStepsPerBar + oldStep;
+        const val = prevGrid[inst.id]?.[oldGlobal] ?? cellOff;
+        if (val === cellOff) continue;
+        const oldEntry = oldMeta[oldStep];
+        let bestIdx = 0;
+        let bestDist = Infinity;
+        const eps = 1e-9;
+        const oldQuarter = oldEntry?.quarterIndex;
+        const hasQuarter = Number.isFinite(oldQuarter);
+        const oldPhase =
+          oldEntry && oldEntry.subdiv > 0 ? oldEntry.subIndex / oldEntry.subdiv : null;
+        const useQuarterLocal = hasQuarter && oldPhase != null;
+
+        if (useQuarterLocal) {
+          const oldSubdiv = Math.max(1, oldEntry?.subdiv || 1);
+          const newSubdiv = Math.max(1, (newMeta.find((m) => m?.quarterIndex === oldQuarter)?.subdiv) || 1);
+          let targetSub = 0;
+          if (newSubdiv % oldSubdiv === 0) {
+            // Exact integer upscale: preserve exact phase grid points (e.g. 3->6, 2->6).
+            targetSub = oldEntry.subIndex * (newSubdiv / oldSubdiv);
+          } else {
+            const raw = oldPhase * newSubdiv;
+            targetSub = Math.round(raw);
+          }
+          targetSub = Math.max(0, Math.min(newSubdiv - 1, targetSub));
+          const mappedIdx = newMeta.findIndex(
+            (m) => m?.quarterIndex === oldQuarter && m?.subIndex === targetSub
+          );
+          if (mappedIdx >= 0) {
+            bestIdx = mappedIdx;
+            bestDist = 0;
+          }
+        }
+        if (bestDist !== 0) {
+          for (let newStep = 0; newStep < newStepsPerBar; newStep++) {
+            const nextEntry = newMeta[newStep];
+            if (useQuarterLocal && nextEntry?.quarterIndex !== oldQuarter) continue;
+            const nextPhase =
+              useQuarterLocal && nextEntry?.subdiv > 0
+                ? nextEntry.subIndex / nextEntry.subdiv
+                : (nextEntry?.startNorm ?? (newStep / newStepsPerBar));
+            const oldRef = useQuarterLocal ? oldPhase : (oldEntry?.startNorm ?? (oldStep / oldStepsPerBar));
+            const d = Math.abs(nextPhase - oldRef);
+            if (d + eps < bestDist || (Math.abs(d - bestDist) <= eps && newStep < bestIdx)) {
+              bestDist = d;
+              bestIdx = newStep;
+            }
+          }
+        }
+        const nextGlobal = b * newStepsPerBar + bestIdx;
+        const cur = row[nextGlobal] ?? cellOff;
+        row[nextGlobal] = rankFn(val) >= rankFn(cur) ? val : cur;
+      }
+    }
+    out[inst.id] = row;
+  });
+  return out;
+}
+
+function assignPhasesToSlots(phases, slotCount) {
+  const n = Math.max(1, Number(slotCount) || 1);
+  const m = phases.length;
+  if (m === 0) return [];
+  if (m > n) {
+    return phases.map((p) => Math.max(0, Math.min(n - 1, Math.round(p * n))));
+  }
+
+  const cost = (phase, slot) => {
+    const slotPhase = slot / n;
+    const d = slotPhase - phase;
+    return d * d;
+  };
+
+  const dp = Array.from({ length: m }, () => Array(n).fill(Infinity));
+  const prev = Array.from({ length: m }, () => Array(n).fill(-1));
+  const eps = 1e-12;
+
+  for (let j = 0; j < n; j++) dp[0][j] = cost(phases[0], j);
+
+  for (let i = 1; i < m; i++) {
+    for (let j = i; j < n; j++) {
+      const c = cost(phases[i], j);
+      let best = Infinity;
+      let bestK = -1;
+      for (let k = i - 1; k < j; k++) {
+        const cand = dp[i - 1][k] + c;
+        if (cand + eps < best || (Math.abs(cand - best) <= eps && (bestK < 0 || k < bestK))) {
+          best = cand;
+          bestK = k;
+        }
+      }
+      dp[i][j] = best;
+      prev[i][j] = bestK;
+    }
+  }
+
+  let endJ = m - 1;
+  let endCost = Infinity;
+  for (let j = m - 1; j < n; j++) {
+    const cand = dp[m - 1][j];
+    if (cand + eps < endCost || (Math.abs(cand - endCost) <= eps && j < endJ)) {
+      endCost = cand;
+      endJ = j;
+    }
+  }
+
+  const out = Array(m).fill(0);
+  let curJ = endJ;
+  for (let i = m - 1; i >= 0; i--) {
+    out[i] = curJ;
+    curJ = prev[i][curJ];
+  }
+  return out;
+}
 
 // Visuals
 const CELL_COLOR = {
@@ -48,13 +307,19 @@ const GHOST_ENABLED = new Set(["snare", "tom1", "tom2", "floorTom", "hihat"]);
 const NOTATION_MAP = {
   kick: { key: "f/4" },
   snare: { key: "c/5" },
+  sideStick: { key: "c/5/x2", x: true },
 
   // Cymbals / hats use X noteheads
   hihat: { key: "g/5/x2", x: true },
+  hihatOpen: { key: "g/5/x3", x: true, open: true },
   hihatFoot: { key: "d/4/x2", x: true },
   ride: { key: "f/5/x2", x: true },
+  rideBell: { key: "f/5/d2", diamond: true },
   crash1: { key: "a/5/x2", x: true },
   crash2: { key: "b/5/x2", x: true },
+  china: { key: "a/5/x3", x: true },
+  splash: { key: "c/6/x2", x: true },
+  cowbell: { key: "e/5/t2", triangle: true },
 
   // Toms
   tom2: { key: "d/5" },
@@ -63,21 +328,115 @@ const NOTATION_MAP = {
 };
 
 export default function App() {
+  const [kitInstrumentIds, setKitInstrumentIds] = useState(DRUMKIT_PRESETS.standard);
+  const instruments = React.useMemo(
+    () => kitInstrumentIds.map((id) => INSTRUMENT_BY_ID[id]).filter(Boolean),
+    [kitInstrumentIds]
+  );
+  const [isKitEditorOpen, setIsKitEditorOpen] = useState(false);
+  const [pendingRemoval, setPendingRemoval] = useState(null); // { instId, moveTargetId }
+  const [pendingPresetChange, setPendingPresetChange] = useState(null); // { presetName, targetIds, removedWithNotes }
+  const [keepTracksWithNotesEnabled, setKeepTracksWithNotesEnabled] = useState(true);
+  const [showPresetChangeWarningEnabled, setShowPresetChangeWarningEnabled] = useState(false);
+  const [isPrintDialogOpen, setIsPrintDialogOpen] = useState(false);
+  const [isMidiDialogOpen, setIsMidiDialogOpen] = useState(false);
+  const [savedPresets, setSavedPresets] = useState(() => {
+    try {
+      const raw = window.localStorage.getItem(USER_PRESETS_STORAGE_KEY);
+      const parsed = raw ? JSON.parse(raw) : [];
+      if (!Array.isArray(parsed)) return [];
+      return parsed
+        .map((p) => ({
+          id: String(p?.id || ""),
+          label: String(p?.label || ""),
+          ids: Array.isArray(p?.ids) ? p.ids.filter((id) => INSTRUMENT_BY_ID[id]) : [],
+        }))
+        .filter((p) => p.id && p.label && p.ids.length > 0 && !DRUMKIT_PRESETS[p.id]);
+    } catch (_) {
+      return [];
+    }
+  });
+  const [modifiedPresetBase, setModifiedPresetBase] = useState(null); // built-in/user preset name for "preset*" variants
+  const [isSaveAsDialogOpen, setIsSaveAsDialogOpen] = useState(false);
+  const [saveAsName, setSaveAsName] = useState("");
+  const [presetNameInlineDraft, setPresetNameInlineDraft] = useState("");
+  const availableInstrumentButtonWidthCh = React.useMemo(
+    () => Math.max(...ALL_INSTRUMENTS.map((inst) => inst.label.length)) + 2,
+    []
+  );
+
   const [resolution, setResolution] = useState(8); // 4, 8, 16, 32
   const [bars, setBars] = useState(2);
   const [barsPerLine, setBarsPerLine] = useState(4);
   const [gridBarsPerLine, setGridBarsPerLine] = useState(4);
   const [layout, setLayout] = useState("grid-top");
-  const [activeTab, setActiveTab] = useState("timing"); // grid-right | grid-top | notation-right | notation-top
+  const [activeTab, setActiveTab] = useState("none"); // none | timing | notation | selection | layout
   const [timeSig, setTimeSig] = useState({ n: 4, d: 4 });
   const [keepTiming, setKeepTiming] = useState(true);
+  const [tupletOverridesByBar, setTupletOverridesByBar] = useState(() =>
+    buildTupletOverridesByBar(2, getQuarterBeatsPerBar({ n: 4, d: 4 }))
+  );
 
   const [bpm, setBpm] = useState(120);
   const [bpmDraft, setBpmDraft] = useState("120");
+  const [menuViewportTick, setMenuViewportTick] = useState(0);
+  const activeTabRef = React.useRef(activeTab);
+  const gridMenuRowPrimaryRef = React.useRef(null);
+  const gridMenuRowSecondaryRef = React.useRef(null);
+  const notationMenuRowRef = React.useRef(null);
+  const layoutMenuRowRef = React.useRef(null);
+  const selectionMenuRowRef = React.useRef(null);
 
   useEffect(() => {
     setBpmDraft(String(bpm));
   }, [bpm]);
+
+  useEffect(() => {
+    activeTabRef.current = activeTab;
+  }, [activeTab]);
+
+  useEffect(() => {
+    const onViewportChange = () => setMenuViewportTick((t) => t + 1);
+    // Run once on mount so small screens can auto-collapse immediately.
+    onViewportChange();
+    window.addEventListener("resize", onViewportChange);
+    window.addEventListener("orientationchange", onViewportChange);
+    return () => {
+      window.removeEventListener("resize", onViewportChange);
+      window.removeEventListener("orientationchange", onViewportChange);
+    };
+  }, []);
+
+  const rowHasWrapped = React.useCallback((rowEl) => {
+    if (!rowEl) return false;
+    const children = Array.from(rowEl.children || []).filter(
+      (el) => el instanceof HTMLElement && el.offsetParent !== null
+    );
+    if (children.length <= 1) return false;
+    const tops = children.map((child) => child.getBoundingClientRect().top);
+    const minTop = Math.min(...tops);
+    const maxTop = Math.max(...tops);
+    // Allow tiny layout jitter; only treat as wrapped when there's a clear second row.
+    return maxTop - minTop > 6;
+  }, []);
+
+  useEffect(() => {
+    const currentTab = activeTabRef.current;
+    if (currentTab === "none") return;
+    const rows =
+      currentTab === "timing"
+        ? [gridMenuRowPrimaryRef.current, gridMenuRowSecondaryRef.current]
+        : currentTab === "notation"
+          ? [notationMenuRowRef.current]
+          : currentTab === "layout"
+            ? [layoutMenuRowRef.current]
+            : currentTab === "selection"
+              ? [selectionMenuRowRef.current]
+              : [];
+    if (rows.some((row) => rowHasWrapped(row))) {
+      setActiveTab("none");
+    }
+  }, [menuViewportTick, rowHasWrapped]);
 
   const clampBpm = (n) => Math.min(400, Math.max(20, n));
   const stepBpm = (delta) => setBpm((v) => clampBpm(v + delta));
@@ -104,6 +463,15 @@ export default function App() {
 
   const [selection, setSelection] = useState(null);
   const [selectionFinalized, setSelectionFinalized] = useState(0);
+  const tupletBaselineGridRef = React.useRef(null);
+  const tupletBaselineSubsByBarRef = React.useRef(null);
+  const applyingTupletRemapRef = React.useRef(false);
+  const skipSelectionResetRef = React.useRef(0);
+  const wrappedMoveCellsRef = React.useRef(null);
+  const movePayloadRef = React.useRef(null);
+  const moveInitialPayloadRef = React.useRef(null);
+  const moveBaseGridRef = React.useRef(null);
+  const [wrappedSelectionCells, setWrappedSelectionCells] = useState(null);
 
 
   
@@ -123,6 +491,16 @@ export default function App() {
   }, []);
 useEffect(() => {
     const onKey = (e) => {
+      if (e.key === "Enter" && selection) {
+        const el = e.target;
+        const tag = (el?.tagName || "").toLowerCase();
+        const isTyping = tag === "input" || tag === "textarea" || el?.isContentEditable;
+        if (isTyping) return;
+        e.preventDefault();
+        setLoopRule(null);
+        setSelection(null);
+        return;
+      }
       if ((e.key === "Backspace" || e.key === "Delete") && selection) {
         if (e.pointerType !== "mouse") e.preventDefault();
         setBaseGridWithUndo((prev) => {
@@ -131,7 +509,8 @@ useEffect(() => {
           const start = selection.start;
           const end = selection.endExclusive;
           for (let r = selection.rowStart; r <= selection.rowEnd; r++) {
-            const instId = INSTRUMENTS[r].id;
+            const instId = instruments[r]?.id;
+            if (!instId) continue;
             for (let c = start; c < end; c++) next[instId][c] = CELL.OFF;
           }
           return next;
@@ -142,13 +521,45 @@ useEffect(() => {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [selection]);
- // { rowStart, rowEnd, start, endExclusive } (row indices into INSTRUMENTS)
+  }, [selection, instruments]);
+
+ // { rowStart, rowEnd, start, endExclusive } (row indices into active instruments)
   const [loopRule, setLoopRule] = useState(null);
+  useEffect(() => {
+    if (!selection && !loopRule) return;
+    const onKey = (e) => {
+      if (e.key !== "Escape") return;
+      if (pendingPresetChange || isKitEditorOpen || isPrintDialogOpen || isMidiDialogOpen) return;
+      const el = e.target;
+      const tag = (el?.tagName || "").toLowerCase();
+      const isTyping = tag === "input" || tag === "textarea" || el?.isContentEditable;
+      if (isTyping) return;
+      e.preventDefault();
+      setLoopRule(null);
+      setSelection(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selection, loopRule, pendingPresetChange, isKitEditorOpen, isPrintDialogOpen, isMidiDialogOpen]);
+
+  useEffect(() => {
+    if (!isMidiDialogOpen) return;
+    const onKeyDown = (e) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      setIsMidiDialogOpen(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [isMidiDialogOpen]);
 
   
   // Whether new selections should auto-generate a loop.
   const [loopRepeats, setLoopRepeats] = useState("all"); // "off" | "all" | "1".."8"
+  const [wrapSelectionMoveEnabled, setWrapSelectionMoveEnabled] = useState(true);
+  const [moveOverlapMode, setMoveOverlapMode] = useState("active-to-empty");
+  const [loopOverlapMode, setLoopOverlapMode] = useState("all-to-all");
+  const [moveOverrideBehavior, setMoveOverrideBehavior] = useState("temporary");
   const lastNonAllLoopRepeats = React.useRef("1");
   React.useEffect(() => {
     // Remember the last non-"all" value so clicking the center can toggle all <-> last value.
@@ -202,28 +613,293 @@ useEffect(() => {
   const [mergeNotes, setMergeNotes] = useState(true);
   const [dottedNotes, setDottedNotes] = useState(true);
   const [flatBeams, setFlatBeams] = useState(true);
+  const [printTitle, setPrintTitle] = useState("");
+  const [printComposer, setPrintComposer] = useState("");
+  const [printWatermarkEnabled, setPrintWatermarkEnabled] = useState(true);
+  const printTitleInputRef = useRef(null);
+  const printComposerInputRef = useRef(null);
 // "fast" (>=16ths) | "all"
+  useEffect(() => {
+    if (!isPrintDialogOpen) return;
+    const onKeyDown = async (e) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setIsPrintDialogOpen(false);
+        return;
+      }
+      if (e.key !== "Enter") return;
 
-  const stepsPerBar = Math.max(1, Math.round((timeSig.n * resolution) / timeSig.d));
-  const columns = bars * stepsPerBar;
+      const activeEl = document.activeElement;
+      if (activeEl === printTitleInputRef.current) {
+        e.preventDefault();
+        printComposerInputRef.current?.focus();
+        return;
+      }
+      if (activeEl === printComposerInputRef.current) {
+        e.preventDefault();
+        try {
+          await exportNotationPdf(notationExportRef.current, {
+            title: printTitle.trim() || "Drum Notation",
+            scoreTitle: printTitle.trim(),
+            composer: printComposer.trim(),
+            watermark: printWatermarkEnabled,
+          });
+          setIsPrintDialogOpen(false);
+        } catch (err) {
+          console.error(err);
+          alert(err?.message || "Failed to export PDF");
+        }
+        return;
+      }
+      const tag = (activeEl?.tagName || "").toLowerCase();
+      const isTyping = tag === "input" || tag === "textarea" || activeEl?.isContentEditable;
+      if (isTyping) return;
+      e.preventDefault();
+      try {
+        await exportNotationPdf(notationExportRef.current, {
+          title: printTitle.trim() || "Drum Notation",
+          scoreTitle: printTitle.trim(),
+          composer: printComposer.trim(),
+          watermark: printWatermarkEnabled,
+        });
+        setIsPrintDialogOpen(false);
+      } catch (err) {
+        console.error(err);
+        alert(err?.message || "Failed to export PDF");
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [isPrintDialogOpen, printTitle, printComposer, printWatermarkEnabled]);
+
+  const quarterBeatsPerBar = getQuarterBeatsPerBar(timeSig);
+  const baseSubdivPerQuarter = getBaseSubdivPerQuarter(resolution);
+  const normalizedTupletOverridesByBar = React.useMemo(() => {
+    return Array.from({ length: bars }, (_, barIdx) =>
+      Array.from({ length: quarterBeatsPerBar }, (_, qIdx) => {
+        const raw = tupletOverridesByBar[barIdx]?.[qIdx];
+        return clampTupletValue(raw) ?? null;
+      })
+    );
+  }, [tupletOverridesByBar, bars, quarterBeatsPerBar]);
+  const quarterSubdivisionsByBar = React.useMemo(
+    () =>
+      normalizedTupletOverridesByBar.map((row) =>
+        resolveQuarterSubdivisions(row, baseSubdivPerQuarter)
+      ),
+    [normalizedTupletOverridesByBar, baseSubdivPerQuarter]
+  );
+  const stepsPerBarByBar = React.useMemo(
+    () =>
+      quarterSubdivisionsByBar.map((row) =>
+        Math.max(1, row.reduce((sum, n) => sum + Math.max(1, Number(n) || 1), 0))
+      ),
+    [quarterSubdivisionsByBar]
+  );
+  const barStepOffsets = React.useMemo(() => {
+    const out = [0];
+    for (let i = 0; i < stepsPerBarByBar.length; i++) out.push(out[i] + stepsPerBarByBar[i]);
+    return out;
+  }, [stepsPerBarByBar]);
+  const stepsPerBar = stepsPerBarByBar[0] ?? Math.max(1, Math.round((timeSig.n * resolution) / timeSig.d));
+  const columns = barStepOffsets[barStepOffsets.length - 1] ?? 0;
+
+  useEffect(() => {
+    setTupletOverridesByBar((prev) =>
+      Array.from({ length: bars }, (_, barIdx) =>
+        Array.from({ length: quarterBeatsPerBar }, (_, qIdx) => {
+          const raw = prev[barIdx]?.[qIdx];
+          return clampTupletValue(raw) ?? null;
+        })
+      )
+    );
+  }, [bars, quarterBeatsPerBar]);
+
+  useEffect(() => {
+    if (skipSelectionResetRef.current > 0) {
+      skipSelectionResetRef.current -= 1;
+      return;
+    }
+    wrappedMoveCellsRef.current = null;
+    movePayloadRef.current = null;
+    moveInitialPayloadRef.current = null;
+    moveBaseGridRef.current = null;
+    setWrappedSelectionCells(null);
+  }, [selection]);
+
+  useEffect(() => {
+    wrappedMoveCellsRef.current = null;
+    movePayloadRef.current = null;
+    moveInitialPayloadRef.current = null;
+    moveBaseGridRef.current = null;
+    setWrappedSelectionCells(null);
+  }, [moveOverlapMode, moveOverrideBehavior]);
+
+  useEffect(() => {
+    if (!selection) return;
+    const onKey = (e) => {
+      const deltaByKey = {
+        ArrowUp: [-1, 0],
+        ArrowDown: [1, 0],
+        ArrowLeft: [0, -1],
+        ArrowRight: [0, 1],
+      };
+      const delta = deltaByKey[e.key];
+      if (!delta) return;
+
+      const el = e.target;
+      const tag = (el?.tagName || "").toLowerCase();
+      const isTyping = tag === "input" || tag === "textarea" || el?.isContentEditable;
+      if (isTyping) return;
+
+      e.preventDefault();
+      setLoopRule(null);
+
+      const [dr, dc] = delta;
+      const width = selection.endExclusive - selection.start;
+      const height = selection.rowEnd - selection.rowStart + 1;
+      const rowCount = instruments.length;
+      if (rowCount < 1 || columns < 1) return;
+      const sourceRectCoords = Array.from({ length: height }, (_, rOff) =>
+        Array.from({ length: width }, (_, cOff) => ({
+          row: selection.rowStart + rOff,
+          col: selection.start + cOff,
+        }))
+      ).flat();
+      const sourceCoords = wrappedMoveCellsRef.current || sourceRectCoords;
+      const outOfBounds = sourceCoords.some(({ row, col }) => {
+        const nextRow = row + dr;
+        const nextCol = col + dc;
+        return nextRow < 0 || nextRow >= rowCount || nextCol < 0 || nextCol >= columns;
+      });
+      if (outOfBounds && !wrapSelectionMoveEnabled) return;
+      const targetCoords = wrapSelectionMoveEnabled
+        ? sourceCoords.map(({ row, col }) => ({
+            row: (row + dr + rowCount) % rowCount,
+            col: (col + dc + columns) % columns,
+          }))
+        : sourceCoords.map(({ row, col }) => ({
+            row: row + dr,
+            col: col + dc,
+          }));
+
+      setBaseGridWithUndo((prev) => {
+        const cloneGrid = (g) => {
+          const out = {};
+          for (const instId of Object.keys(g)) out[instId] = [...g[instId]];
+          return out;
+        };
+        const isTemporaryOverride = moveOverrideBehavior === "temporary";
+        if (isTemporaryOverride && !moveBaseGridRef.current) {
+          const base = cloneGrid(prev);
+          // Remove the original selected cells from the temporary base layer.
+          // The moving payload is drawn on top, so this avoids a first-step tail.
+          for (const { row, col } of sourceCoords) {
+            const instId = instruments[row]?.id;
+            if (!instId) continue;
+            base[instId][col] = CELL.OFF;
+          }
+          moveBaseGridRef.current = base;
+        }
+        const baseGridForMove = isTemporaryOverride && moveBaseGridRef.current ? moveBaseGridRef.current : prev;
+        const next = cloneGrid(baseGridForMove);
+
+        if (!Array.isArray(moveInitialPayloadRef.current) || moveInitialPayloadRef.current.length !== sourceCoords.length) {
+          moveInitialPayloadRef.current = sourceCoords.map(({ row, col }) => {
+              const instId = instruments[row]?.id;
+              if (!instId) return CELL.OFF;
+              return prev[instId]?.[col] ?? CELL.OFF;
+            });
+        }
+        const payload = moveInitialPayloadRef.current;
+
+        const ops = targetCoords.map((target, i) => {
+          const source = sourceCoords[i];
+          const movedVal = payload[i];
+          const targetInstId = instruments[target.row]?.id;
+          const targetVal = targetInstId ? (baseGridForMove[targetInstId]?.[target.col] ?? CELL.OFF) : CELL.OFF;
+          let shouldWrite = true;
+          let shouldClearSource = true;
+
+          if (moveOverlapMode === "all-to-all") {
+            shouldWrite = true;
+            shouldClearSource = true;
+          } else if (moveOverlapMode === "active-to-all") {
+            // "Empty won't override" => move only active payload cells.
+            shouldWrite = movedVal !== CELL.OFF;
+            shouldClearSource = movedVal !== CELL.OFF;
+          } else if (moveOverlapMode === "active-to-empty") {
+            // "Fill in gaps" => move active payload cells only into empty targets.
+            shouldWrite = movedVal !== CELL.OFF && targetVal === CELL.OFF;
+            // Keep payload composition strict across steps:
+            // active payload cells move every step even if this target is blocked now.
+            shouldClearSource = movedVal !== CELL.OFF;
+          }
+
+          return { source, target, movedVal, shouldWrite, shouldClearSource };
+        });
+
+        if (!isTemporaryOverride) {
+          for (const op of ops) {
+            if (!op.shouldClearSource) continue;
+            const instId = instruments[op.source.row]?.id;
+            if (!instId) continue;
+            next[instId][op.source.col] = CELL.OFF;
+          }
+        }
+
+        for (const op of ops) {
+          const targetInstId = instruments[op.target.row]?.id;
+          if (!targetInstId) continue;
+          if (!op.shouldWrite) continue;
+          next[targetInstId][op.target.col] = op.movedVal;
+        }
+
+        return next;
+      });
+      movePayloadRef.current = moveInitialPayloadRef.current;
+      if (moveOverrideBehavior !== "temporary") moveBaseGridRef.current = null;
+      wrappedMoveCellsRef.current = targetCoords;
+      setWrappedSelectionCells(targetCoords);
+    };
+
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selection, instruments, columns, wrapSelectionMoveEnabled, moveOverlapMode, moveOverrideBehavior]);
 
   const clearAll = React.useCallback(() => {
+    const currentGrid = baseGridRef.current || {};
+    const isAlreadyEmpty = ALL_INSTRUMENTS.every((inst) =>
+      (currentGrid[inst.id] || []).every((v) => v === CELL.OFF)
+    );
+    if (isAlreadyEmpty) {
+      const hasAnyTuplet = normalizedTupletOverridesByBar.some((row) => row.some((v) => v != null));
+      if (hasAnyTuplet) {
+        setTupletOverridesByBar(
+          Array.from({ length: bars }, () => Array.from({ length: quarterBeatsPerBar }, () => null))
+        );
+      }
+      tupletBaselineGridRef.current = null;
+      tupletBaselineSubsByBarRef.current = null;
+      return;
+    }
     setBaseGridWithUndo(() => {
       const g = {};
-      INSTRUMENTS.forEach((i) => (g[i.id] = Array(columns).fill(CELL.OFF)));
+      ALL_INSTRUMENTS.forEach((i) => (g[i.id] = Array(columns).fill(CELL.OFF)));
       return g;
     });
     setSelection(null);
     setLoopRule(null);
-  }, [columns]);
+  }, [normalizedTupletOverridesByBar, bars, quarterBeatsPerBar, columns]);
 
   const clearSelection = React.useCallback(() => {
     if (!selection || selectionCellCount < 2) return;
     setBaseGridWithUndo((prev) => {
       const next = {};
-      INSTRUMENTS.forEach((i) => (next[i.id] = [...(prev[i.id] || [])]));
+      ALL_INSTRUMENTS.forEach((i) => (next[i.id] = [...(prev[i.id] || [])]));
       for (let r = selection.rowStart; r <= selection.rowEnd; r++) {
-        const instId = INSTRUMENTS[r].id;
+        const instId = instruments[r]?.id;
+        if (!instId) continue;
         for (let c = selection.start; c < selection.endExclusive; c++) {
           next[instId][c] = CELL.OFF;
         }
@@ -231,65 +907,167 @@ useEffect(() => {
       return next;
     });
     setSelection(null);
-  }, [selection, selectionCellCount]);
+  }, [selection, selectionCellCount, instruments]);
 
-
-
-
-  const computeStepsPerBar = (ts, res) => Math.max(1, Math.round((ts.n * res) / ts.d));
-
-  const remapGrid = (prevGrid, oldStepsPerBar, newStepsPerBar) => {
-    const next = {};
-    INSTRUMENTS.forEach((inst) => {
-      const out = Array(bars * newStepsPerBar).fill(CELL.OFF);
-      for (let b = 0; b < bars; b++) {
-        for (let s = 0; s < oldStepsPerBar; s++) {
-          const oldGlobal = b * oldStepsPerBar + s;
-          const val = prevGrid[inst.id]?.[oldGlobal] ?? CELL.OFF;
-          if (val === CELL.OFF) continue;
-
-          const newLocal = Math.round((s * newStepsPerBar) / oldStepsPerBar);
-          const clamped = Math.min(newStepsPerBar - 1, Math.max(0, newLocal));
-          const newGlobal = b * newStepsPerBar + clamped;
-
-          // Merge collisions: prefer ON over GHOST over OFF
-          const cur = out[newGlobal] ?? CELL.OFF;
-          const rank = (v) => (v === CELL.ON ? 2 : v === CELL.GHOST ? 1 : 0);
-          out[newGlobal] = rank(val) >= rank(cur) ? val : cur;
-        }
-      }
-      next[inst.id] = out;
+  const rankCell = React.useCallback((v) => (v === CELL.ON ? 2 : v === CELL.GHOST ? 1 : 0), []);
+  const cloneGridState = React.useCallback((g) => {
+    const out = {};
+    ALL_INSTRUMENTS.forEach((inst) => {
+      out[inst.id] = [...(g?.[inst.id] || [])];
     });
-    return next;
-  };
+    return out;
+  }, []);
+
+  const remapGridBySubdivisions = React.useCallback(
+    (prevGrid, oldSubsByBar, newSubsByBar) => {
+      const oldStepsByBar = oldSubsByBar.map((subs) => buildStepMeta(subs));
+      const newStepsByBar = newSubsByBar.map((subs) => buildStepMeta(subs));
+      const oldOffsets = [0];
+      for (let i = 0; i < oldStepsByBar.length; i++) oldOffsets.push(oldOffsets[i] + oldStepsByBar[i].length);
+      const newOffsets = [0];
+      for (let i = 0; i < newStepsByBar.length; i++) newOffsets.push(newOffsets[i] + newStepsByBar[i].length);
+      const out = {};
+      ALL_INSTRUMENTS.forEach((inst) => {
+        const row = Array(newOffsets[newOffsets.length - 1] || 0).fill(CELL.OFF);
+        for (let b = 0; b < Math.min(oldStepsByBar.length, newStepsByBar.length); b++) {
+          const oldMeta = oldStepsByBar[b];
+          const newMeta = newStepsByBar[b];
+          const oldStart = oldOffsets[b];
+          const newStart = newOffsets[b];
+          const oldQuarterCount = Math.max(1, oldSubsByBar[b]?.length || 0);
+          const newQuarterCount = Math.max(1, newSubsByBar[b]?.length || 0);
+          const quarterCount = Math.min(oldQuarterCount, newQuarterCount);
+
+          for (let q = 0; q < quarterCount; q++) {
+            const events = [];
+            for (let oldStep = 0; oldStep < oldMeta.length; oldStep++) {
+              const m = oldMeta[oldStep];
+              if (!m || m.quarterIndex !== q) continue;
+              const oldGlobal = oldStart + oldStep;
+              const val = prevGrid[inst.id]?.[oldGlobal] ?? CELL.OFF;
+              if (val === CELL.OFF) continue;
+              const subdiv = Math.max(1, m.subdiv || 1);
+              events.push({
+                phase: m.subIndex / subdiv,
+                val,
+                srcSub: m.subIndex,
+              });
+            }
+            if (!events.length) continue;
+            events.sort((a, b) => (a.phase - b.phase) || (a.srcSub - b.srcSub));
+
+            const newSubdiv = Math.max(1, Number(newSubsByBar[b]?.[q]) || 1);
+            const slots = assignPhasesToSlots(events.map((e) => e.phase), newSubdiv);
+
+            for (let i = 0; i < events.length; i++) {
+              const targetSub = Math.max(0, Math.min(newSubdiv - 1, slots[i]));
+              const mappedIdx = newMeta.findIndex(
+                (m) => m?.quarterIndex === q && m?.subIndex === targetSub
+              );
+              if (mappedIdx < 0) continue;
+              const nextGlobal = newStart + mappedIdx;
+              const cur = row[nextGlobal] ?? CELL.OFF;
+              row[nextGlobal] = rankCell(events[i].val) >= rankCell(cur) ? events[i].val : cur;
+            }
+          }
+        }
+        out[inst.id] = row;
+      });
+      return out;
+    },
+    [rankCell]
+  );
 
   const handleResolutionChange = (newRes) => {
-    if (!keepTiming) {
-      setResolution(newRes);
-      return;
+    tupletBaselineGridRef.current = null;
+    tupletBaselineSubsByBarRef.current = null;
+    const oldSubsByBar = quarterSubdivisionsByBar;
+    const nextBase = getBaseSubdivPerQuarter(newRes);
+    // Keep explicit tuplet values stable across resolution changes.
+    // Example: triplet (3) should remain triplet when switching 8th <-> 16th.
+    const nextOverridesByBar = normalizedTupletOverridesByBar.map((row) => row.map((v) => v));
+    const nextSubsByBar = nextOverridesByBar.map((row) =>
+      resolveQuarterSubdivisions(row, nextBase)
+    );
+
+    if (keepTiming) {
+      setBaseGridWithUndo((prev) => remapGridBySubdivisions(prev, oldSubsByBar, nextSubsByBar));
     }
-    const oldSPB = stepsPerBar;
-    const newSPB = computeStepsPerBar(timeSig, newRes);
-    setBaseGridWithUndo((prev) => remapGrid(prev, oldSPB, newSPB));
+    setTupletOverridesByBar(nextOverridesByBar);
     setResolution(newRes);
   };
 
   const handleTimeSigChange = (newTS) => {
-    if (!keepTiming) {
-      setTimeSig(newTS);
-      return;
+    tupletBaselineGridRef.current = null;
+    tupletBaselineSubsByBarRef.current = null;
+    const oldSubsByBar = quarterSubdivisionsByBar;
+    const nextQuarterCount = getQuarterBeatsPerBar(newTS);
+    const nextOverridesByBar = Array.from({ length: bars }, (_, barIdx) =>
+      Array.from({ length: nextQuarterCount }, (_, idx) =>
+        clampTupletValue(normalizedTupletOverridesByBar[barIdx]?.[idx]) ?? null
+      )
+    );
+    const nextBase = getBaseSubdivPerQuarter(resolution);
+    const nextSubsByBar = nextOverridesByBar.map((row) =>
+      resolveQuarterSubdivisions(row, nextBase)
+    );
+    if (keepTiming) {
+      setBaseGridWithUndo((prev) => remapGridBySubdivisions(prev, oldSubsByBar, nextSubsByBar));
     }
-    const oldSPB = stepsPerBar;
-    const newSPB = computeStepsPerBar(newTS, resolution);
-    setBaseGridWithUndo((prev) => remapGrid(prev, oldSPB, newSPB));
+    setTupletOverridesByBar(nextOverridesByBar);
     setTimeSig(newTS);
   };
+
+  const cycleTupletAt = React.useCallback(
+    (barIdx, beatIdx, dir = 1) => {
+      if (barIdx < 0 || barIdx >= bars) return;
+      if (beatIdx < 0 || beatIdx >= quarterBeatsPerBar) return;
+      const oldSubsByBar = quarterSubdivisionsByBar;
+      const current = normalizedTupletOverridesByBar[barIdx]?.[beatIdx] ?? null;
+      const idx = TUPLET_OPTIONS.findIndex((v) => v === current);
+      const nextIdx = idx < 0 ? 0 : (idx + dir + TUPLET_OPTIONS.length) % TUPLET_OPTIONS.length;
+      const nextVal = TUPLET_OPTIONS[nextIdx];
+      const nextOverridesByBar = normalizedTupletOverridesByBar.map((row) => [...row]);
+      nextOverridesByBar[barIdx][beatIdx] = nextVal;
+      const nextSubsByBar = nextOverridesByBar.map((row) =>
+        resolveQuarterSubdivisions(row, baseSubdivPerQuarter)
+      );
+      if (keepTiming) {
+        applyingTupletRemapRef.current = true;
+        setBaseGridWithUndo((prev) => {
+          if (!tupletBaselineGridRef.current || !tupletBaselineSubsByBarRef.current) {
+            tupletBaselineGridRef.current = cloneGridState(prev);
+            tupletBaselineSubsByBarRef.current = oldSubsByBar.map((row) => [...row]);
+          }
+          return remapGridBySubdivisions(
+            tupletBaselineGridRef.current,
+            tupletBaselineSubsByBarRef.current,
+            nextSubsByBar
+          );
+        });
+      } else {
+        tupletBaselineGridRef.current = null;
+        tupletBaselineSubsByBarRef.current = null;
+      }
+      setTupletOverridesByBar(nextOverridesByBar);
+    },
+    [
+      bars,
+      quarterBeatsPerBar,
+      quarterSubdivisionsByBar,
+      normalizedTupletOverridesByBar,
+      baseSubdivPerQuarter,
+      keepTiming,
+      cloneGridState,
+      remapGridBySubdivisions,
+    ]
+  );
 
 
 
   const [baseGrid, setBaseGrid] = useState(() => {
     const g = {};
-    INSTRUMENTS.forEach((i) => (g[i.id] = Array(columns).fill(CELL.OFF)));
+    ALL_INSTRUMENTS.forEach((i) => (g[i.id] = Array(columns).fill(CELL.OFF)));
     return g;
   });
 
@@ -306,9 +1084,19 @@ useEffect(() => {
     baseGridRef.current = baseGrid;
   }, [baseGrid]);
 
+  React.useEffect(() => {
+    if (applyingTupletRemapRef.current) {
+      applyingTupletRemapRef.current = false;
+      return;
+    }
+    // Any non-tuplet grid edit ends the tuplet-cycling compare session.
+    tupletBaselineGridRef.current = null;
+    tupletBaselineSubsByBarRef.current = null;
+  }, [baseGrid]);
+
   const snapshotGrid = React.useCallback((g) => {
     const snap = {};
-    INSTRUMENTS.forEach((i) => {
+    ALL_INSTRUMENTS.forEach((i) => {
       snap[i.id] = [...(g?.[i.id] || [])];
     });
     return snap;
@@ -356,15 +1144,447 @@ useEffect(() => {
     [pushGridHistory]
   );
 
+  const arraysEqual = (a, b) => a.length === b.length && a.every((v, i) => v === b[i]);
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(USER_PRESETS_STORAGE_KEY, JSON.stringify(savedPresets));
+    } catch (_) {}
+  }, [savedPresets]);
 
-  const bakeLoopInto = (prevGrid, rule, repeats = "all") => {
+  const getPresetIds = React.useCallback(
+    (presetName) => {
+      if (DRUMKIT_PRESETS[presetName]) return DRUMKIT_PRESETS[presetName];
+      const saved = savedPresets.find((p) => p.id === presetName);
+      return saved?.ids || null;
+    },
+    [savedPresets]
+  );
+  const getPresetLabel = React.useCallback(
+    (presetName) => {
+      if (PRESET_LABELS[presetName]) return PRESET_LABELS[presetName];
+      const saved = savedPresets.find((p) => p.id === presetName);
+      return saved?.label || presetName;
+    },
+    [savedPresets]
+  );
+  const makeUniquePresetId = React.useCallback(
+    (label) => {
+      const slug = String(label)
+        .toLowerCase()
+        .trim()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "");
+      let base = slug || "preset";
+      if (DRUMKIT_PRESETS[base]) base = `user-${base}`;
+      const exists = (id) => !!DRUMKIT_PRESETS[id] || savedPresets.some((p) => p.id === id);
+      let id = base;
+      let n = 2;
+      while (exists(id)) {
+        id = `${base}-${n}`;
+        n += 1;
+      }
+      return id;
+    },
+    [savedPresets]
+  );
+
+  const mergeMissingPresetTracks = React.useCallback((keptIds, targetIds) => {
+    const next = [...keptIds];
+
+    targetIds.forEach((targetId, targetIdx) => {
+      if (next.includes(targetId)) return;
+
+      let insertAt = -1;
+
+      // Prefer inserting after the nearest previous preset track that already exists.
+      for (let i = targetIdx - 1; i >= 0; i--) {
+        const prevId = targetIds[i];
+        const idx = next.indexOf(prevId);
+        if (idx !== -1) {
+          insertAt = idx + 1;
+          break;
+        }
+      }
+
+      // Otherwise insert before the nearest next preset track that already exists.
+      if (insertAt === -1) {
+        for (let i = targetIdx + 1; i < targetIds.length; i++) {
+          const nextId = targetIds[i];
+          const idx = next.indexOf(nextId);
+          if (idx !== -1) {
+            insertAt = idx;
+            break;
+          }
+        }
+      }
+
+      // If no anchors exist yet, append (preserves non-preset kept tracks).
+      if (insertAt === -1) insertAt = next.length;
+      next.splice(insertAt, 0, targetId);
+    });
+
+    return next;
+  }, []);
+
+  const allPresetIds = React.useMemo(
+    () => [...BUILTIN_PRESET_ORDER, ...savedPresets.map((p) => p.id)],
+    [savedPresets]
+  );
+  const selectedPreset =
+    allPresetIds.find((presetName) => {
+      const ids = getPresetIds(presetName);
+      return ids && arraysEqual(kitInstrumentIds, ids);
+    }) || null;
+
+  const clearSelectionAndLoop = React.useCallback(() => {
+    setSelection(null);
+    setLoopRule(null);
+  }, []);
+
+  const applyKitIds = React.useCallback(
+    (nextIds) => {
+      const deduped = [...new Set(nextIds)].filter((id) => INSTRUMENT_BY_ID[id]);
+      if (deduped.length === 0) return;
+      setKitInstrumentIds(deduped);
+      setPendingRemoval(null);
+      setPendingPresetChange(null);
+      clearSelectionAndLoop();
+    },
+    [clearSelectionAndLoop]
+  );
+
+  const applyManualKitIds = React.useCallback(
+    (nextIds) => {
+      setModifiedPresetBase(selectedPreset || modifiedPresetBase || null);
+      applyKitIds(nextIds);
+    },
+    [applyKitIds, selectedPreset, modifiedPresetBase]
+  );
+
+  const hasNotesOnTrack = React.useCallback(
+    (instId) => (baseGrid[instId] || []).some((v) => v !== CELL.OFF),
+    [baseGrid]
+  );
+
+  const computePresetTransition = React.useCallback(
+    (presetName) => {
+      const targetIds = getPresetIds(presetName);
+      if (!targetIds) return null;
+
+      const removedIds = kitInstrumentIds.filter((id) => !targetIds.includes(id));
+      const removedWithNotes = removedIds.filter((id) => hasNotesOnTrack(id));
+      const removedSet = new Set(
+        kitInstrumentIds.filter(
+          (id) => !targetIds.includes(id) && !removedWithNotes.includes(id)
+        )
+      );
+      const keptIds = kitInstrumentIds.filter((id) => !removedSet.has(id));
+      const mergedKeepNoted = mergeMissingPresetTracks(keptIds, targetIds);
+
+      return { targetIds, removedWithNotes, mergedKeepNoted };
+    },
+    [kitInstrumentIds, hasNotesOnTrack, mergeMissingPresetTracks, getPresetIds]
+  );
+
+  const requestPresetChange = React.useCallback(
+    (presetName) => {
+      const transition = computePresetTransition(presetName);
+      if (!transition) return;
+      const { targetIds, removedWithNotes, mergedKeepNoted } = transition;
+
+      if (removedWithNotes.length === 0) {
+        setModifiedPresetBase(null);
+        applyKitIds(targetIds);
+        return;
+      }
+
+      if (showPresetChangeWarningEnabled) {
+        setPendingPresetChange({ presetName, targetIds, removedWithNotes });
+        return;
+      }
+
+      if (keepTracksWithNotesEnabled) {
+        // Keep noted tracks automatically.
+        setModifiedPresetBase(presetName);
+        applyKitIds(mergedKeepNoted);
+        return;
+      }
+
+      // Both toggles off: remove noted tracks immediately.
+      setModifiedPresetBase(null);
+      applyKitIds(targetIds);
+    },
+    [computePresetTransition, applyKitIds, showPresetChangeWarningEnabled, keepTracksWithNotesEnabled]
+  );
+
+  const confirmPresetKeepNotedTracks = React.useCallback(() => {
+    if (!pendingPresetChange) return;
+    const removedSet = new Set(
+      kitInstrumentIds.filter(
+        (id) =>
+          !pendingPresetChange.targetIds.includes(id) &&
+          !pendingPresetChange.removedWithNotes.includes(id)
+      )
+    );
+
+    // Preserve kept tracks, then place missing preset tracks by preset order anchors.
+    const keptIds = kitInstrumentIds.filter((id) => !removedSet.has(id));
+    const merged = mergeMissingPresetTracks(keptIds, pendingPresetChange.targetIds);
+
+    setModifiedPresetBase(pendingPresetChange.presetName);
+    applyKitIds(merged);
+  }, [pendingPresetChange, kitInstrumentIds, applyKitIds, mergeMissingPresetTracks]);
+
+  const confirmPresetDeleteAnyway = React.useCallback(() => {
+    if (!pendingPresetChange) return;
+    setModifiedPresetBase(null);
+    applyKitIds(pendingPresetChange.targetIds);
+  }, [pendingPresetChange, applyKitIds]);
+
+  useEffect(() => {
+    if (!pendingPresetChange) return;
+    const onKeyDown = (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        if (keepTracksWithNotesEnabled) confirmPresetKeepNotedTracks();
+        else confirmPresetDeleteAnyway();
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setPendingPresetChange(null);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [pendingPresetChange, confirmPresetKeepNotedTracks, confirmPresetDeleteAnyway, keepTracksWithNotesEnabled]);
+
+  useEffect(() => {
+    if (!isKitEditorOpen) return;
+    if (pendingPresetChange) return;
+    const onKeyDown = (e) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      if (isSaveAsDialogOpen) {
+        setIsSaveAsDialogOpen(false);
+        setSaveAsName("");
+        return;
+      }
+      setIsKitEditorOpen(false);
+      setPendingRemoval(null);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [isKitEditorOpen, pendingPresetChange, isSaveAsDialogOpen]);
+
+  const presetOrder = allPresetIds;
+  const stepperPresetAnchor =
+    selectedPreset ||
+    (modifiedPresetBase && presetOrder.includes(modifiedPresetBase) ? modifiedPresetBase : presetOrder[0]);
+  const stepPreset = React.useCallback(
+    (delta) => {
+      const i = presetOrder.indexOf(stepperPresetAnchor);
+      if (i === -1) {
+        const fallback = delta >= 0 ? BUILTIN_PRESET_ORDER[0] : BUILTIN_PRESET_ORDER[BUILTIN_PRESET_ORDER.length - 1];
+        requestPresetChange(fallback);
+        return;
+      }
+
+      const dir = delta >= 0 ? 1 : -1;
+      for (let step = 1; step <= presetOrder.length; step++) {
+        const next = presetOrder[(i + dir * step + presetOrder.length) % presetOrder.length];
+        if (!showPresetChangeWarningEnabled) {
+          const transition = computePresetTransition(next);
+          if (!transition) continue;
+          const preview = transition.removedWithNotes.length > 0
+            ? (keepTracksWithNotesEnabled ? transition.mergedKeepNoted : transition.targetIds)
+            : transition.targetIds;
+          if (arraysEqual(preview, kitInstrumentIds)) continue;
+        }
+        requestPresetChange(next);
+        return;
+      }
+    },
+    [
+      stepperPresetAnchor,
+      presetOrder,
+      requestPresetChange,
+      computePresetTransition,
+      showPresetChangeWarningEnabled,
+      keepTracksWithNotesEnabled,
+      kitInstrumentIds,
+    ]
+  );
+
+  const selectedPresetLabel =
+    selectedPreset
+      ? getPresetLabel(selectedPreset)
+      : modifiedPresetBase
+        ? `${getPresetLabel(modifiedPresetBase)}*`
+        : "Modified";
+  const selectedSavedPreset =
+    selectedPreset ? savedPresets.find((p) => p.id === selectedPreset) || null : null;
+  useEffect(() => {
+    setPresetNameInlineDraft(selectedSavedPreset ? selectedSavedPreset.label : selectedPresetLabel);
+  }, [selectedSavedPreset, selectedPresetLabel]);
+  const savePresetAsNew = React.useCallback(() => {
+    const label = saveAsName.trim();
+    if (!label) return;
+    const id = makeUniquePresetId(label);
+    setSavedPresets((prev) => [...prev, { id, label, ids: [...kitInstrumentIds] }]);
+    setModifiedPresetBase(null);
+    setSaveAsName("");
+    setIsSaveAsDialogOpen(false);
+  }, [saveAsName, makeUniquePresetId, kitInstrumentIds]);
+  const renameSelectedPresetInline = React.useCallback(() => {
+    if (!selectedSavedPreset) return;
+    const label = presetNameInlineDraft.trim();
+    if (!label) return;
+    setSavedPresets((prev) =>
+      prev.map((p) => (p.id === selectedSavedPreset.id ? { ...p, label } : p))
+    );
+  }, [selectedSavedPreset, presetNameInlineDraft]);
+  const deleteSelectedPreset = React.useCallback(() => {
+    if (!selectedSavedPreset) return;
+    const deletingId = selectedSavedPreset.id;
+    setSavedPresets((prev) => prev.filter((p) => p.id !== deletingId));
+    if (modifiedPresetBase === deletingId) setModifiedPresetBase(null);
+  }, [selectedSavedPreset, modifiedPresetBase]);
+
+  const requestRemoveInstrument = React.useCallback(
+    (instId) => {
+      if (!kitInstrumentIds.includes(instId)) return;
+      if (!hasNotesOnTrack(instId)) {
+        applyManualKitIds(kitInstrumentIds.filter((id) => id !== instId));
+        return;
+      }
+      const moveTargetId = kitInstrumentIds.find((id) => id !== instId) || null;
+      setPendingRemoval({ instId, moveTargetId });
+    },
+    [kitInstrumentIds, hasNotesOnTrack, applyManualKitIds]
+  );
+
+  const confirmRemoveDeleteNotes = React.useCallback(() => {
+    if (!pendingRemoval?.instId) return;
+    const instId = pendingRemoval.instId;
+    setBaseGridWithUndo((prev) => ({
+      ...prev,
+      [instId]: Array(columns).fill(CELL.OFF),
+    }));
+    applyManualKitIds(kitInstrumentIds.filter((id) => id !== instId));
+  }, [pendingRemoval, columns, setBaseGridWithUndo, applyManualKitIds, kitInstrumentIds]);
+
+  const confirmRemoveMoveNotes = React.useCallback(() => {
+    if (!pendingRemoval?.instId || !pendingRemoval?.moveTargetId) return;
+    const srcId = pendingRemoval.instId;
+    const dstId = pendingRemoval.moveTargetId;
+    if (srcId === dstId) return;
+
+    setBaseGridWithUndo((prev) => {
+      const next = { ...prev };
+      const src = [...(prev[srcId] || Array(columns).fill(CELL.OFF))];
+      const dst = [...(prev[dstId] || Array(columns).fill(CELL.OFF))];
+      const rank = (v) => (v === CELL.ON ? 2 : v === CELL.GHOST ? 1 : 0);
+      for (let c = 0; c < columns; c++) {
+        const from = src[c] ?? CELL.OFF;
+        if (from === CELL.OFF) continue;
+        const to = dst[c] ?? CELL.OFF;
+        dst[c] = rank(from) >= rank(to) ? from : to;
+        src[c] = CELL.OFF;
+      }
+      next[srcId] = src;
+      next[dstId] = dst;
+      return next;
+    });
+
+    applyManualKitIds(kitInstrumentIds.filter((id) => id !== srcId));
+  }, [pendingRemoval, setBaseGridWithUndo, columns, applyManualKitIds, kitInstrumentIds]);
+
+  const toggleInstrumentInKit = React.useCallback(
+    (instId, enable) => {
+      if (enable) {
+        if (kitInstrumentIds.includes(instId)) return;
+        const fullOrder = DRUMKIT_PRESETS.full;
+        const newFullIdx = fullOrder.indexOf(instId);
+        if (newFullIdx === -1) {
+          applyManualKitIds([...kitInstrumentIds, instId]);
+          return;
+        }
+
+        // Insert in the position implied by the full preset ordering.
+        let insertAt = kitInstrumentIds.length;
+
+        // Prefer placing above the first existing instrument below it in full-order.
+        for (let i = newFullIdx + 1; i < fullOrder.length; i++) {
+          const anchorId = fullOrder[i];
+          const idx = kitInstrumentIds.indexOf(anchorId);
+          if (idx !== -1) {
+            insertAt = idx;
+            break;
+          }
+        }
+
+        // If no lower anchor exists, place below the nearest upper anchor.
+        if (insertAt === kitInstrumentIds.length) {
+          for (let i = newFullIdx - 1; i >= 0; i--) {
+            const anchorId = fullOrder[i];
+            const idx = kitInstrumentIds.indexOf(anchorId);
+            if (idx !== -1) {
+              insertAt = idx + 1;
+              break;
+            }
+          }
+        }
+
+        const next = [...kitInstrumentIds];
+        next.splice(insertAt, 0, instId);
+        applyManualKitIds(next);
+        return;
+      }
+      requestRemoveInstrument(instId);
+    },
+    [kitInstrumentIds, applyManualKitIds, requestRemoveInstrument]
+  );
+
+  const moveInstrument = React.useCallback(
+    (instId, dir) => {
+      const idx = kitInstrumentIds.indexOf(instId);
+      if (idx < 0) return;
+      const to = idx + dir;
+      if (to < 0 || to >= kitInstrumentIds.length) return;
+      const next = [...kitInstrumentIds];
+      [next[idx], next[to]] = [next[to], next[idx]];
+      applyManualKitIds(next);
+    },
+    [kitInstrumentIds, applyManualKitIds]
+  );
+  const kitOrderSensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: { distance: 6 },
+    })
+  );
+  const onKitOrderDragEnd = React.useCallback(
+    (event) => {
+      const { active, over } = event;
+      if (!over || active.id === over.id) return;
+      const oldIndex = kitInstrumentIds.indexOf(String(active.id));
+      const newIndex = kitInstrumentIds.indexOf(String(over.id));
+      if (oldIndex < 0 || newIndex < 0) return;
+      applyManualKitIds(arrayMove(kitInstrumentIds, oldIndex, newIndex));
+    },
+    [kitInstrumentIds, applyManualKitIds]
+  );
+
+
+  const bakeLoopInto = (prevGrid, rule, repeats = "all", overlapMode = "all-to-all") => {
     const next = {};
-    INSTRUMENTS.forEach((inst) => (next[inst.id] = [...(prevGrid[inst.id] || [])]));
+    ALL_INSTRUMENTS.forEach((inst) => (next[inst.id] = [...(prevGrid[inst.id] || [])]));
 
     const { rowStart, rowEnd, start, length } = rule;
     const srcByRow = {};
     for (let r = rowStart; r <= rowEnd; r++) {
-      const instId = INSTRUMENTS[r].id;
+      const instId = instruments[r]?.id;
+      if (!instId) continue;
       srcByRow[instId] = next[instId].slice(start, start + length);
     }
 
@@ -386,23 +1606,38 @@ useEffect(() => {
     for (let idx = start + length; idx < endExclusive; idx++) {
       const i = (idx - start) % length;
       for (let r = rowStart; r <= rowEnd; r++) {
-        const instId = INSTRUMENTS[r].id;
-        next[instId][idx] = srcByRow[instId]?.[i] ?? CELL.OFF;
+        const instId = instruments[r]?.id;
+        if (!instId) continue;
+        const movedVal = srcByRow[instId]?.[i] ?? CELL.OFF;
+        const targetVal = next[instId]?.[idx] ?? CELL.OFF;
+        if (overlapMode === "all-to-all") {
+          next[instId][idx] = movedVal;
+          continue;
+        }
+        if (overlapMode === "active-to-all") {
+          if (movedVal !== CELL.OFF) next[instId][idx] = movedVal;
+          continue;
+        }
+        if (overlapMode === "active-to-empty") {
+          if (movedVal !== CELL.OFF && targetVal === CELL.OFF) next[instId][idx] = movedVal;
+          continue;
+        }
       }
     }
     return next;
   };
 
-    const computedGrid = React.useMemo(() => {
+  const computedGrid = React.useMemo(() => {
     const g = {};
-    INSTRUMENTS.forEach((inst) => (g[inst.id] = [...(baseGrid[inst.id] || [])]));
+    instruments.forEach((inst) => (g[inst.id] = [...(baseGrid[inst.id] || [])]));
 
     if (!loopRule || loopRule.length < 2) return g;
 
     const { rowStart, rowEnd, start, length } = loopRule;
     const srcByRow = {};
     for (let r = rowStart; r <= rowEnd; r++) {
-      const instId = INSTRUMENTS[r].id;
+      const instId = instruments[r]?.id;
+      if (!instId) continue;
       srcByRow[instId] = (baseGrid[instId] || []).slice(start, start + length);
     }
 
@@ -431,20 +1666,46 @@ useEffect(() => {
 
       const i = (idx - start) % length;
       for (let r = rowStart; r <= rowEnd; r++) {
-        const instId = INSTRUMENTS[r].id;
-        g[instId][idx] = srcByRow[instId]?.[i] ?? CELL.OFF;
+        const instId = instruments[r]?.id;
+        if (!instId) continue;
+        const movedVal = srcByRow[instId]?.[i] ?? CELL.OFF;
+        const targetVal = g[instId]?.[idx] ?? CELL.OFF;
+        if (loopOverlapMode === "all-to-all") {
+          g[instId][idx] = movedVal;
+          continue;
+        }
+        if (loopOverlapMode === "active-to-all") {
+          if (movedVal !== CELL.OFF) g[instId][idx] = movedVal;
+          continue;
+        }
+        if (loopOverlapMode === "active-to-empty") {
+          if (movedVal !== CELL.OFF && targetVal === CELL.OFF) g[instId][idx] = movedVal;
+          continue;
+        }
       }
     }
     return g;
-  }, [baseGrid, loopRule, columns, loopRepeats]);
+  }, [baseGrid, loopRule, columns, loopRepeats, loopOverlapMode, instruments]);
+
+  const stepQuarterDurations = React.useMemo(() => {
+    const out = [];
+    quarterSubdivisionsByBar.forEach((row) => {
+      row.forEach((subdiv) => {
+        const s = Math.max(1, Number(subdiv) || 1);
+        for (let i = 0; i < s; i++) out.push(1 / s);
+      });
+    });
+    return out;
+  }, [quarterSubdivisionsByBar]);
 
 
   const playback = usePlayback({
-    instruments: INSTRUMENTS,
+    instruments,
     grid: computedGrid,
     columns,
     bpm,
     resolution,
+    stepQuarterDurations,
   });
 
   // Unified transport toggle: matches Spacebar + Play button behavior exactly.
@@ -463,6 +1724,21 @@ useEffect(() => {
   const setNotationExportEl = React.useCallback((el) => {
     if (el) notationExportRef.current = el;
   }, []);
+
+  const handlePrintSubmit = React.useCallback(async () => {
+    try {
+      await exportNotationPdf(notationExportRef.current, {
+        title: printTitle.trim() || "Drum Notation",
+        scoreTitle: printTitle.trim(),
+        composer: printComposer.trim(),
+        watermark: printWatermarkEnabled,
+      });
+      setIsPrintDialogOpen(false);
+    } catch (e) {
+      console.error(e);
+      alert(e?.message || "Failed to export PDF");
+    }
+  }, [printTitle, printComposer, printWatermarkEnabled]);
 // Spacebar toggles Play/Stop (avoid stealing space when typing)
   useEffect(() => {
     const onKey = (e) => {
@@ -489,9 +1765,13 @@ useEffect(() => {
 
   // Resize grid when resolution/bars change (preserve existing hits)
   useEffect(() => {
-    setBaseGridWithUndo((prev) => {
+    setBaseGrid((prev) => {
+      const needsResize = ALL_INSTRUMENTS.some(
+        (i) => (prev[i.id]?.length ?? 0) !== columns
+      );
+      if (!needsResize) return prev;
       const next = {};
-      INSTRUMENTS.forEach((i) => {
+      ALL_INSTRUMENTS.forEach((i) => {
         next[i.id] = Array(columns)
           .fill(CELL.OFF)
           .map((_, idx) => prev[i.id]?.[idx] ?? CELL.OFF);
@@ -505,7 +1785,7 @@ useEffect(() => {
   
   const cycleVelocity = (inst, idx) => {
     if (loopRule) {
-      const r = INSTRUMENTS.findIndex((x) => x.id === inst);
+      const r = instruments.findIndex((x) => x.id === inst);
       const inLoopRows = r >= loopRule.rowStart && r <= loopRule.rowEnd;
       const inSourceCols = idx >= loopRule.start && idx < loopRule.start + loopRule.length;
       const inSource = inLoopRows && inSourceCols;
@@ -516,7 +1796,7 @@ useEffect(() => {
       // - Click inside source: edit source live (no bake)
       // - Click anywhere else (including generated area): bake loop and exit loop mode (NO toggle on this click)
       if (!inSource || inGenerated) {
-        setBaseGridWithUndo((prev) => bakeLoopInto(prev, loopRule, loopRepeats));
+        setBaseGridWithUndo((prev) => bakeLoopInto(prev, loopRule, loopRepeats, loopOverlapMode));
         setLoopRule(null);
         setSelection(null);
         return;
@@ -540,7 +1820,7 @@ useEffect(() => {
     if (!GHOST_ENABLED.has(inst)) return;
 
     if (loopRule) {
-      const r = INSTRUMENTS.findIndex((x) => x.id === inst);
+      const r = instruments.findIndex((x) => x.id === inst);
       const inLoopRows = r >= loopRule.rowStart && r <= loopRule.rowEnd;
       const inSourceCols = idx >= loopRule.start && idx < loopRule.start + loopRule.length;
       const inSource = inLoopRows && inSourceCols;
@@ -548,7 +1828,7 @@ useEffect(() => {
 
       // Match click behavior: long-pressing outside the source bakes & exits without toggling.
       if (!inSource || inGenerated) {
-        setBaseGridWithUndo((prev) => bakeLoopInto(prev, loopRule, loopRepeats));
+        setBaseGridWithUndo((prev) => bakeLoopInto(prev, loopRule, loopRepeats, loopOverlapMode));
         setLoopRule(null);
         setSelection(null);
         return;
@@ -590,51 +1870,48 @@ useEffect(() => {
           <h1 className="text-lg font-semibold mr-2">Drum Grid → Notation</h1>
 
           
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 order-1" data-loopui='1'>
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-neutral-300">Drumkit</span>
+              <div className="flex items-stretch overflow-hidden rounded-md border border-neutral-700 bg-neutral-800">
+                <button
+                  type="button"
+                  onClick={() => stepPreset(-1)}
+                  className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                  aria-label="Previous preset"
+                >
+                  −
+                </button>
+                <div
+                  onClick={() => setIsKitEditorOpen(true)}
+                  className="min-w-[88px] px-3 py-1 flex items-center justify-center text-sm text-white bg-neutral-800 border-l border-r border-neutral-700 cursor-pointer hover:bg-neutral-700/60"
+                  title="Open drumkit editor"
+                >
+                  {selectedPresetLabel}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => stepPreset(1)}
+                  className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                  aria-label="Next preset"
+                >
+                  +
+                </button>
+              </div>
+            </div>
             <button
-              onClick={() => setActiveTab("timing")}
+              onClick={togglePlaybackFromBeginning}
               className={`touch-none select-none px-3 py-1.5 rounded border text-sm capitalize ${
-                activeTab === "timing"
+                playback.isPlaying
                   ? "bg-neutral-800 border-neutral-600 text-white"
                   : "bg-neutral-900 border-neutral-800 text-neutral-300 hover:bg-neutral-800/60"
               }`}
             >
-              timing
+              {playback.isPlaying ? "stop" : "play"}
             </button>
-            <button
-              onClick={() => setActiveTab((t) => (t === "notation" ? "timing" : "notation"))}
-              className={`touch-none select-none px-3 py-1.5 rounded border text-sm capitalize ${
-                activeTab === "notation"
-                  ? "bg-neutral-800 border-neutral-600 text-white"
-                  : "bg-neutral-900 border-neutral-800 text-neutral-300 hover:bg-neutral-800/60"
-              }`}
-            >
-              notation
-            </button>
-            <button
-              onClick={() => setActiveTab((t) => (t === "selection" ? "timing" : "selection"))}
-              className={`touch-none select-none px-3 py-1.5 rounded border text-sm capitalize ${
-                activeTab === "selection"
-                  ? "bg-neutral-800 border-neutral-600 text-white"
-                  : "bg-neutral-900 border-neutral-800 text-neutral-300 hover:bg-neutral-800/60"
-              }`}
-            >looping</button>
-            <button
-              type="button"
-              onClick={() => {
-                if (canClearSelection) clearSelection();
-                else clearAll();
-              }}
-              className={`touch-none select-none px-3 py-1.5 rounded border text-sm capitalize ${
-                canClearSelection
-                  ? "bg-neutral-800 border-neutral-600 text-white"
-                  : "bg-neutral-900 border-neutral-800 text-neutral-300 hover:bg-neutral-800/60"
-              }`}
-              title={canClearSelection ? "Clear selection" : "Clear all notes"}
-            >
-              {canClearSelection ? "clear" : "clear all"}
-            </button>
+          </div>
 
+          <div className="flex items-center gap-2 order-2">
             <button
               type="button"
               onClick={undoGrid}
@@ -657,317 +1934,193 @@ useEffect(() => {
             >
               →
             </button>
-          </div>
-
-
-          
-          <div className="flex items-center gap-2 ml-auto" data-loopui='1'>
             <button
               type="button"
-              onClick={async () => {
-                try {
-                  await exportNotationPdf(notationExportRef.current, { title: "Drum Notation" });
-                } catch (e) {
-                  console.error(e);
-                  alert(e?.message || "Failed to export PDF");
-                }
+              onClick={() => {
+                if (canClearSelection) clearSelection();
+                else clearAll();
               }}
-              className="touch-none select-none px-3 py-1.5 rounded border text-sm bg-neutral-900 border-neutral-800 text-neutral-300 hover:bg-neutral-800/60 capitalize"
-              title="Print the current notation"
-            >
-              print
-            </button>
-
-            <button
-              onClick={togglePlaybackFromBeginning}
               className={`touch-none select-none px-3 py-1.5 rounded border text-sm capitalize ${
-                playback.isPlaying
+                canClearSelection
                   ? "bg-neutral-800 border-neutral-600 text-white"
                   : "bg-neutral-900 border-neutral-800 text-neutral-300 hover:bg-neutral-800/60"
               }`}
+              title={canClearSelection ? "Clear selection" : "Clear all notes"}
+              aria-label={canClearSelection ? "Clear selection" : "Clear all notes"}
             >
-              {playback.isPlaying ? "stop" : "play"}
-            </button>
-
-            <div className="flex items-center gap-2">
-              <span className="text-sm text-neutral-300">BPM</span>
-              <div className="flex items-stretch overflow-hidden rounded-md border border-neutral-700 bg-neutral-800">
-                <button
-                  type="button"
-                  onPointerDown={() => startBpmRepeat(-1)}
-                  onPointerUp={stopBpmRepeat}
-                  onPointerCancel={stopBpmRepeat}
-                  onPointerLeave={stopBpmRepeat}
-                  className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
-                  aria-label="Decrease BPM"
-                >
-                  −
-                </button>
-
-                <input
-                  type="number"
-                  inputMode="numeric"
-                  min={20}
-                  max={400}
-                  value={bpmDraft}
-                  onFocus={(e) => e.target.select()}
-                  onClick={(e) => e.target.select()}
-                  onChange={(e) => {
-                    const v = e.target.value;
-                    setBpmDraft(v);
-                    if (v === "") return;
-                    const n = Number(v);
-                    // Allow partial typing (e.g. "3" -> "33" -> "333") without snapping to min.
-                    // Only live-update BPM when the typed number is already in-range.
-                    if (Number.isFinite(n)) {
-                      const rounded = Math.round(n);
-                      if (rounded >= 20 && rounded <= 400) setBpm(rounded);
-                    }
-                  }}
-                  onBlur={() => {
-                    if (bpmDraft === "") {
-                      setBpmDraft(String(bpm));
-                      return;
-                    }
-                    const n = Number(bpmDraft);
-                    if (!Number.isFinite(n)) {
-                      setBpmDraft(String(bpm));
-                      return;
-                    }
-                    const clamped = clampBpm(Math.round(n));
-                    setBpm(clamped);
-                    setBpmDraft(String(clamped));
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") e.currentTarget.blur();
-                  }}
-                  className="w-[70px] px-3 py-1 text-center text-sm text-white bg-neutral-800 border-l border-r border-neutral-700 outline-none appearance-none no-spinner"
-                  aria-label="BPM"
-                />
-
-                <button
-                  type="button"
-                  onPointerDown={() => startBpmRepeat(1)}
-                  onPointerUp={stopBpmRepeat}
-                  onPointerCancel={stopBpmRepeat}
-                  onPointerLeave={stopBpmRepeat}
-                  className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
-                  aria-label="Increase BPM"
-                >
-                  +
-                </button>
-              </div>
-            </div>
-
-            <button
-              onClick={() => setActiveTab((t) => (t === "layout" ? "timing" : "layout"))}
-              className={`touch-none select-none px-3 py-1.5 rounded border text-sm capitalize ${
-                activeTab === "layout"
-                  ? "bg-neutral-800 border-neutral-600 text-white"
-                  : "bg-neutral-900 border-neutral-800 text-neutral-300 hover:bg-neutral-800/60"
-              }`}
-            >
-              layout
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                viewBox="0 0 16 16"
+                className="h-4 w-4 text-white"
+                fill="currentColor"
+                aria-hidden="true"
+              >
+                <path d="M5.5 5.5A.5.5 0 0 1 6 6v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5m2.5 0a.5.5 0 0 1 .5.5v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5m3 .5a.5.5 0 0 0-1 0v6a.5.5 0 0 0 1 0z" />
+                <path d="M14.5 3a1 1 0 0 1-1 1H13v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V4h-.5a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1H6a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1h3.5a1 1 0 0 1 1 1zM4.118 4 4 4.059V13a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V4.059L11.882 4zM2.5 3h11V2h-11z" />
+              </svg>
             </button>
           </div>
 
         </div>
 
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            onClick={() => setActiveTab((t) => (t === "timing" ? "none" : "timing"))}
+            className={`touch-none select-none px-3 py-1.5 rounded border text-sm capitalize ${
+              activeTab === "timing"
+                ? "bg-neutral-800 border-neutral-600 text-white"
+                : "bg-neutral-900 border-neutral-800 text-neutral-300 hover:bg-neutral-800/60"
+            }`}
+          >
+            Drum Grid
+          </button>
+          <button
+            onClick={() => setActiveTab((t) => (t === "notation" ? "none" : "notation"))}
+            className={`touch-none select-none px-3 py-1.5 rounded border text-sm capitalize ${
+              activeTab === "notation"
+                ? "bg-neutral-800 border-neutral-600 text-white"
+                : "bg-neutral-900 border-neutral-800 text-neutral-300 hover:bg-neutral-800/60"
+            }`}
+          >
+            notation
+          </button>
+          <button
+            onClick={() => setActiveTab((t) => (t === "selection" ? "none" : "selection"))}
+            className={`touch-none select-none px-3 py-1.5 rounded border text-sm capitalize ${
+              activeTab === "selection"
+                ? "bg-neutral-800 border-neutral-600 text-white"
+                : "bg-neutral-900 border-neutral-800 text-neutral-300 hover:bg-neutral-800/60"
+            }`}
+          >
+            editing
+          </button>
+        </div>
+
         {activeTab === "timing" && (
-          <div className="flex flex-wrap items-center gap-4">
-            
-            <div className="flex items-center gap-2">
-              <span className="text-sm text-neutral-300 whitespace-nowrap">Resolution</span>
-              <div className="flex items-stretch overflow-hidden rounded-md border border-neutral-700 bg-neutral-800">
-                <button
-                  type="button"
-                  onClick={() => {
-                    const order = [4, 8, 16, 32];
-                    const idx = order.indexOf(resolution);
-                    const next = order[(idx - 1 + order.length) % order.length];
-                    handleResolutionChange(next);
-                  }}
-                  className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
-                >
-                  −
-                </button>
-                <div className="min-w-[60px] px-3 py-1 flex items-center justify-center text-sm text-white bg-neutral-800 border-l border-r border-neutral-700">
-                  {resolution === 4 ? "4th" : resolution === 8 ? "8th" : resolution === 16 ? "16th" : "32th"}
+          <div className="flex flex-col gap-3">
+            <div ref={gridMenuRowPrimaryRef} className="flex flex-wrap items-center gap-4">
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-neutral-300">Bars</span>
+                <div className="flex items-stretch overflow-hidden rounded-md border border-neutral-700 bg-neutral-800">
+                  <button
+                    type="button"
+                    onClick={() => setBars((b) => Math.max(1, b - 1))}
+                    className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                    aria-label="Decrease bars"
+                  >
+                    −
+                  </button>
+                  <div className="min-w-[44px] px-3 py-1 flex items-center justify-center text-sm text-white bg-neutral-800 border-l border-r border-neutral-700">
+                    {bars}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setBars((b) => Math.min(8, b + 1))}
+                    className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                    aria-label="Increase bars"
+                  >
+                    +
+                  </button>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    const order = [4, 8, 16, 32];
-                    const idx = order.indexOf(resolution);
-                    const next = order[(idx + 1) % order.length];
-                    handleResolutionChange(next);
-                  }}
-                  className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
-                >
-                  +
-                </button>
               </div>
-            </div>
 
-
-            <button
-              type="button"
-              onClick={() => setKeepTiming((v) => !v)}
-              className={`touch-none select-none px-3 py-[5px] rounded border text-sm ${
-                keepTiming
-                  ? "bg-neutral-800 border-neutral-700 text-white"
-                  : "bg-neutral-900 border-neutral-800 text-neutral-600"
-              }`}
-              title="Keep timing when changing resolution (remap steps)"
-            >
-              Keep timing
-            </button>
-
-
-            
-            <div className="flex items-center gap-2">
-              <span className="text-sm text-neutral-300">Bars</span>
-              <div className="flex items-stretch overflow-hidden rounded-md border border-neutral-700 bg-neutral-800">
-                <button
-                  type="button"
-                  onClick={() => setBars((b) => Math.max(1, b - 1))}
-                  className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
-                  aria-label="Decrease bars"
-                >
-                  −
-                </button>
-                <div className="min-w-[44px] px-3 py-1 flex items-center justify-center text-sm text-white bg-neutral-800 border-l border-r border-neutral-700">
-                  {bars}
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-neutral-300 whitespace-nowrap">Resolution</span>
+                <div className="flex items-stretch overflow-hidden rounded-md border border-neutral-700 bg-neutral-800">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const order = [4, 8, 16, 32];
+                      const idx = order.indexOf(resolution);
+                      const next = order[(idx - 1 + order.length) % order.length];
+                      handleResolutionChange(next);
+                    }}
+                    className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                  >
+                    −
+                  </button>
+                  <div className="min-w-[60px] px-3 py-1 flex items-center justify-center text-sm text-white bg-neutral-800 border-l border-r border-neutral-700">
+                    {resolution === 4 ? "4th" : resolution === 8 ? "8th" : resolution === 16 ? "16th" : "32th"}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const order = [4, 8, 16, 32];
+                      const idx = order.indexOf(resolution);
+                      const next = order[(idx + 1) % order.length];
+                      handleResolutionChange(next);
+                    }}
+                    className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                  >
+                    +
+                  </button>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setBars((b) => Math.min(8, b + 1))}
-                  className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
-                  aria-label="Increase bars"
-                >
-                  +
-                </button>
               </div>
-            </div>
 
-
-
-            
-            <div className="flex items-center gap-2">
-              <span className="text-sm text-neutral-300 whitespace-nowrap">Time</span>
-              <div className="flex items-stretch overflow-hidden rounded-md border border-neutral-700 bg-neutral-800">
-                <button
-                  type="button"
-                  onClick={() => {
-                    const order = [
-                      { n: 4, d: 4 },
-                      { n: 3, d: 4 },
-                      { n: 6, d: 8 },
-                    ];
-                    const idx = order.findIndex((x) => x.n === timeSig.n && x.d === timeSig.d);
-                    const next = order[(idx - 1 + order.length) % order.length];
-                    handleTimeSigChange(next);
-                  }}
-                  className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
-                  aria-label="Previous time signature"
-                >
-                  −
-                </button>
-                <div className="min-w-[64px] px-3 py-1 flex items-center justify-center text-sm text-white bg-neutral-800 border-l border-r border-neutral-700">
-                  {timeSig.n}/{timeSig.d}
-                </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    const order = [
-                      { n: 4, d: 4 },
-                      { n: 3, d: 4 },
-                      { n: 6, d: 8 },
-                    ];
-                    const idx = order.findIndex((x) => x.n === timeSig.n && x.d === timeSig.d);
-                    const next = order[(idx + 1) % order.length];
-                    handleTimeSigChange(next);
-                  }}
-                  className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
-                  aria-label="Next time signature"
-                >
-                  +
-                </button>
-              </div>
-            </div>
-
-</div>
-        )}
-
-        {activeTab === "layout" && (
-          <div className="flex flex-wrap items-center gap-4">
-
-            <div className="flex items-center gap-2">
-              <span className="text-sm text-neutral-300 whitespace-nowrap">Bars/line</span>
-              <div className="flex items-stretch overflow-hidden rounded-md border border-neutral-700 bg-neutral-800">
-                <button
-                  type="button"
-                  onClick={() => setBarsPerLine((v) => Math.max(1, v - 1))}
-                  className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
-                >
-                  −
-                </button>
-                <div className="min-w-[44px] px-3 py-1 flex items-center justify-center text-sm text-white bg-neutral-800 border-l border-r border-neutral-700">
-                  {barsPerLine}
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setBarsPerLine((v) => Math.min(bars, v + 1))}
-                  className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
-                >
-                  +
-                </button>
-              </div>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <span className="text-sm text-neutral-300 whitespace-nowrap">Grid bars/line</span>
-              <div className="flex items-stretch overflow-hidden rounded-md border border-neutral-700 bg-neutral-800">
-                <button
-                  type="button"
-                  onClick={() => setGridBarsPerLine((v) => Math.max(1, v - 1))}
-                  className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
-                >
-                  −
-                </button>
-                <div className="min-w-[44px] px-3 py-1 flex items-center justify-center text-sm text-white bg-neutral-800 border-l border-r border-neutral-700">
-                  {gridBarsPerLine}
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setGridBarsPerLine((v) => Math.min(bars, v + 1))}
-                  className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
-                >
-                  +
-                </button>
-              </div>
-            </div>
-
-            <label className="text-sm text-neutral-300 flex items-center gap-2">
-              <span className="whitespace-nowrap">Layout</span>
-              <select
-                value={layout}
-                onChange={(e) => setLayout(e.target.value)}
-                className="bg-neutral-800 border border-neutral-700 rounded px-2 py-1"
+              <button
+                type="button"
+                onClick={() => setKeepTiming((v) => !v)}
+                className={`touch-none select-none px-3 py-[5px] rounded border text-sm ${
+                  keepTiming
+                    ? "bg-neutral-800 border-neutral-700 text-white"
+                    : "bg-neutral-900 border-neutral-800 text-neutral-600"
+                }`}
+                title="Keep timing when changing resolution (remap steps)"
               >
-                <option value="grid-top">Grid top / Notation bottom</option>
-                <option value="notation-top">Notation top / Grid bottom</option>
-                <option value="grid-right">Grid left / Notation right</option>
-                <option value="notation-right">Notation left / Grid right</option>
-              </select>
-            </label>
+                Keep timing
+              </button>
 
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-neutral-300 whitespace-nowrap">Time</span>
+                <div className="flex items-stretch overflow-hidden rounded-md border border-neutral-700 bg-neutral-800">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const order = [
+                        { n: 4, d: 4 },
+                        { n: 3, d: 4 },
+                        { n: 6, d: 8 },
+                      ];
+                      const idx = order.findIndex((x) => x.n === timeSig.n && x.d === timeSig.d);
+                      const next = order[(idx - 1 + order.length) % order.length];
+                      handleTimeSigChange(next);
+                    }}
+                    className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                    aria-label="Previous time signature"
+                  >
+                    −
+                  </button>
+                  <div className="min-w-[64px] px-3 py-1 flex items-center justify-center text-sm text-white bg-neutral-800 border-l border-r border-neutral-700">
+                    {timeSig.n}/{timeSig.d}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const order = [
+                        { n: 4, d: 4 },
+                        { n: 3, d: 4 },
+                        { n: 6, d: 8 },
+                      ];
+                      const idx = order.findIndex((x) => x.n === timeSig.n && x.d === timeSig.d);
+                      const next = order[(idx + 1) % order.length];
+                      handleTimeSigChange(next);
+                    }}
+                    className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                    aria-label="Next time signature"
+                  >
+                    +
+                  </button>
+                </div>
+              </div>
+            </div>
 
-</div>
+            <div ref={gridMenuRowSecondaryRef} className="flex flex-wrap items-center gap-4">
+            </div>
+          </div>
         )}
 
         {activeTab === "selection" && (
-          <div className="flex flex-wrap items-center gap-4">
+          <div ref={selectionMenuRowRef} className="flex flex-wrap items-center gap-4">
             
 
             
@@ -1063,25 +2216,121 @@ useEffect(() => {
                 </button>
               </div>
             </div>
-
-<button
-              onMouseDown={(e) => e.stopPropagation()}
-              onClick={() => {
-if (!loopRule) return;
-                setBaseGridWithUndo((prev) => bakeLoopInto(prev, loopRule, loopRepeats));
-                setLoopRule(null);
-                setSelection(null);
-              }}
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-neutral-300">Loop overlap</span>
+              <div className="flex items-stretch overflow-hidden rounded-md border border-neutral-700 bg-neutral-800">
+                <button
+                  type="button"
+                  onClick={() =>
+                    setLoopOverlapMode((prev) => {
+                      const idx = Math.max(0, MOVE_OVERLAP_MODES.findIndex((m) => m.id === prev));
+                      return MOVE_OVERLAP_MODES[(idx - 1 + MOVE_OVERLAP_MODES.length) % MOVE_OVERLAP_MODES.length].id;
+                    })
+                  }
+                  className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                  aria-label="Previous loop overlap mode"
+                >
+                  −
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setLoopOverlapMode((prev) => (prev === "all-to-all" ? "active-to-empty" : "all-to-all"))
+                  }
+                  className="min-w-[126px] px-3 py-1 flex items-center justify-center text-sm text-white bg-neutral-800 border-l border-r border-neutral-700 hover:bg-neutral-700/50"
+                  title="Toggle all overwrites"
+                  aria-label="Toggle loop overlap all overwrites"
+                >
+                  {MOVE_OVERLAP_MODES.find((m) => m.id === loopOverlapMode)?.label || "Fill in gaps"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setLoopOverlapMode((prev) => {
+                      const idx = Math.max(0, MOVE_OVERLAP_MODES.findIndex((m) => m.id === prev));
+                      return MOVE_OVERLAP_MODES[(idx + 1) % MOVE_OVERLAP_MODES.length].id;
+                    })
+                  }
+                  className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                  aria-label="Next loop overlap mode"
+                >
+                  +
+                </button>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-neutral-300">Move overlap</span>
+              <div className="flex items-stretch overflow-hidden rounded-md border border-neutral-700 bg-neutral-800">
+                <button
+                  type="button"
+                  onClick={() =>
+                    setMoveOverlapMode((prev) => {
+                      const idx = Math.max(0, MOVE_OVERLAP_MODES.findIndex((m) => m.id === prev));
+                      return MOVE_OVERLAP_MODES[(idx - 1 + MOVE_OVERLAP_MODES.length) % MOVE_OVERLAP_MODES.length].id;
+                    })
+                  }
+                  className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                  aria-label="Previous move overlap mode"
+                >
+                  −
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setMoveOverlapMode((prev) => (prev === "all-to-all" ? "active-to-empty" : "all-to-all"))
+                  }
+                  className="min-w-[126px] px-3 py-1 flex items-center justify-center text-sm text-white bg-neutral-800 border-l border-r border-neutral-700 hover:bg-neutral-700/50"
+                  title="Toggle all overwrites"
+                  aria-label="Toggle move overlap all overwrites"
+                >
+                  {MOVE_OVERLAP_MODES.find((m) => m.id === moveOverlapMode)?.label || "All overrides all"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setMoveOverlapMode((prev) => {
+                      const idx = Math.max(0, MOVE_OVERLAP_MODES.findIndex((m) => m.id === prev));
+                      return MOVE_OVERLAP_MODES[(idx + 1) % MOVE_OVERLAP_MODES.length].id;
+                    })
+                  }
+                  className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                  aria-label="Next move overlap mode"
+                >
+                  +
+                </button>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setWrapSelectionMoveEnabled((v) => !v)}
               className={`touch-none select-none px-3 py-[5px] rounded border text-sm ${
-                loopRule ? "bg-neutral-800 border-neutral-700" : "bg-neutral-900 border-neutral-800 text-neutral-600"
+                wrapSelectionMoveEnabled
+                  ? "bg-neutral-800 border-neutral-700 text-white"
+                  : "bg-neutral-900 border-neutral-800 text-neutral-600"
               }`}
-              title="Bake loop: commit repeated notes and remove the active loop"
+              title="When moving selection with arrows, wrap around at grid edges"
             >
-              Bake loop
+              Wrap edges
+            </button>
+            <button
+              type="button"
+              onClick={() =>
+                setMoveOverrideBehavior((prev) =>
+                  prev === "permanent" ? "temporary" : "permanent"
+                )
+              }
+              className={`touch-none select-none px-3 py-[5px] rounded border text-sm ${
+                moveOverrideBehavior === "permanent"
+                  ? "bg-neutral-800 border-neutral-700 text-white"
+                  : "bg-neutral-900 border-neutral-800 text-neutral-600"
+              }`}
+              title="When on: overlaps become permanent changes"
+            >
+              Permanent
             </button>
           </div>
         )}{activeTab === "notation" && (
-          <div className="flex flex-wrap items-center gap-4">
+          <div ref={notationMenuRowRef} className="flex flex-wrap items-center gap-4">
             <button
               type="button"
               onClick={() => setMergeRests((v) => !v)}
@@ -1135,6 +2384,22 @@ if (!loopRule) return;
             >
               Flat beams
             </button>
+            <button
+              type="button"
+              onClick={() => setIsMidiDialogOpen(true)}
+              className="touch-none select-none px-3 py-1.5 rounded border text-sm bg-neutral-900 border-neutral-800 text-neutral-300 hover:bg-neutral-800/60 capitalize"
+              title="Export current pattern as MIDI file"
+            >
+              export midi
+            </button>
+            <button
+              type="button"
+              onClick={() => setIsPrintDialogOpen(true)}
+              className="touch-none select-none px-3 py-1.5 rounded border text-sm bg-neutral-900 border-neutral-800 text-neutral-300 hover:bg-neutral-800/60 capitalize"
+              title="Print the current notation"
+            >
+              print
+            </button>
 
 
             
@@ -1159,12 +2424,15 @@ if (!loopRule) return;
           <>
             <div className="w-full" ref={setNotationExportEl}>
               <Notation
+                instruments={instruments}
                 grid={computedGrid}
                 resolution={resolution}
                 bars={bars}
                 barsPerLine={barsPerLine}
                 stepsPerBar={stepsPerBar}
                 timeSig={timeSig}
+                quarterSubdivisionsByBar={quarterSubdivisionsByBar}
+                barStepOffsets={barStepOffsets}
                 mergeRests={mergeRests}
                 mergeNotes={mergeNotes}
                 dottedNotes={dottedNotes}
@@ -1175,12 +2443,17 @@ if (!loopRule) return;
             <div className="w-full overflow-x-auto">
               <div className="inline-block align-top">
                 <Grid
+                instruments={instruments}
                 grid={computedGrid}
                 columns={columns}
                 bars={bars}
                 stepsPerBar={stepsPerBar}
                 resolution={resolution}
                 timeSig={timeSig}
+                quarterSubdivisionsByBar={quarterSubdivisionsByBar}
+                normalizedTupletOverridesByBar={normalizedTupletOverridesByBar}
+                barStepOffsets={barStepOffsets}
+                cycleTupletAt={cycleTupletAt}
                 gridBarsPerLine={gridBarsPerLine}
                 cycleVelocity={cycleVelocity}
                 toggleGhost={toggleGhost}
@@ -1189,6 +2462,7 @@ if (!loopRule) return;
                 loopRule={loopRule}
                 loopRepeats={loopRepeats}
                 setLoopRule={setLoopRule}
+                wrappedSelectionCells={wrappedSelectionCells}
                 playhead={playback.playhead}
       />
             </div>
@@ -1199,12 +2473,17 @@ if (!loopRule) return;
             <div className="w-full overflow-x-auto">
               <div className="inline-block align-top">
                 <Grid
+                instruments={instruments}
                 grid={computedGrid}
                 columns={columns}
                 bars={bars}
                 stepsPerBar={stepsPerBar}
                 resolution={resolution}
                 timeSig={timeSig}
+                quarterSubdivisionsByBar={quarterSubdivisionsByBar}
+                normalizedTupletOverridesByBar={normalizedTupletOverridesByBar}
+                barStepOffsets={barStepOffsets}
+                cycleTupletAt={cycleTupletAt}
                 gridBarsPerLine={gridBarsPerLine}
                 cycleVelocity={cycleVelocity}
                 toggleGhost={toggleGhost}
@@ -1213,6 +2492,7 @@ if (!loopRule) return;
                 loopRule={loopRule}
                 loopRepeats={loopRepeats}
                 setLoopRule={setLoopRule}
+                wrappedSelectionCells={wrappedSelectionCells}
                 playhead={playback.playhead}
               />
             </div>
@@ -1220,12 +2500,15 @@ if (!loopRule) return;
 
             <div className="w-full" ref={setNotationExportEl}>
               <Notation
+                instruments={instruments}
                 grid={computedGrid}
                 resolution={resolution}
                 bars={bars}
                 barsPerLine={barsPerLine}
                 stepsPerBar={stepsPerBar}
                 timeSig={timeSig}
+                quarterSubdivisionsByBar={quarterSubdivisionsByBar}
+                barStepOffsets={barStepOffsets}
                 mergeRests={mergeRests}
                 mergeNotes={mergeNotes}
                 dottedNotes={dottedNotes}
@@ -1236,17 +2519,672 @@ if (!loopRule) return;
         )}
       </main>
 
+      <footer className="mt-6 pt-1" data-loopui='1'>
+        <div className="flex flex-wrap items-center justify-end gap-3">
+          {activeTab === "layout" && (
+          <div ref={layoutMenuRowRef} className="flex flex-wrap items-center gap-4">
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-neutral-300 whitespace-nowrap">Bars/line</span>
+              <div className="flex items-stretch overflow-hidden rounded-md border border-neutral-700 bg-neutral-800">
+                <button
+                  type="button"
+                  onClick={() => setBarsPerLine((v) => Math.max(1, v - 1))}
+                  className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                >
+                  −
+                </button>
+                <div className="min-w-[44px] px-3 py-1 flex items-center justify-center text-sm text-white bg-neutral-800 border-l border-r border-neutral-700">
+                  {barsPerLine}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setBarsPerLine((v) => Math.min(bars, v + 1))}
+                  className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                >
+                  +
+                </button>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-neutral-300 whitespace-nowrap">Grid bars/line</span>
+              <div className="flex items-stretch overflow-hidden rounded-md border border-neutral-700 bg-neutral-800">
+                <button
+                  type="button"
+                  onClick={() => setGridBarsPerLine((v) => Math.max(1, v - 1))}
+                  className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                >
+                  −
+                </button>
+                <div className="min-w-[44px] px-3 py-1 flex items-center justify-center text-sm text-white bg-neutral-800 border-l border-r border-neutral-700">
+                  {gridBarsPerLine}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setGridBarsPerLine((v) => Math.min(bars, v + 1))}
+                  className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                >
+                  +
+                </button>
+              </div>
+            </div>
+
+            <label className="text-sm text-neutral-300 flex items-center gap-2">
+              <span className="whitespace-nowrap">Layout</span>
+              <select
+                value={layout}
+                onChange={(e) => setLayout(e.target.value)}
+                className="bg-neutral-800 border border-neutral-700 rounded px-2 py-1"
+              >
+                <option value="grid-top">Grid top / Notation bottom</option>
+                <option value="notation-top">Notation top / Grid bottom</option>
+                <option value="grid-right">Grid left / Notation right</option>
+                <option value="notation-right">Notation left / Grid right</option>
+              </select>
+            </label>
+          </div>
+        )}
+          <button
+            onClick={() => setActiveTab((t) => (t === "layout" ? "none" : "layout"))}
+            className={`touch-none select-none px-3 py-1.5 rounded border text-sm capitalize ${
+              activeTab === "layout"
+                ? "bg-neutral-800 border-neutral-600 text-white"
+                : "bg-neutral-900 border-neutral-800 text-neutral-300 hover:bg-neutral-800/60"
+            }`}
+          >
+            layout
+          </button>
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-neutral-300">BPM</span>
+            <div className="flex items-stretch overflow-hidden rounded-md border border-neutral-700 bg-neutral-800">
+              <button
+                type="button"
+                onPointerDown={() => startBpmRepeat(-1)}
+                onPointerUp={stopBpmRepeat}
+                onPointerCancel={stopBpmRepeat}
+                onPointerLeave={stopBpmRepeat}
+                className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                aria-label="Decrease BPM"
+              >
+                −
+              </button>
+
+              <input
+                type="number"
+                inputMode="numeric"
+                min={20}
+                max={400}
+                value={bpmDraft}
+                onFocus={(e) => e.target.select()}
+                onClick={(e) => e.target.select()}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setBpmDraft(v);
+                  if (v === "") return;
+                  const n = Number(v);
+                  if (Number.isFinite(n)) {
+                    const rounded = Math.round(n);
+                    if (rounded >= 20 && rounded <= 400) setBpm(rounded);
+                  }
+                }}
+                onBlur={() => {
+                  if (bpmDraft === "") {
+                    setBpmDraft(String(bpm));
+                    return;
+                  }
+                  const n = Number(bpmDraft);
+                  if (!Number.isFinite(n)) {
+                    setBpmDraft(String(bpm));
+                    return;
+                  }
+                  const clamped = clampBpm(Math.round(n));
+                  setBpm(clamped);
+                  setBpmDraft(String(clamped));
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") e.currentTarget.blur();
+                }}
+                className="w-[70px] px-3 py-1 text-center text-sm text-white bg-neutral-800 border-l border-r border-neutral-700 outline-none appearance-none no-spinner"
+                aria-label="BPM"
+              />
+
+              <button
+                type="button"
+                onPointerDown={() => startBpmRepeat(1)}
+                onPointerUp={stopBpmRepeat}
+                onPointerCancel={stopBpmRepeat}
+                onPointerLeave={stopBpmRepeat}
+                className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                aria-label="Increase BPM"
+              >
+                +
+              </button>
+            </div>
+          </div>
+        </div>
+      </footer>
+
+      {isKitEditorOpen && (
+        <div
+          className="fixed inset-0 z-50 bg-black/60 p-4 flex items-center justify-center"
+          onMouseDown={() => {
+            if (isSaveAsDialogOpen) {
+              setIsSaveAsDialogOpen(false);
+              setSaveAsName("");
+              return;
+            }
+            setIsKitEditorOpen(false);
+            setPendingRemoval(null);
+          }}
+        >
+          <div
+            className="w-full max-w-[24rem] max-h-[90vh] overflow-auto rounded-xl border border-neutral-700 bg-neutral-900 p-4 md:p-5"
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between gap-3">
+              <h2 className="text-base font-semibold">Edit Drumkit</h2>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsKitEditorOpen(false);
+                  setPendingRemoval(null);
+                }}
+                className="px-3 py-1.5 rounded border border-neutral-700 text-sm text-neutral-300 hover:bg-neutral-800/60"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="mt-4 flex flex-wrap items-center gap-2">
+              <span className="text-sm text-neutral-300">Preset</span>
+              <div className="flex items-stretch overflow-hidden rounded-md border border-neutral-700 bg-neutral-800">
+                <button
+                  type="button"
+                  onClick={() => stepPreset(-1)}
+                  className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                  aria-label="Previous preset"
+                >
+                  −
+                </button>
+                <input
+                  type="text"
+                  value={presetNameInlineDraft}
+                  readOnly={!selectedSavedPreset}
+                  onFocus={(e) => {
+                    if (!selectedSavedPreset) return;
+                    e.currentTarget.select();
+                  }}
+                  onChange={(e) => {
+                    if (!selectedSavedPreset) return;
+                    setPresetNameInlineDraft(e.target.value);
+                  }}
+                  onKeyDown={(e) => {
+                    if (!selectedSavedPreset) return;
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      renameSelectedPresetInline();
+                    }
+                    if (e.key === "Escape") {
+                      e.preventDefault();
+                      setPresetNameInlineDraft(selectedSavedPreset.label);
+                    }
+                  }}
+                  className={`min-w-[112px] px-3 py-1 text-sm text-center text-white bg-neutral-800 border-l border-r border-neutral-700 outline-none ${
+                    selectedSavedPreset ? "cursor-text" : "cursor-default"
+                  }`}
+                  title={selectedSavedPreset ? "Edit name and press Enter to save" : "Built-in presets cannot be renamed"}
+                />
+                <button
+                  type="button"
+                  onClick={() => stepPreset(1)}
+                  className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                  aria-label="Next preset"
+                >
+                  +
+                </button>
+              </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSaveAsName("");
+                    setIsSaveAsDialogOpen(true);
+                  }}
+                  className="px-2.5 py-1 rounded border text-sm border-neutral-700 text-white bg-neutral-800 hover:bg-neutral-700/60"
+                  title="Save current drumkit as a new preset"
+              >
+                Save As
+              </button>
+              <button
+                type="button"
+                onClick={deleteSelectedPreset}
+                disabled={!selectedSavedPreset}
+                className={`px-2.5 py-1 rounded border text-sm ${
+                  selectedSavedPreset
+                    ? "border-red-900 text-red-200 hover:bg-red-900/30"
+                    : "border-neutral-800 text-neutral-500 bg-neutral-900/60 cursor-not-allowed"
+                }`}
+                title={selectedSavedPreset ? "Delete selected preset" : "Only saved presets can be deleted"}
+              >
+                Delete
+              </button>
+              <button
+                type="button"
+                onClick={() => setKeepTracksWithNotesEnabled((v) => !v)}
+                className={`px-2.5 py-1 rounded border text-sm ${
+                  keepTracksWithNotesEnabled
+                    ? "border-neutral-700 text-white bg-neutral-800 hover:bg-neutral-700/60"
+                    : "border-neutral-800 text-neutral-500 bg-neutral-900/60 hover:bg-neutral-800/40"
+                }`}
+                title="Automatically keep tracks with notes"
+              >
+                Keep tracks with notes
+              </button>
+            </div>
+
+            {isSaveAsDialogOpen && (
+              <div className="mt-3 rounded-lg border border-neutral-700 bg-neutral-950/50 p-3" onMouseDown={(e) => e.stopPropagation()}>
+                <div className="text-sm text-neutral-200 mb-2">Save Preset As</div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <input
+                    type="text"
+                    autoFocus
+                    value={saveAsName}
+                    onChange={(e) => setSaveAsName(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        savePresetAsNew();
+                      }
+                      if (e.key === "Escape") {
+                        e.preventDefault();
+                        setIsSaveAsDialogOpen(false);
+                        setSaveAsName("");
+                      }
+                    }}
+                    placeholder="Preset name"
+                    className="bg-neutral-800 border border-neutral-700 rounded px-2 py-1 text-sm"
+                  />
+                  <button
+                    type="button"
+                    onClick={savePresetAsNew}
+                    disabled={!saveAsName.trim()}
+                    className={`px-2.5 py-1 rounded border text-sm ${
+                      saveAsName.trim()
+                        ? "border-neutral-700 text-white bg-neutral-800 hover:bg-neutral-700/60"
+                        : "border-neutral-800 text-neutral-500 bg-neutral-900/60 cursor-not-allowed"
+                    }`}
+                  >
+                    Save
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsSaveAsDialogOpen(false);
+                      setSaveAsName("");
+                    }}
+                    className="px-2.5 py-1 rounded border border-neutral-700 text-sm text-neutral-300 hover:bg-neutral-800/60"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {pendingRemoval && (
+              <div className="mt-4 rounded-lg border border-amber-700/70 bg-amber-950/30 p-3">
+                <div className="text-sm text-amber-200">
+                  {(INSTRUMENT_BY_ID[pendingRemoval.instId]?.label || pendingRemoval.instId) +
+                    " has notes."}
+                </div>
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <select
+                    value={pendingRemoval.moveTargetId || ""}
+                    onChange={(e) =>
+                      setPendingRemoval((prev) =>
+                        prev ? { ...prev, moveTargetId: e.target.value || null } : prev
+                      )
+                    }
+                    className="bg-neutral-800 border border-neutral-700 rounded px-2 py-1 text-sm"
+                  >
+                    <option value="">Select destination</option>
+                    {kitInstrumentIds
+                      .filter((id) => id !== pendingRemoval.instId)
+                      .map((id) => (
+                        <option key={`move-${id}`} value={id}>
+                          {INSTRUMENT_BY_ID[id]?.label || id}
+                        </option>
+                      ))}
+                  </select>
+                  <button
+                    type="button"
+                    disabled={!pendingRemoval.moveTargetId}
+                    onClick={confirmRemoveMoveNotes}
+                    className={`px-3 py-1.5 rounded border text-sm ${
+                      pendingRemoval.moveTargetId
+                        ? "border-cyan-600 text-cyan-100 hover:bg-cyan-800/30"
+                        : "border-neutral-700 text-neutral-500 cursor-not-allowed"
+                    }`}
+                  >
+                    Move notes
+                  </button>
+                  <button
+                    type="button"
+                    onClick={confirmRemoveDeleteNotes}
+                    className="px-3 py-1.5 rounded border border-amber-600 text-sm text-amber-100 hover:bg-amber-800/40"
+                  >
+                    Delete notes
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPendingRemoval(null)}
+                    className="px-3 py-1.5 rounded border border-neutral-700 text-sm text-neutral-300 hover:bg-neutral-800/60"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
+
+            <div className="mt-5 grid grid-cols-[1.35fr_0.65fr] gap-1">
+              <div>
+                <div className="text-sm font-medium mb-2">Kit Order</div>
+                <div className="text-xs text-neutral-400 mb-2">Drag rows to reorder instruments.</div>
+                <DndContext sensors={kitOrderSensors} collisionDetection={closestCenter} onDragEnd={onKitOrderDragEnd}>
+                <SortableContext items={kitInstrumentIds} strategy={verticalListSortingStrategy}>
+                <div className="space-y-2">
+                  {kitInstrumentIds.map((id, idx) => {
+                    const inst = INSTRUMENT_BY_ID[id];
+                    if (!inst) return null;
+                    return (
+                      <SortableKitOrderRow
+                        key={`kit-${id}`}
+                        id={id}
+                        index={idx}
+                        label={inst.label}
+                        onRemove={() => requestRemoveInstrument(id)}
+                      />
+                    );
+                  })}
+                </div>
+                </SortableContext>
+                </DndContext>
+              </div>
+
+              <div>
+                <div
+                  className="text-sm font-medium mb-2 ml-auto text-left"
+                  style={{ width: `${availableInstrumentButtonWidthCh}ch` }}
+                >
+                  Available Instruments
+                </div>
+                <div className="space-y-2 flex flex-col items-end ml-auto">
+                  {ALL_INSTRUMENTS.map((inst) => {
+                    const enabled = kitInstrumentIds.includes(inst.id);
+                    return (
+                      <button
+                        type="button"
+                        onClick={() => toggleInstrumentInKit(inst.id, !enabled)}
+                        key={`avail-${inst.id}`}
+                        className={`w-full text-left inline-flex items-center gap-2 rounded border px-2 py-1 text-sm ${
+                          enabled
+                            ? "border-neutral-800 text-white hover:bg-neutral-800/40"
+                            : "border-neutral-800 text-neutral-500 bg-neutral-900/40 hover:bg-neutral-800/50"
+                        }`}
+                        style={{ width: `${availableInstrumentButtonWidthCh}ch` }}
+                      >
+                        <span>{inst.label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-5 pt-4 border-t border-neutral-800 flex justify-end">
+              <button
+                type="button"
+                onClick={() => {
+                  setIsKitEditorOpen(false);
+                  setPendingRemoval(null);
+                }}
+                className="px-4 py-2 rounded border border-neutral-700 text-sm text-neutral-300 hover:bg-neutral-800/60"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {pendingPresetChange && (
+        <div
+          className="fixed inset-0 z-[80] bg-black/60 p-4 flex items-center justify-center"
+          onMouseDown={() => setPendingPresetChange(null)}
+        >
+          <div
+            className="w-full max-w-xl rounded-xl border border-neutral-700 bg-neutral-900 p-4 md:p-5"
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <h3 className="text-base font-semibold">Remove Notes</h3>
+            <p className="mt-2 text-sm text-neutral-300">
+              Switching to <span>{PRESET_LABELS[pendingPresetChange.presetName] || pendingPresetChange.presetName}</span> would remove tracks that contain notes:
+            </p>
+            <div className="mt-2 text-sm text-amber-200">
+              {pendingPresetChange.removedWithNotes
+                .map((id) => INSTRUMENT_BY_ID[id]?.label || id)
+                .join(", ")}
+            </div>
+            <div className="mt-4 flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={confirmPresetKeepNotedTracks}
+                className="px-3 py-1.5 rounded border border-cyan-600 text-sm text-cyan-100 hover:bg-cyan-800/30"
+              >
+                {keepTracksWithNotesEnabled ? "Keep tracks with notes (Default)" : "Keep tracks with notes"}
+              </button>
+              <button
+                type="button"
+                onClick={confirmPresetDeleteAnyway}
+                className="px-3 py-1.5 rounded border border-red-700 text-sm text-red-100 hover:bg-red-900/30"
+              >
+                {keepTracksWithNotesEnabled ? "Remove anyway" : "Remove anyway (Default)"}
+              </button>
+              <button
+                type="button"
+                onClick={() => setPendingPresetChange(null)}
+                className="px-3 py-1.5 rounded border border-neutral-700 text-sm text-neutral-300 hover:bg-neutral-800/60"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isPrintDialogOpen && (
+        <div
+          className="fixed inset-0 z-[90] bg-black/60 p-4 flex items-center justify-center"
+          onMouseDown={() => setIsPrintDialogOpen(false)}
+        >
+          <div
+            className="w-full max-w-md rounded-xl border border-neutral-700 bg-neutral-900 p-4 md:p-5"
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <h3 className="text-base font-semibold">Print Notation</h3>
+            <div className="mt-4 grid grid-cols-1 gap-3">
+              <label className="text-sm text-neutral-300 flex flex-col gap-1">
+                <span>Title</span>
+                <input
+                  ref={printTitleInputRef}
+                  type="text"
+                  value={printTitle}
+                  onChange={(e) => setPrintTitle(e.target.value)}
+                  placeholder="Untitled"
+                  className="bg-neutral-800 border border-neutral-700 rounded px-2 py-1.5 text-sm text-white"
+                />
+              </label>
+              <label className="text-sm text-neutral-300 flex flex-col gap-1">
+                <span>Composer</span>
+                <input
+                  ref={printComposerInputRef}
+                  type="text"
+                  value={printComposer}
+                  onChange={(e) => setPrintComposer(e.target.value)}
+                  placeholder="Composer"
+                  className="bg-neutral-800 border border-neutral-700 rounded px-2 py-1.5 text-sm text-white"
+                />
+              </label>
+              <button
+                type="button"
+                onClick={() => setPrintWatermarkEnabled((v) => !v)}
+                className={`w-fit px-2.5 py-1 rounded border text-sm ${
+                  !printWatermarkEnabled
+                    ? "border-neutral-700 text-white bg-neutral-800 hover:bg-neutral-700/60"
+                    : "border-neutral-800 text-neutral-500 bg-neutral-900/60 hover:bg-neutral-800/40"
+                }`}
+                title="Show footer watermark in exported PDF"
+              >
+                Disable watermark
+              </button>
+            </div>
+            <div className="mt-4 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setIsPrintDialogOpen(false)}
+                className="px-3 py-1.5 rounded border border-neutral-700 text-sm text-neutral-300 hover:bg-neutral-800/60"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handlePrintSubmit}
+                className="px-3 py-1.5 rounded border border-neutral-700 text-sm text-white bg-neutral-800 hover:bg-neutral-700/60"
+              >
+                Print
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isMidiDialogOpen && (
+        <div
+          className="fixed inset-0 z-[91] bg-black/60 p-4 flex items-center justify-center"
+          onMouseDown={() => setIsMidiDialogOpen(false)}
+        >
+          <div
+            className="w-full max-w-md rounded-xl border border-neutral-700 bg-neutral-900 p-4 md:p-5"
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <h3 className="text-base font-semibold">Export MIDI</h3>
+            <div className="mt-4 grid grid-cols-1 gap-3">
+              <label className="text-sm text-neutral-300 flex flex-col gap-1">
+                <span>Title</span>
+                <input
+                  type="text"
+                  value={printTitle}
+                  onChange={(e) => setPrintTitle(e.target.value)}
+                  placeholder="Untitled"
+                  className="bg-neutral-800 border border-neutral-700 rounded px-2 py-1.5 text-sm text-white"
+                />
+              </label>
+              <label className="text-sm text-neutral-300 flex flex-col gap-1">
+                <span>Composer</span>
+                <input
+                  type="text"
+                  value={printComposer}
+                  onChange={(e) => setPrintComposer(e.target.value)}
+                  placeholder="Composer"
+                  className="bg-neutral-800 border border-neutral-700 rounded px-2 py-1.5 text-sm text-white"
+                />
+              </label>
+            </div>
+            <div className="mt-4 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setIsMidiDialogOpen(false)}
+                className="px-3 py-1.5 rounded border border-neutral-700 text-sm text-neutral-300 hover:bg-neutral-800/60"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  try {
+                    exportDrumMidi({
+                      grid: computedGrid,
+                      instruments,
+                      columns,
+                      resolution,
+                      bpm,
+                      timeSig,
+                      title: printTitle.trim(),
+                      composer: printComposer.trim(),
+                      filename: printTitle.trim() || "Drum Notation",
+                    });
+                    setIsMidiDialogOpen(false);
+                  } catch (e) {
+                    console.error(e);
+                    alert(e?.message || "Failed to export MIDI");
+                  }
+                }}
+                className="px-3 py-1.5 rounded border border-neutral-700 text-sm text-white bg-neutral-800 hover:bg-neutral-700/60"
+              >
+                Export
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
     </div>
   );
 }
 
 
+function SortableKitOrderRow({
+  id,
+  index,
+  label,
+  onRemove,
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id });
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+  };
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={style}
+      {...attributes}
+      {...listeners}
+      className={`flex items-center gap-1.5 rounded border px-1.5 py-1 ${
+        isDragging ? "border-cyan-700/70 bg-cyan-950/20" : "border-neutral-800"
+      }`}
+    >
+      <div className="w-3.5 text-[11px] text-neutral-400">{index + 1}</div>
+      <div className="mr-1 text-neutral-500 text-[9px]">⋮⋮</div>
+      <div className="flex-1 whitespace-nowrap text-sm leading-tight pr-1">{label}</div>
+      <button
+        type="button"
+        onClick={onRemove}
+        className="h-6 px-2 shrink-0 rounded border border-red-900 text-[10px] leading-none text-red-200 hover:bg-red-900/30"
+      >
+        remove
+      </button>
+    </div>
+  );
+}
+
+
 function Grid({
-  grid, columns, bars, stepsPerBar, resolution, timeSig, gridBarsPerLine,
+  instruments,
+  grid, columns, bars, stepsPerBar, resolution, timeSig, quarterSubdivisionsByBar, normalizedTupletOverridesByBar, barStepOffsets, cycleTupletAt, gridBarsPerLine,
   cycleVelocity, toggleGhost, selection, setSelection, loopRule,
     loopRepeats,
-  setLoopRule, playhead
+  setLoopRule, wrappedSelectionCells, playhead
 }) {
 
   const notifySelectionFinalized = React.useCallback(() => {
@@ -1255,6 +3193,15 @@ function Grid({
     } catch (_) {}
   }, []);
   const longPress = React.useRef({ timer: null, did: false });
+  const mouseDragRef = React.useRef({
+    active: false,
+    selecting: false,
+    suppressClick: false,
+    startX: 0,
+    startY: 0,
+    anchorRow: 0,
+    anchorCol: 0,
+  });
 
   // Ensure pending long-press timers don't leak across clicks (desktop).
   useEffect(() => {
@@ -1263,6 +3210,9 @@ function Grid({
         window.clearTimeout(longPress.current.timer);
         longPress.current.timer = null;
       }
+      mouseDragRef.current.active = false;
+      mouseDragRef.current.suppressClick = false;
+      mouseDragRef.current.selecting = false;
       // If a selection drag was in progress and the user released outside the grid,
       // we still need to end the drag so clicks work again.
       setDrag((d) => {
@@ -1281,6 +3231,56 @@ function Grid({
       window.removeEventListener("blur", onGlobalMouseUp);
     };
   }, []);
+
+  useEffect(() => {
+    const onMouseMove = (e) => {
+      const md = mouseDragRef.current;
+      if (!md.active || md.selecting) return;
+      if ((e.buttons & 1) !== 1) return;
+      const dx = e.clientX - md.startX;
+      const dy = e.clientY - md.startY;
+      if (dx * dx + dy * dy < 36) return; // < 6px: treat as click, not selection drag
+      md.selecting = true;
+      md.suppressClick = true;
+      setDrag({ row: md.anchorRow, col: md.anchorCol });
+      const el = document.elementFromPoint(e.clientX, e.clientY);
+      const cell = el?.closest?.("[data-gridcell='1']");
+      if (!cell) {
+        setSelection({
+          rowStart: md.anchorRow,
+          rowEnd: md.anchorRow,
+          start: md.anchorCol,
+          endExclusive: md.anchorCol + 1,
+        });
+        return;
+      }
+      const r1 = Number(cell.getAttribute("data-row"));
+      const c1 = Number(cell.getAttribute("data-col"));
+      if (Number.isNaN(r1) || Number.isNaN(c1)) return;
+      setSelection({
+        rowStart: Math.min(md.anchorRow, r1),
+        rowEnd: Math.max(md.anchorRow, r1),
+        start: Math.min(md.anchorCol, c1),
+        endExclusive: Math.max(md.anchorCol, c1) + 1,
+      });
+    };
+
+    const onMouseUp = () => {
+      const md = mouseDragRef.current;
+      md.active = false;
+      if (!md.selecting) return;
+      md.selecting = false;
+      notifySelectionFinalized();
+      setDrag(null);
+    };
+
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+    return () => {
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+    };
+  }, [notifySelectionFinalized]);
 
   // Desktop: allow long-press ghost on active cells, but if the user moves away while holding,
   // start a selection instead and revert the ghost toggle.
@@ -1383,33 +3383,39 @@ function Grid({
     didSelect: false,
   });
   const [drag, setDrag] = useState(null); // { row, col }
-  // Build a render timeline with a visual gap between bars.
-  // Example for 2 bars of 8ths: [0..7, GAP, 8..15]
-  const timeline = [];
-  for (let b = 0; b < bars; b++) {
-    for (let s = 0; s < stepsPerBar; s++) {
-      timeline.push({ type: "step", stepIndex: b * stepsPerBar + s, bar: b, stepInBar: s });
-    }
-    if (b < bars - 1) timeline.push({ type: "gap" });
-  }
+  const stepMetaByBar = React.useMemo(
+    () => quarterSubdivisionsByBar.map((subs) => buildStepMeta(subs)),
+    [quarterSubdivisionsByBar]
+  );
 
-  const labelFor = (stepInBar) => {
-    // Beat unit is denominator (d). Steps per beat = resolution / d.
-    const stepsPerBeat = Math.max(1, Math.round(resolution / timeSig.d));
-    const beat = Math.floor(stepInBar / stepsPerBeat) + 1;
-    const sub = stepInBar % stepsPerBeat;
-
-    if (stepsPerBeat === 1) return `${beat}`;
-    if (stepsPerBeat === 2) return sub === 0 ? `${beat}` : "&";
-    if (stepsPerBeat === 4) return [String(beat), "e", "&", "a"][sub];
+  const labelFor = (stepMeta) => {
+    const beat = stepMeta.quarterIndex + 1;
+    const sub = stepMeta.subIndex;
+    const subdiv = Math.max(1, stepMeta.subdiv || 1);
+    if (subdiv === 1) return `${beat}`;
+    if (subdiv === 2) return sub === 0 ? `${beat}` : "&";
+    if (subdiv === 3) return [String(beat), "tri", "let"][sub] || "·";
+    if (subdiv === 4) return [String(beat), "e", "&", "a"][sub] || "·";
     return sub === 0 ? `${beat}` : "·";
   };
+
+  const getQuarterBandClass = React.useCallback(
+    (barIdx, stepMeta) => {
+      if (!stepMeta) return "";
+      const quarterIdx = stepMeta.quarterIndex ?? 0;
+      const tuplet = normalizedTupletOverridesByBar?.[barIdx]?.[quarterIdx] ?? null;
+      if (tuplet != null) return TUPLET_COLOR_CLASS[tuplet] || "bg-amber-900/25";
+      return "";
+    },
+    [normalizedTupletOverridesByBar]
+  );
+
 
 
   
   const getCellRole = (instId, stepIndex) => {
     if (loopRule) {
-      const r = INSTRUMENTS.findIndex((x) => x.id === instId);
+      const r = instruments.findIndex((x) => x.id === instId);
       if (r >= loopRule.rowStart && r <= loopRule.rowEnd) {
         const inSrc =
           stepIndex >= loopRule.start && stepIndex < loopRule.start + loopRule.length;
@@ -1438,9 +3444,14 @@ function Grid({
 
     // Only show selection outline if it spans at least 2 cells
     if (selection) {
+      const r = instruments.findIndex((x) => x.id === instId);
+      if (wrappedSelectionCells && wrappedSelectionCells.length >= 2) {
+        return wrappedSelectionCells.some((cell) => cell.row === r && cell.col === stepIndex)
+          ? "selected"
+          : "none";
+      }
       const width = selection.endExclusive - selection.start;
       if (width >= 2) {
-        const r = INSTRUMENTS.findIndex((x) => x.id === instId);
         if (
           r >= selection.rowStart &&
           r <= selection.rowEnd &&
@@ -1467,11 +3478,14 @@ function Grid({
         // Build timeline for this line (with visual bar gaps)
         const timeline = [];
         for (let b = barStart; b < barEnd; b++) {
-          for (let s = 0; s < stepsPerBar; s++) {
+          const meta = stepMetaByBar[b] || [];
+          const barOffset = barStepOffsets[b] ?? 0;
+          for (let s = 0; s < meta.length; s++) {
             timeline.push({
               bar: b,
               stepInBar: s,
-              stepIndex: b * stepsPerBar + s,
+              stepMeta: meta[s],
+              stepIndex: barOffset + s,
               type: "cell",
             });
           }
@@ -1487,11 +3501,22 @@ function Grid({
             <div />
             {timeline.map((t, i) => {
               if (t.type === "gap") return <div key={t.key} />;
-              const label = labelFor(t.stepInBar);
+              const label = labelFor(t.stepMeta || { quarterIndex: 0, subIndex: 0, subdiv: 1 });
               return (
                 <div
                   key={`h-${t.stepIndex}`}
-                  className="relative h-6 text-xs text-center text-neutral-400 select-none overflow-visible"
+                  className={`relative h-6 text-xs text-center text-neutral-400 select-none overflow-visible cursor-pointer hover:text-neutral-200 rounded-sm ${getQuarterBandClass(t.bar, t.stepMeta)}`}
+                  onMouseDown={(e) => {
+                    e.stopPropagation();
+                    if (e.button !== 0) return;
+                    const quarterIdx = t.stepMeta?.quarterIndex ?? 0;
+                    const label = labelFor(t.stepMeta || { quarterIndex: 0, subIndex: 0, subdiv: 1 });
+                    const isBeatNumber = /^\d+$/.test(label);
+                    const currentTuplet = normalizedTupletOverridesByBar?.[t.bar]?.[quarterIdx] ?? null;
+                    const dir = isBeatNumber ? (currentTuplet == null ? 1 : -1) : 1;
+                    cycleTupletAt?.(t.bar, quarterIdx, dir);
+                  }}
+                  title={`Click to cycle tuplet for bar ${t.bar + 1}, beat ${(t.stepMeta?.quarterIndex ?? 0) + 1}`}
                 >
                   {/* Playhead indicator: kept within header row to avoid clipping/overlap. */}
                   {playhead === t.stepIndex && (
@@ -1505,17 +3530,36 @@ function Grid({
               );
             })}
 
-            {INSTRUMENTS.map((inst) => (
+            {instruments.map((inst) => (
               <React.Fragment key={`${inst.id}-${lineIdx}`}>
-                <div className="pr-2 text-xs text-right whitespace-nowrap select-none">{inst.label}</div>
+                <div
+                  className="pr-2 text-xs text-right whitespace-nowrap select-none cursor-pointer hover:text-neutral-200"
+                  onMouseDown={(e) => {
+                    e.stopPropagation();
+                    if (e.button !== 0) return;
+                    const r = instruments.findIndex((x) => x.id === inst.id);
+                    if (r < 0) return;
+                    setSelection({
+                      rowStart: r,
+                      rowEnd: r,
+                      start: 0,
+                      endExclusive: columns,
+                    });
+                    notifySelectionFinalized();
+                  }}
+                  title="Select full row"
+                >
+                  {inst.label}
+                </div>
                 {timeline.map((t, i) => {
                   if (t.type === "gap") return <div key={`g-${inst.id}-${lineIdx}-${i}`} />;
                   const val = grid[inst.id]?.[t.stepIndex] ?? CELL.OFF;
+                  const quarterBandClass = getQuarterBandClass(t.bar, t.stepMeta);
                   return (
                     <div
                       key={`${inst.id}-${t.stepIndex}`}
                       data-gridcell="1"
-                      data-row={INSTRUMENTS.findIndex((x) => x.id === inst.id)}
+                      data-row={instruments.findIndex((x) => x.id === inst.id)}
                       data-col={t.stepIndex}
                       onPointerDown={(e) => {
                         // Mobile/touch-only gesture handling.
@@ -1571,7 +3615,7 @@ function Grid({
                         e.preventDefault();
                         e.stopPropagation();
 
-                        const r = INSTRUMENTS.findIndex((x) => x.id === inst.id);
+                        const r = instruments.findIndex((x) => x.id === inst.id);
                         const c = t.stepIndex;
 
                         press.current.active = true;
@@ -1580,11 +3624,8 @@ function Grid({
                         press.current.startY = e.clientY;
                         press.current.mode = "none";
                         press.current.ghostToggled = false;
-      press.current.didSelect = false;
-      longPress.current.did = false;
-      press.current.startX = 0;
-      press.current.startY = 0;
-      press.current.startTime = 0;
+                        press.current.didSelect = false;
+                        longPress.current.did = false;
                         press.current.startRow = r;
                         press.current.startCol = c;
                         press.current.instId = inst.id;
@@ -1718,13 +3759,32 @@ function Grid({
                           longPress.current.did = false;
                           return;
                         }
+                        if (mouseDragRef.current.suppressClick) {
+                          mouseDragRef.current.suppressClick = false;
+                          setLoopRule(null);
+                          setSelection(null);
+                          return;
+                        }
                         cycleVelocity(inst.id, t.stepIndex);
                       }}
                       onMouseDown={(e) => {
                         e.stopPropagation();
                         if (loopRule) return;
+                        // Guard against stale ghost press state leaking into a new interaction.
+                        if (press.current.pointerId === "mouse" && press.current.mode === "ghostDone") {
+                          if (longPress.current.timer) {
+                            window.clearTimeout(longPress.current.timer);
+                            longPress.current.timer = null;
+                          }
+                          press.current.active = false;
+                          press.current.pointerId = null;
+                          press.current.mode = "none";
+                          press.current.ghostToggled = false;
+                          press.current.didSelect = false;
+                          longPress.current.did = false;
+                        }
 
-                        const r = INSTRUMENTS.findIndex((x) => x.id === inst.id);
+                        const r = instruments.findIndex((x) => x.id === inst.id);
                         const c = t.stepIndex;
 
                         // Desktop long-press ghost toggle (130ms) on eligible active cells.
@@ -1742,11 +3802,8 @@ function Grid({
                           press.current.instId = inst.id;
                           press.current.mode = "ghostArmed";
                           press.current.ghostToggled = false;
-      press.current.didSelect = false;
-      longPress.current.did = false;
-      press.current.startX = 0;
-      press.current.startY = 0;
-      press.current.startTime = 0;
+                          press.current.didSelect = false;
+                          longPress.current.did = false;
 
                           if (longPress.current.timer) window.clearTimeout(longPress.current.timer);
                           longPress.current.did = false;
@@ -1762,8 +3819,12 @@ function Grid({
                         }
 
                         // Default desktop behavior: click-drag to select
-                        setDrag({ row: r, col: c });
-                        setSelection({ rowStart: r, rowEnd: r, start: c, endExclusive: c + 1 });
+                        mouseDragRef.current.active = true;
+                        mouseDragRef.current.selecting = false;
+                        mouseDragRef.current.startX = e.clientX;
+                        mouseDragRef.current.startY = e.clientY;
+                        mouseDragRef.current.anchorRow = r;
+                        mouseDragRef.current.anchorCol = c;
                       }}
                       onMouseEnter={(e) => {
                         if (e && e.stopPropagation) e.stopPropagation();
@@ -1771,7 +3832,7 @@ function Grid({
                         if (!drag) return;
                         const r0 = drag.row;
                         const c0 = drag.col;
-                        const r1 = INSTRUMENTS.findIndex((x) => x.id === inst.id);
+                        const r1 = instruments.findIndex((x) => x.id === inst.id);
                         const c1 = t.stepIndex;
                         const rowStart = Math.min(r0, r1);
                         const rowEnd = Math.max(r0, r1);
@@ -1781,8 +3842,11 @@ function Grid({
                       }}
                       onMouseUp={(e) => {
                         if (e && e.stopPropagation) e.stopPropagation();
+                        mouseDragRef.current.active = false;
+                        const wasSelecting = mouseDragRef.current.selecting;
+                        mouseDragRef.current.selecting = false;
                         setDrag(null);
-                        notifySelectionFinalized();
+                        if (wasSelecting) notifySelectionFinalized();
                       }}
                       className={`w-7 h-7 border cursor-pointer ${CELL_COLOR[val]} ${(() => {
                         const role = getCellRole(inst.id, t.stepIndex);
@@ -1790,8 +3854,15 @@ function Grid({
                         if (role === "generated") return "border-neutral-600 opacity-70";
                         if (role === "selected") return "border-cyan-300 ring-2 ring-cyan-300/30";
                         return "border-neutral-800";
-                      })()}`}
-                    />
+                      })()} relative overflow-hidden`}
+                    >
+                      <span
+                        className={`pointer-events-none absolute inset-0 ${quarterBandClass} ${
+                          quarterBandClass ? "opacity-100" : (val === CELL.OFF ? "opacity-100" : "opacity-40")
+                        }`}
+                        aria-hidden="true"
+                      />
+                    </div>
                   );
                 })}
               </React.Fragment>
@@ -1803,7 +3874,21 @@ function Grid({
   );
 }
 
-function Notation({grid, resolution, bars, barsPerLine, stepsPerBar, timeSig, mergeRests, mergeNotes, dottedNotes, flatBeams}) {
+function Notation({
+  instruments,
+  grid,
+  resolution,
+  bars,
+  barsPerLine,
+  stepsPerBar,
+  timeSig,
+  quarterSubdivisionsByBar,
+  barStepOffsets,
+  mergeRests,
+  mergeNotes,
+  dottedNotes,
+  flatBeams,
+}) {
   const VF = Vex.Flow;
   const ref = useRef(null);
 
@@ -1834,31 +3919,359 @@ function Notation({grid, resolution, bars, barsPerLine, stepsPerBar, timeSig, me
     const applyGhostStyling = (note, ghostKeyIndices) => {
       if (!note || !ghostKeyIndices || ghostKeyIndices.length === 0) return;
 
+      // Use custom small SMuFL glyphs via keyProps so the override survives notehead rebuilds.
       try {
-        const Parenthesis = Flow.Parenthesis || VF.Parenthesis;
-        const ModifierPosition = Flow.ModifierPosition || VF.ModifierPosition;
-        if (Parenthesis && ModifierPosition && typeof note.addModifier === "function") {
-          ghostKeyIndices.forEach((i) => {
-            try {
-              note.addModifier(new Parenthesis(ModifierPosition.LEFT), i);
-              note.addModifier(new Parenthesis(ModifierPosition.RIGHT), i);
-            } catch (_) {}
-          });
-        }
+        const keyProps = (typeof note.getKeyProps === "function" && note.getKeyProps()) || [];
+        let changed = false;
+        ghostKeyIndices.forEach((i) => {
+          const kp = keyProps?.[i];
+          if (!kp) return;
+          const code = String(kp.code || "");
+          let target = CUSTOM_GHOST_GLYPHS.black;
+          if (code.includes("CircleX")) target = CUSTOM_GHOST_GLYPHS.circleX;
+          else if (code.includes("X")) target = CUSTOM_GHOST_GLYPHS.x;
+          if (kp.code !== target) {
+            kp.code = target;
+            changed = true;
+          }
+        });
+        if (changed && typeof note.reset === "function") note.reset();
       } catch (_) {}
+    };
 
-      // Try to shrink only the ghosted noteheads.
-      ghostKeyIndices.forEach((i) => {
+    const applyCircledXLargeStyling = (note, keyIndices) => {
+      if (!note || !keyIndices || keyIndices.length === 0) return;
+      try {
+        const keyProps = (typeof note.getKeyProps === "function" && note.getKeyProps()) || [];
+        let changed = false;
+        keyIndices.forEach((i) => {
+          const kp = keyProps?.[i];
+          if (!kp) return;
+          if (kp.code !== CUSTOM_CIRCLED_X_LARGE_GLYPH) {
+            kp.code = CUSTOM_CIRCLED_X_LARGE_GLYPH;
+            changed = true;
+          }
+        });
+        if (changed && typeof note.reset === "function") note.reset();
+      } catch (_) {}
+    };
+    const applyTupletEdgeInsetDraw = (tuplet) => {
+      if (!tuplet || tuplet.__dgInsetPatched) return;
+      tuplet.__dgInsetPatched = true;
+      const originalDraw = tuplet.draw.bind(tuplet);
+      tuplet.draw = function drawTupletWithInset() {
+        const inset = Math.max(0, Number(this.options?.edge_inset) || 0);
+        if (!this.bracketed || inset <= 0 || !Array.isArray(this.notes) || this.notes.length < 2) {
+          return originalDraw();
+        }
+
+        const first = this.notes[0];
+        const last = this.notes[this.notes.length - 1];
+        const origLeft = first.getTieLeftX?.bind(first);
+        const origRight = last.getTieRightX?.bind(last);
+        if (!origLeft || !origRight) return originalDraw();
+
+        first.getTieLeftX = () => origLeft() + inset;
+        last.getTieRightX = () => origRight() - inset;
         try {
-          const nh = note.note_heads?.[i] || note.noteHeads?.[i];
-          if (nh && typeof nh.setScale === "function") nh.setScale(0.7, 0.7);
-        } catch (_) {}
-      });
+          return originalDraw();
+        } finally {
+          first.getTieLeftX = origLeft;
+          last.getTieRightX = origRight;
+        }
+      };
     };
 ;
 
     if (!ref.current) return;
     ref.current.innerHTML = "";
+
+    const quarterCount = Math.max(1, Math.round((timeSig.n * 4) / timeSig.d));
+    const baseSubdivPerQuarter = Math.max(1, Math.round(resolution / 4));
+    const resolvedQuarterSubsByBar =
+      Array.isArray(quarterSubdivisionsByBar) && quarterSubdivisionsByBar.length === bars
+        ? quarterSubdivisionsByBar.map((row) =>
+            Array.from({ length: quarterCount }, (_, i) => Math.max(1, Number(row?.[i]) || baseSubdivPerQuarter))
+          )
+        : Array.from({ length: bars }, () =>
+            Array.from({ length: quarterCount }, () => baseSubdivPerQuarter)
+          );
+
+    const resolvedStepOffsets =
+      Array.isArray(barStepOffsets) && barStepOffsets.length === bars + 1
+        ? barStepOffsets
+        : (() => {
+            const out = [0];
+            for (let b = 0; b < bars; b++) {
+              const steps = resolvedQuarterSubsByBar[b].reduce((sum, n) => sum + Math.max(1, Number(n) || 1), 0);
+              out.push(out[b] + steps);
+            }
+            return out;
+          })();
+
+    const hasTuplets = resolvedQuarterSubsByBar.some((row) =>
+      row.some((n) => Math.max(1, Number(n) || 1) !== baseSubdivPerQuarter)
+    );
+
+    if (hasTuplets) {
+      const tupletDisplayBase = (subdiv) => {
+        const s = Math.max(1, Number(subdiv) || 1);
+        // Keep tuplet note values stable across global resolution changes:
+        // 3->2 (eighth-triplet), 5/6/7->4 (sixteenth-based), 9->8 (thirty-second-based), etc.
+        let base = 1;
+        while (base * 2 <= s) base *= 2;
+        return Math.max(1, Math.min(8, base));
+      };
+      const durationFromBase = (subdiv) => {
+        const s = Math.max(1, Number(subdiv) || 1);
+        if (s <= 1) return "q";
+        if (s <= 2) return "8";
+        if (s <= 4) return "16";
+        return "32";
+      };
+      const durationFromLen = (lenSteps, baseStepsPerQuarter) => {
+        const base = Math.max(1, Number(baseStepsPerQuarter) || 1);
+        const len = Math.max(1, Math.min(base, Number(lenSteps) || 1));
+        const ratio = base / len;
+        const denom = 4 * ratio;
+        if (denom === 4) return "q";
+        return String(denom);
+      };
+
+      const perLine = Math.max(1, Math.min(bars, Number(barsPerLine) || 1));
+      const barWidths = Array.from({ length: bars }, (_, b) => {
+        const steps = Math.max(1, (resolvedStepOffsets[b + 1] ?? 0) - (resolvedStepOffsets[b] ?? 0));
+        return Math.max(180, Math.round(92 + steps * 20));
+      });
+      const rows = Math.ceil(bars / perLine);
+      const systemHeight = 160;
+      const height = 60 + rows * systemHeight;
+      const rowWidths = Array.from({ length: rows }, (_, rowIdx) => {
+        const start = rowIdx * perLine;
+        const end = Math.min(bars, start + perLine);
+        let sum = 0;
+        for (let b = start; b < end; b++) sum += barWidths[b];
+        return sum;
+      });
+      const width = 20 + (rowWidths.length ? Math.max(...rowWidths) : 0);
+
+      const renderer = new Renderer(ref.current, Renderer.Backends.SVG);
+      renderer.resize(width, height);
+      const ctx = renderer.getContext();
+
+      const staves = [];
+      const voices = [];
+      const beamsByBar = Array.from({ length: bars }, () => []);
+      const tupletsByBar = Array.from({ length: bars }, () => []);
+
+      for (let b = 0; b < bars; b++) {
+        const row = Math.floor(b / perLine);
+        const col = b % perLine;
+        const rowStartBar = row * perLine;
+        let x = 10;
+        for (let bi = rowStartBar; bi < rowStartBar + col; bi++) {
+          if (bi >= bars) break;
+          x += barWidths[bi];
+        }
+        const y = 30 + row * systemHeight;
+        const stave = new Stave(x, y, barWidths[b]);
+        if (col > 0) stave.setBegBarType(Barline.type.NONE);
+        if (b === 0) {
+          stave.addClef("percussion");
+          stave.addTimeSignature(`${timeSig.n}/${timeSig.d}`);
+        }
+        stave.setContext(ctx).draw();
+        staves.push(stave);
+
+        const notes = [];
+        const beamBuckets = [];
+        const tuplets = [];
+        const barStart = resolvedStepOffsets[b] ?? 0;
+        const barSubs = resolvedQuarterSubsByBar[b] || [];
+        let localStep = 0;
+
+        for (let q = 0; q < barSubs.length; q++) {
+          const subdiv = Math.max(1, Number(barSubs[q]) || 1);
+          const tupletQuarter = subdiv !== baseSubdivPerQuarter;
+          const quarterDisplayBase = tupletQuarter ? tupletDisplayBase(subdiv) : baseSubdivPerQuarter;
+          const quarterNotes = [];
+          const quarterBeamBucket = [];
+          const stepData = [];
+          for (let sub = 0; sub < subdiv; sub++) {
+            const globalIdx = barStart + localStep + sub;
+            const keys = [];
+            const ghostKeyIndices = [];
+            const circledXLargeKeyIndices = [];
+            instruments.forEach((inst) => {
+              const val = grid[inst.id]?.[globalIdx] ?? CELL.OFF;
+              if (val === CELL.OFF) return;
+              keys.push(NOTATION_MAP[inst.id].key);
+              const keyIndex = keys.length - 1;
+              if (val === CELL.GHOST && GHOST_NOTATION_ENABLED.has(inst.id)) ghostKeyIndices.push(keyIndex);
+              if (inst.id === "china" || inst.id === "hihatOpen") circledXLargeKeyIndices.push(keyIndex);
+            });
+            stepData.push({ keys, ghostKeyIndices, circledXLargeKeyIndices });
+          }
+
+          const canUseMergedQuarterLogic = subdiv === baseSubdivPerQuarter && (mergeNotes || mergeRests);
+          if (canUseMergedQuarterLogic) {
+            let sub = 0;
+            while (sub < subdiv) {
+              const entry = stepData[sub];
+              if (entry.keys.length > 0) {
+                let len = 1;
+                if (mergeNotes) {
+                  const canLen = (candidateLen) => {
+                    if (candidateLen < 1) return false;
+                    if (sub % candidateLen !== 0) return false;
+                    if (sub + candidateLen > subdiv) return false;
+                    for (let k = 1; k < candidateLen; k++) {
+                      if (stepData[sub + k]?.keys.length) return false;
+                    }
+                    return true;
+                  };
+                  for (let p = baseSubdivPerQuarter; p >= 1; p = Math.floor(p / 2)) {
+                    if (canLen(p)) {
+                      len = p;
+                      break;
+                    }
+                  }
+                }
+                let dotted = false;
+                if (mergeNotes && dottedNotes && len >= 2) {
+                  const extra = len / 2;
+                  if (sub + len + extra <= subdiv) {
+                    dotted = true;
+                    for (let k = 0; k < extra; k++) {
+                      if (stepData[sub + len + k]?.keys.length) {
+                        dotted = false;
+                        break;
+                      }
+                    }
+                  }
+                }
+
+                const note = new StaveNote({
+                  keys: entry.keys,
+                  duration: durationFromLen(len, baseSubdivPerQuarter),
+                  clef: "percussion",
+                });
+                note.setStemDirection(1);
+                if (dotted) attachDot(note);
+                applyGhostStyling(note, entry.ghostKeyIndices);
+                applyCircledXLargeStyling(note, entry.circledXLargeKeyIndices);
+                notes.push(note);
+                quarterNotes.push(note);
+                quarterBeamBucket.push(note);
+                sub += dotted ? len + len / 2 : len;
+                continue;
+              }
+
+              if (!mergeRests) {
+                const rest = new StaveNote({
+                  keys: ["b/4"],
+                  duration: `${durationFromBase(quarterDisplayBase)}r`,
+                  clef: "percussion",
+                });
+                notes.push(rest);
+                quarterNotes.push(rest);
+                sub += 1;
+                continue;
+              }
+
+              let remain = subdiv - sub;
+              let chunk = 1;
+              for (let p = baseSubdivPerQuarter; p >= 1; p = Math.floor(p / 2)) {
+                if (p <= remain && sub % p === 0) {
+                  chunk = p;
+                  break;
+                }
+              }
+              const restDur = `${durationFromLen(chunk, baseSubdivPerQuarter)}r`;
+              const rest = new StaveNote({ keys: ["b/4"], duration: restDur, clef: "percussion" });
+              notes.push(rest);
+              quarterNotes.push(rest);
+              sub += chunk;
+            }
+          } else {
+            for (let sub = 0; sub < subdiv; sub++) {
+              const entry = stepData[sub];
+              const note = entry.keys.length
+                ? new StaveNote({ keys: entry.keys, duration: durationFromBase(quarterDisplayBase), clef: "percussion" })
+                : new StaveNote({ keys: ["b/4"], duration: `${durationFromBase(quarterDisplayBase)}r`, clef: "percussion" });
+              if (entry.keys.length) note.setStemDirection(1);
+              applyGhostStyling(note, entry.ghostKeyIndices);
+              applyCircledXLargeStyling(note, entry.circledXLargeKeyIndices);
+              notes.push(note);
+              quarterNotes.push(note);
+              if (entry.keys.length) quarterBeamBucket.push(note);
+            }
+          }
+
+          beamBuckets.push(quarterBeamBucket);
+          if (subdiv !== baseSubdivPerQuarter && quarterNotes.length > 1) {
+            try {
+              const t = new Vex.Flow.Tuplet(quarterNotes, {
+                num_notes: subdiv,
+                notes_occupied: quarterDisplayBase,
+                bracketed: true,
+                ratioed: false,
+                y_offset: subdiv === 6 ? -6 : 0,
+                edge_inset: 1.5,
+              });
+              applyTupletEdgeInsetDraw(t);
+              tuplets.push(t);
+            } catch (_) {}
+          }
+          localStep += subdiv;
+        }
+
+        const voice = new Voice({ num_beats: timeSig.n, beat_value: timeSig.d });
+        voice.setStrict(false);
+        voice.addTickables(notes);
+        voices.push(voice);
+
+        try {
+          const quarterBeams = [];
+          beamBuckets.forEach((bucket) => {
+            if (!bucket.length) return;
+            const beams = Beam.generateBeams(bucket, {
+              groups: [new Fraction(1, timeSig.d)],
+              stem_direction: 1,
+              beam_rests: false,
+              flat_beams: !!flatBeams,
+            });
+            quarterBeams.push(...beams);
+          });
+          beamsByBar[b] = quarterBeams;
+        } catch (_) {
+          beamsByBar[b] = [];
+        }
+        tupletsByBar[b] = tuplets;
+      }
+
+      for (let b = 0; b < bars; b++) {
+        const formatter = new Formatter().joinVoices([voices[b]]);
+        formatter.formatToStave([voices[b]], staves[b]);
+        voices[b].draw(ctx, staves[b]);
+        (beamsByBar[b] || []).forEach((beam) => beam.setContext(ctx).draw());
+        (tupletsByBar[b] || []).forEach((tuplet) => {
+          try { tuplet.setContext(ctx).draw(); } catch (_) {}
+        });
+      }
+      const svg = ref.current.querySelector("svg");
+      if (svg) {
+        svg.style.background = "transparent";
+        svg.querySelectorAll("path, line, rect, circle").forEach((el) => {
+          el.setAttribute("stroke", "white");
+          el.setAttribute("fill", "white");
+        });
+        svg.querySelectorAll("text").forEach((el) => {
+          el.setAttribute("fill", "white");
+        });
+      }
+      return;
+    }
 
       // Beam grouping per bar (used for beaming and dotted-note limits)
       const beamGroupsPerBar = (() => {
@@ -1955,7 +4368,12 @@ function Notation({grid, resolution, bars, barsPerLine, stepsPerBar, timeSig, me
 
       const notes = [];
       const noteStarts = [];
-      const pushNote = (n, ghostKeyIndices) => { applyGhostStyling(n, ghostKeyIndices); notes.push(n); noteStarts.push(s); };
+      const pushNote = (n, ghostKeyIndices, circledXLargeKeyIndices) => {
+        applyGhostStyling(n, ghostKeyIndices);
+        applyCircledXLargeStyling(n, circledXLargeKeyIndices);
+        notes.push(n);
+        noteStarts.push(s);
+      };
 
       let s = 0;
       while (s < stepsPerBar) {
@@ -1963,13 +4381,18 @@ function Notation({grid, resolution, bars, barsPerLine, stepsPerBar, timeSig, me
 
         const keys = [];
         const ghostKeyIndices = [];
+        const circledXLargeKeyIndices = [];
 
-        INSTRUMENTS.forEach((inst) => {
+        instruments.forEach((inst) => {
           const val = grid[inst.id][globalIdx];
           if (val !== CELL.OFF) {
             keys.push(NOTATION_MAP[inst.id].key);
+            const keyIndex = keys.length - 1;
             if (val === CELL.GHOST && GHOST_NOTATION_ENABLED.has(inst.id)) {
-              ghostKeyIndices.push(keys.length - 1);
+              ghostKeyIndices.push(keyIndex);
+            }
+            if (inst.id === "china" || inst.id === "hihatOpen") {
+              circledXLargeKeyIndices.push(keyIndex);
             }
           }
         });
@@ -1980,7 +4403,7 @@ const isRest = keys.length === 0;
         const subInBeat = stepsPerBeatN === 0 ? 0 : (s % stepsPerBeatN);
 
         const hasAnyHitAt = (absIdx) => {
-      for (const inst of INSTRUMENTS) {
+      for (const inst of instruments) {
         if ((notationGrid[inst.id]?.[absIdx] ?? CELL.OFF) !== CELL.OFF) return true;
       }
       return false;
@@ -2011,7 +4434,7 @@ const isRest = keys.length === 0;
             if (isStepEmpty(b * stepsPerBar + (s + 1))) {
               const noteQ = new StaveNote({ keys, duration: "q", clef: "percussion" });
               noteQ.setStemDirection(1);
-              pushNote(noteQ, ghostKeyIndices);
+              pushNote(noteQ, ghostKeyIndices, circledXLargeKeyIndices);
                 if (allowDotted && mergeNotes) {
                   const after = b * stepsPerBarN + (s + 2);
                   if (s + 2 < stepsPerBar && isStepEmpty(after) && inSameBeamGroup(s, s + 3)) {
@@ -2037,7 +4460,7 @@ const isRest = keys.length === 0;
               if (isStepEmpty(a) && isStepEmpty(b2) && isStepEmpty(c)) {
                 const noteQ = new StaveNote({ keys, duration: "q", clef: "percussion" });
                 noteQ.setStemDirection(1);
-                pushNote(noteQ, ghostKeyIndices);
+                pushNote(noteQ, ghostKeyIndices, circledXLargeKeyIndices);
                 s += 4;
                 continue;
               }
@@ -2047,7 +4470,7 @@ const isRest = keys.length === 0;
               if (isStepEmpty(next)) {
                 const note8 = new StaveNote({ keys, duration: "8", clef: "percussion" });
                 note8.setStemDirection(1);
-                pushNote(note8, ghostKeyIndices);
+                pushNote(note8, ghostKeyIndices, circledXLargeKeyIndices);
                 if (allowDotted && mergeNotes) {
                   const after = b * stepsPerBarN + (s + 2);
                   if (s + 2 < stepsPerBar && isStepEmpty(after) && inSameBeamGroup(s, s + 3)) {
@@ -2115,7 +4538,7 @@ const isRest = keys.length === 0;
             const note = new StaveNote({ keys, duration: dur, clef: "percussion" });
             note.setStemDirection(1);
             if (dotted) attachDot(note);
-            pushNote(note, ghostKeyIndices);
+            pushNote(note, ghostKeyIndices, circledXLargeKeyIndices);
 
             s += dotted ? (len + len / 2) : len;
             continue;
@@ -2133,7 +4556,7 @@ const isRest = keys.length === 0;
             if (isStepEmpty(b * stepsPerBar + (s + 1))) {
               const note8 = new StaveNote({ keys, duration: "8", clef: "percussion" });
               note8.setStemDirection(1);
-              pushNote(note8, ghostKeyIndices);
+              pushNote(note8, ghostKeyIndices, circledXLargeKeyIndices);
                 if (allowDotted && mergeNotes) {
                   const after = b * stepsPerBarN + (s + 2);
                   if (s + 2 < stepsPerBar && isStepEmpty(after) && inSameBeamGroup(s, s + 3)) {
@@ -2265,7 +4688,7 @@ const isRest = keys.length === 0;
         // MVP: if any cymbal is present in this slice, use X noteheads for the chord.
         // Next upgrade: per-key notehead types.
 
-        pushNote(note, ghostKeyIndices);
+        pushNote(note, ghostKeyIndices, circledXLargeKeyIndices);
         s += 1;
       }
 
@@ -2331,7 +4754,7 @@ for (let i = 0; i < notes.length; i++) {
           .filter((y) => typeof y === "number");
 
         if (ys.length) {
-          const targetY = Math.round(Math.min(...ys));
+          const targetY = Math.min(...ys);
 
           // Second pass: regenerate beams (fresh objects) and apply flat_beam_offset BEFORE final postFormat/draw.
           const fresh = [];
@@ -2356,8 +4779,7 @@ for (let i = 0; i < notes.length; i++) {
                 const currentY = beam.getBeamYToDraw?.();
                 if (typeof currentY === "number") {
                   const delta = targetY - currentY;
-                  const snappedDelta = Math.round(delta);
-                  beam.render_options.flat_beam_offset = (beam.render_options.flat_beam_offset ?? 0) + snappedDelta;
+                  beam.render_options.flat_beam_offset = (beam.render_options.flat_beam_offset ?? 0) + delta;
                 }
 
                 // Recompute after shifting the flat beam offset so stems match.
@@ -2390,7 +4812,7 @@ for (let i = 0; i < notes.length; i++) {
         el.setAttribute("fill", "white");
       });
     }
-  }, [grid, resolution, bars, barsPerLine, stepsPerBar, timeSig, mergeRests, mergeNotes, dottedNotes, flatBeams]);
+  }, [instruments, grid, resolution, bars, barsPerLine, stepsPerBar, timeSig, quarterSubdivisionsByBar, barStepOffsets, mergeRests, mergeNotes, dottedNotes, flatBeams]);
 
   return <div ref={ref} />;
 

@@ -3979,6 +3979,7 @@ function Notation({
 
     const applyGhostStyling = (note, ghostKeyIndices) => {
       if (!note || !ghostKeyIndices || ghostKeyIndices.length === 0) return;
+      note.__dgHasGhost = true;
 
       // Use custom small SMuFL glyphs via keyProps so the override survives notehead rebuilds.
       try {
@@ -3997,6 +3998,14 @@ function Notation({
           }
         });
         if (changed && typeof note.reset === "function") note.reset();
+      } catch (_) {}
+    };
+    const applyGhostStemOverride = (note, ghostKeyIndices) => {
+      if (!note || !ghostKeyIndices || ghostKeyIndices.length === 0) return;
+      try {
+        // Stabilize ghost stem geometry when custom notehead metrics differ.
+        // Value is in px and intentionally close to VexFlow default stem size.
+        if (typeof note.setStemLength === "function") note.setStemLength(35);
       } catch (_) {}
     };
 
@@ -4220,6 +4229,7 @@ function Notation({
                 note.setStemDirection(1);
                 if (dotted) attachDot(note);
                 applyGhostStyling(note, entry.ghostKeyIndices);
+                applyGhostStemOverride(note, entry.ghostKeyIndices);
                 applyCircledXLargeStyling(note, entry.circledXLargeKeyIndices);
                 notes.push(note);
                 quarterNotes.push(note);
@@ -4262,6 +4272,7 @@ function Notation({
                 : new StaveNote({ keys: ["b/4"], duration: `${durationFromBase(quarterDisplayBase)}r`, clef: "percussion" });
               if (entry.keys.length) note.setStemDirection(1);
               applyGhostStyling(note, entry.ghostKeyIndices);
+              applyGhostStemOverride(note, entry.ghostKeyIndices);
               applyCircledXLargeStyling(note, entry.circledXLargeKeyIndices);
               notes.push(note);
               quarterNotes.push(note);
@@ -4315,7 +4326,25 @@ function Notation({
         const formatter = new Formatter().joinVoices([voices[b]]);
         formatter.formatToStave([voices[b]], staves[b]);
         voices[b].draw(ctx, staves[b]);
-        (beamsByBar[b] || []).forEach((beam) => beam.setContext(ctx).draw());
+        (beamsByBar[b] || []).forEach((beam) => {
+          try {
+            const beamNotes = (typeof beam.getNotes === "function" ? beam.getNotes() : beam.notes) || [];
+            const ghostNotes = beamNotes.filter(
+              (n) => !!n?.__dgHasGhost && typeof n.getStemLength === "function" && typeof n.setStemLength === "function"
+            );
+            if (ghostNotes.length) {
+              const targetStem = Math.max(
+                ...beamNotes.map((n) => (typeof n?.getStemLength === "function" ? n.getStemLength() : 0))
+              );
+              if (targetStem > 0) {
+                ghostNotes.forEach((n) => n.setStemLength(targetStem));
+                beam.postFormatted = false;
+                beam.postFormat?.();
+              }
+            }
+          } catch (_) {}
+          beam.setContext(ctx).draw();
+        });
         (tupletsByBar[b] || []).forEach((tuplet) => {
           try { tuplet.setContext(ctx).draw(); } catch (_) {}
         });
@@ -4431,6 +4460,7 @@ function Notation({
       const noteStarts = [];
       const pushNote = (n, ghostKeyIndices, circledXLargeKeyIndices) => {
         applyGhostStyling(n, ghostKeyIndices);
+        applyGhostStemOverride(n, ghostKeyIndices);
         applyCircledXLargeStyling(n, circledXLargeKeyIndices);
         notes.push(n);
         noteStarts.push(s);

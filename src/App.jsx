@@ -378,6 +378,8 @@ export default function App() {
   );
 
   const [bpm, setBpm] = useState(120);
+  const [isBraveBrowser, setIsBraveBrowser] = useState(false);
+  const [showBraveAudioNotice, setShowBraveAudioNotice] = useState(true);
   const [bpmDraft, setBpmDraft] = useState("120");
   const [menuViewportTick, setMenuViewportTick] = useState(0);
   const activeTabRef = React.useRef(activeTab);
@@ -1737,6 +1739,21 @@ useEffect(() => {
     resolution,
     stepQuarterDurations,
   });
+  useEffect(() => {
+    let cancelled = false;
+    const detectBrave = async () => {
+      try {
+        const maybeBrave = navigator?.brave;
+        if (!maybeBrave || typeof maybeBrave.isBrave !== "function") return;
+        const result = await maybeBrave.isBrave();
+        if (!cancelled) setIsBraveBrowser(!!result);
+      } catch (_) {}
+    };
+    detectBrave();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Unified transport toggle: matches Spacebar + Play button behavior exactly.
   const togglePlaybackFromBeginning = React.useCallback(() => {
@@ -1896,6 +1913,30 @@ useEffect(() => {
     >
       
       <header className="flex flex-col gap-3" data-loopui='1'>
+        {showBraveAudioNotice && isBraveBrowser && playback.slowStartDetected && (
+          <div className="rounded-lg border border-amber-700/70 bg-amber-900/20 px-3 py-2 text-xs text-amber-100 flex items-start justify-between gap-3">
+            <div>
+              <div className="font-medium">Low Volume?</div>
+              <div className="mt-0.5 text-amber-100/90">
+                {`Detected delayed playback start (~${(Math.max(0, playback.startupLagMs || 0) / 1000).toFixed(1)}s). `}
+                Click the Brave lion icon in the address bar, then set
+                <span className="mx-1 font-medium">Fingerprinting</span>
+                to
+                <span className="ml-1 font-medium">Allow</span>.
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowBraveAudioNotice(false)}
+              onKeyDown={(e) => {
+                if (e.key === " " || e.key === "Spacebar") e.preventDefault();
+              }}
+              className="px-2 py-0.5 rounded border border-amber-700/70 text-amber-100 hover:bg-amber-800/40"
+            >
+              Close tip
+            </button>
+          </div>
+        )}
         <div className="flex flex-wrap items-center gap-3">
           <h1 className="text-lg font-semibold mr-2">Drum Grid → Notation</h1>
 

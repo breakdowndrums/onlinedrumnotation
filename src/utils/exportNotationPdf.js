@@ -1,5 +1,6 @@
 import { jsPDF } from "jspdf";
 import { svg2pdf } from "svg2pdf.js";
+import QRCode from "qrcode";
 
 /**
  * Vector PDF export (no rasterization).
@@ -12,12 +13,23 @@ export async function exportNotationPdf(containerEl, opts = {}) {
   const scoreTitle = (opts.scoreTitle || "").trim();
   const composer = (opts.composer || "").trim();
   const watermarkEnabled = opts.watermark !== false;
+  const includeSticking = opts.includeSticking === true;
+  const qrText = String(opts.qrText || "").trim();
   const svgEls = Array.from(containerEl.querySelectorAll("svg"));
   if (svgEls.length === 0) throw new Error("No notation SVGs found to export");
 
   const pdf = new jsPDF({ orientation: "landscape", unit: "pt", format: "a4" });
   const pageW = pdf.internal.pageSize.getWidth();
   const pageH = pdf.internal.pageSize.getHeight();
+  const qrDataUrl = qrText ? await QRCode.toDataURL(qrText, {
+    margin: 0,
+    color: {
+      dark: "#000000",
+      light: "#FFFFFF",
+    },
+    width: 256,
+  }) : "";
+  const qrSize = 58;
 
   const pad = 36; // 0.5 inch
   const maxW = pageW - pad * 2;
@@ -46,9 +58,39 @@ export async function exportNotationPdf(containerEl, opts = {}) {
     clone.insertBefore(defs, clone.firstChild);
 
     // Determine SVG intrinsic size from viewBox (preferred) or bbox
-    const vb = clone.viewBox && clone.viewBox.baseVal ? clone.viewBox.baseVal : null;
-    const svgW = vb ? vb.width : (clone.getBBox ? clone.getBBox().width : 800);
-    const svgH = vb ? vb.height : (clone.getBBox ? clone.getBBox().height : 200);
+    const vb = svg.viewBox && svg.viewBox.baseVal ? svg.viewBox.baseVal : null;
+    let bbox = null;
+    try {
+      bbox = svg.getBBox ? svg.getBBox() : null;
+    } catch (_) {
+      bbox = null;
+    }
+    let svgX = vb ? vb.x : 0;
+    let svgY = vb ? vb.y : 0;
+    let svgW = vb ? vb.width : bbox?.width || 800;
+    let svgH = vb ? vb.height : bbox?.height || 200;
+
+    // Sticking is drawn below the staff; expand the SVG crop to include that text.
+    if (
+      includeSticking &&
+      bbox &&
+      Number.isFinite(bbox.x) &&
+      Number.isFinite(bbox.y) &&
+      Number.isFinite(bbox.width) &&
+      Number.isFinite(bbox.height)
+    ) {
+      const padX = 8;
+      const padY = 10;
+      const left = Math.min(svgX, bbox.x - padX);
+      const top = Math.min(svgY, bbox.y - padY);
+      const right = Math.max(svgX + svgW, bbox.x + bbox.width + padX);
+      const bottom = Math.max(svgY + svgH, bbox.y + bbox.height + padY);
+      svgX = left;
+      svgY = top;
+      svgW = Math.max(1, right - left);
+      svgH = Math.max(1, bottom - top);
+      clone.setAttribute("viewBox", `${svgX} ${svgY} ${svgW} ${svgH}`);
+    }
 
     // Fit to page preserving aspect ratio
     const scale = Math.min(maxW / svgW, maxH / svgH);
@@ -76,6 +118,9 @@ export async function exportNotationPdf(containerEl, opts = {}) {
       pdf.setTextColor(180, 180, 180);
       pdf.text("onlinedrumnotation.com", pageW / 2, pageH - 14, { align: "center" });
       pdf.setTextColor(0, 0, 0);
+    }
+    if (qrDataUrl) {
+      pdf.addImage(qrDataUrl, "PNG", pad, pageH - pad - qrSize, qrSize, qrSize);
     }
 
     // svg2pdf renders into current page; specify x/y and scale

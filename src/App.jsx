@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
+import { createPortal, flushSync } from "react-dom";
 import { exportNotationPdf } from "./utils/exportNotationPdf";
 import { exportNotationPng } from "./utils/exportNotationPng";
 import { exportArrangementPdf } from "./utils/exportArrangementPdf";
@@ -406,6 +406,7 @@ function SortableArrangementSourceBeatRow({
   beatLibraryDropTargetId,
   isLoadedTrackedBeat,
   isSelectedArrangementSourceBeat,
+  isBeatLibraryBeatSelected,
   editingBeatLibraryBeatId,
   editingBeatLibraryBeatName,
   setEditingBeatLibraryBeatName,
@@ -414,7 +415,7 @@ function SortableArrangementSourceBeatRow({
   startEditingBeatLibraryBeat,
   showUpdateButton,
   updateCurrentLoadedBeatLocal,
-  loadBeatIntoEditor,
+  onSelectBeat,
   arrangementAddBeat,
   handleDeleteLocalBeatClick,
   hideSourceWhileDragging,
@@ -429,7 +430,10 @@ function SortableArrangementSourceBeatRow({
     transform: CSS.Transform.toString(verticalTransform),
     transition: disableTransition ? undefined : transition,
   };
-  const isVisuallyActive = isLoadedTrackedBeat || (!isLoadedTrackedBeat && isSelectedArrangementSourceBeat);
+  const isVisuallyActive =
+    isBeatLibraryBeatSelected ||
+    isLoadedTrackedBeat ||
+    (!isLoadedTrackedBeat && isSelectedArrangementSourceBeat);
 
   return (
     <div
@@ -447,16 +451,16 @@ function SortableArrangementSourceBeatRow({
         data-beat-row-id={beatRowKey}
         role="button"
         tabIndex={0}
-        onClick={() => loadBeatIntoEditor("local", beat)}
+        onClick={(e) => onSelectBeat?.(beat, !!e?.shiftKey)}
         onKeyDown={(e) => {
           if (e.key === "Enter" || e.key === " ") {
             e.preventDefault();
-            loadBeatIntoEditor("local", beat);
+            onSelectBeat?.(beat, !!e?.shiftKey);
           }
         }}
         {...attributes}
         {...listeners}
-        className={`flex items-center gap-2 rounded border px-2.5 py-2 text-left text-sm outline-none focus:outline-none focus-visible:outline-none ${
+        className={`select-none flex items-center gap-2 rounded border px-2.5 py-2 text-left text-sm outline-none focus:outline-none focus-visible:outline-none ${
           isVisuallyActive
             ? "border-sky-500/70 bg-sky-900/20 shadow-[0_0_0_1px_rgba(14,165,233,0.35)]"
             : isDragging
@@ -627,10 +631,15 @@ const PRESET_LABELS = {
 };
 const USER_PRESETS_STORAGE_KEY = "drum-grid-user-presets-v1";
 const LOCAL_BEAT_LIBRARY_STORAGE_KEY = "drum-grid-local-beat-library-v1";
+const DEVICE_LOCAL_BEAT_LIBRARY_SNAPSHOT_STORAGE_KEY =
+  "drum-grid-device-local-beat-library-snapshot-v1";
 const PUBLIC_SUBMIT_COMPOSER_STORAGE_KEY = "drum-grid-public-submit-composer-v1";
 const SONG_ARRANGEMENT_STORAGE_KEY = "drum-grid-song-arrangement-v1";
 const SONG_ARRANGEMENT_LIBRARY_STORAGE_KEY = "drum-grid-song-arrangement-library-v1";
+const DEVICE_LOCAL_SONG_ARRANGEMENT_LIBRARY_SNAPSHOT_STORAGE_KEY =
+  "drum-grid-device-local-song-arrangement-library-snapshot-v1";
 const LAST_USED_ARRANGEMENT_ID_STORAGE_KEY = "drum-grid-last-used-arrangement-id-v1";
+const PERSONAL_CLOUD_IMPORT_DECISIONS_STORAGE_KEY = "drum-grid-personal-cloud-import-decisions-v1";
 const ARRANGEMENT_BOUNDARY_COMP_SCALE_STORAGE_KEY = "drum-grid-arrangement-boundary-comp-scale-v1";
 const ARRANGEMENT_ADAPTIVE_COMP_ENABLED_STORAGE_KEY = "drum-grid-arrangement-adaptive-comp-enabled-v1";
 const PLAYBACK_RATE_STORAGE_KEY = "drum-grid-playback-rate-v1";
@@ -672,9 +681,14 @@ const ARRANGEMENT_COMPOSER_STORAGE_KEY = "drum-grid-arrangement-composer-v1";
 const PREFERENCES_CATEGORY_STORAGE_KEY = "drum-grid-preferences-category-v1";
 const DEFAULT_LOOP_REPEATS_STORAGE_KEY = "drum-grid-default-loop-repeats-v1";
 const BEAT_LIBRARY_CONTAINERS_STORAGE_KEY = "drum-grid-beat-library-containers-v1";
+const DEVICE_LOCAL_BEAT_LIBRARY_CONTAINERS_SNAPSHOT_STORAGE_KEY =
+  "drum-grid-device-local-beat-library-containers-snapshot-v1";
+const PERSONAL_LIBRARY_STATE_PAYLOAD_KIND = "personal-library-state";
+const PERSONAL_LIBRARY_STATE_SHARE_LINK_KIND = "arrangement";
 const BEAT_LIBRARY_SELECTED_CONTAINER_STORAGE_KEY = "drum-grid-beat-library-selected-container-v1";
 const BEAT_LIBRARY_ROOT_COLLAPSED_STORAGE_KEY = "drum-grid-beat-library-root-collapsed-v1";
 const GRID_SETTINGS_PRESET_LIBRARY_STORAGE_KEY = "drum-grid-grid-settings-presets-v1";
+const APP_VERSION = "0.1.1";
 const BEAT_CATEGORY_OPTIONS = [
   "Groove",
   "Fill",
@@ -1111,24 +1125,169 @@ function readStoredGridSettingsPresets() {
   }
 }
 
+function normalizeBeatLibraryContainers(source) {
+  if (!Array.isArray(source)) return [];
+  return source
+    .map((entry, index) => ({
+      id: String(entry?.id || ""),
+      name: String(entry?.name || "").trim(),
+      type: "folder",
+      parentId: entry?.parentId ? String(entry.parentId) : null,
+      collapsed: entry?.collapsed === true,
+      order: Number.isFinite(Number(entry?.order)) ? Number(entry.order) : index,
+    }))
+    .filter((entry) => entry.id && entry.name);
+}
+
 function readStoredBeatLibraryContainers() {
   try {
     const raw = window.localStorage.getItem(BEAT_LIBRARY_CONTAINERS_STORAGE_KEY);
     const parsed = raw ? JSON.parse(raw) : [];
-    if (!Array.isArray(parsed)) return [];
-    return parsed
-      .map((entry, index) => ({
-        id: String(entry?.id || ""),
-        name: String(entry?.name || "").trim(),
-        type: "folder",
-        parentId: entry?.parentId ? String(entry.parentId) : null,
-        collapsed: entry?.collapsed === true,
-        order: Number.isFinite(Number(entry?.order)) ? Number(entry.order) : index,
-      }))
-      .filter((entry) => entry.id && entry.name);
+    return normalizeBeatLibraryContainers(parsed);
   } catch (_) {
     return [];
   }
+}
+
+function readStoredDeviceLocalBeats() {
+  try {
+    const raw = window.localStorage.getItem(DEVICE_LOCAL_BEAT_LIBRARY_SNAPSHOT_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : null;
+    if (Array.isArray(parsed)) return normalizeLocalBeatLibrary(parsed);
+  } catch (_) {}
+  return readStoredLocalBeats();
+}
+
+function readStoredDeviceLocalArrangements() {
+  try {
+    const raw = window.localStorage.getItem(
+      DEVICE_LOCAL_SONG_ARRANGEMENT_LIBRARY_SNAPSHOT_STORAGE_KEY
+    );
+    const parsed = raw ? JSON.parse(raw) : null;
+    if (Array.isArray(parsed)) return normalizeArrangementLibrary(parsed);
+  } catch (_) {}
+  return readStoredSavedArrangements();
+}
+
+function readStoredDeviceLocalBeatLibraryContainers() {
+  try {
+    const raw = window.localStorage.getItem(
+      DEVICE_LOCAL_BEAT_LIBRARY_CONTAINERS_SNAPSHOT_STORAGE_KEY
+    );
+    const parsed = raw ? JSON.parse(raw) : null;
+    if (Array.isArray(parsed)) return normalizeBeatLibraryContainers(parsed);
+  } catch (_) {}
+  return readStoredBeatLibraryContainers();
+}
+
+function getPersonalLibraryStateShareId(userId) {
+  const normalized = String(userId || "").trim();
+  return normalized ? `personal-library-${normalized}` : "";
+}
+
+function buildOfflineLocalLibrarySnapshot() {
+  const beats = readStoredDeviceLocalBeats();
+  const arrangements = readStoredDeviceLocalArrangements();
+  const folders = readStoredDeviceLocalBeatLibraryContainers();
+  const fingerprint = JSON.stringify({
+    beats: beats.map((entry) => [
+      String(entry?.id || ""),
+      String(entry?.name || ""),
+      String(entry?.updatedAt || entry?.createdAt || ""),
+    ]),
+    arrangements: arrangements.map((entry) => [
+      String(entry?.id || ""),
+      String(entry?.name || ""),
+      String(entry?.updatedAt || entry?.createdAt || ""),
+    ]),
+    folders: folders.map((entry) => [
+      String(entry?.id || ""),
+      String(entry?.name || ""),
+      String(entry?.parentId || ""),
+      entry?.collapsed === true ? 1 : 0,
+      Number(entry?.order) || 0,
+    ]),
+  });
+  return { beats, arrangements, folders, fingerprint };
+}
+
+function readPersonalCloudImportDecisions() {
+  try {
+    const raw = window.localStorage.getItem(PERSONAL_CLOUD_IMPORT_DECISIONS_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch (_) {
+    return {};
+  }
+}
+
+function writePersonalCloudImportDecision(userId, fingerprint, decision) {
+  try {
+    const key = `${String(userId || "")}:${String(fingerprint || "")}`;
+    if (!key || key === ":") return;
+    const next = {
+      ...readPersonalCloudImportDecisions(),
+      [key]: {
+        decision: String(decision || ""),
+        updatedAt: new Date().toISOString(),
+      },
+    };
+    window.localStorage.setItem(
+      PERSONAL_CLOUD_IMPORT_DECISIONS_STORAGE_KEY,
+      JSON.stringify(next)
+    );
+  } catch (_) {}
+}
+
+function hasHandledPersonalCloudImportDecision(userId, fingerprint) {
+  if (!userId || !fingerprint) return false;
+  const decisions = readPersonalCloudImportDecisions();
+  return Boolean(decisions[`${String(userId)}:${String(fingerprint)}`]);
+}
+
+function writeStoredLocalBeats(beats) {
+  try {
+    window.localStorage.setItem(LOCAL_BEAT_LIBRARY_STORAGE_KEY, JSON.stringify(beats || []));
+  } catch (_) {}
+}
+
+function writeStoredDeviceLocalBeats(beats) {
+  try {
+    window.localStorage.setItem(
+      DEVICE_LOCAL_BEAT_LIBRARY_SNAPSHOT_STORAGE_KEY,
+      JSON.stringify(beats || [])
+    );
+  } catch (_) {}
+}
+
+function writeStoredSavedArrangements(items) {
+  try {
+    window.localStorage.setItem(SONG_ARRANGEMENT_LIBRARY_STORAGE_KEY, JSON.stringify(items || []));
+  } catch (_) {}
+}
+
+function writeStoredDeviceLocalArrangements(items) {
+  try {
+    window.localStorage.setItem(
+      DEVICE_LOCAL_SONG_ARRANGEMENT_LIBRARY_SNAPSHOT_STORAGE_KEY,
+      JSON.stringify(items || [])
+    );
+  } catch (_) {}
+}
+
+function writeStoredBeatLibraryContainers(items) {
+  try {
+    window.localStorage.setItem(BEAT_LIBRARY_CONTAINERS_STORAGE_KEY, JSON.stringify(items || []));
+  } catch (_) {}
+}
+
+function writeStoredDeviceLocalBeatLibraryContainers(items) {
+  try {
+    window.localStorage.setItem(
+      DEVICE_LOCAL_BEAT_LIBRARY_CONTAINERS_SNAPSHOT_STORAGE_KEY,
+      JSON.stringify(items || [])
+    );
+  } catch (_) {}
 }
 
 function getBeatLibraryMeta(beat) {
@@ -1145,7 +1304,62 @@ function getBeatLibraryMeta(beat) {
 
 function getComparableBeatPayload(payload) {
   if (!payload || typeof payload !== "object") return {};
-  const next = { ...payload };
+  const nextBars = Math.max(1, Math.min(8, Number(payload?.bars) || 1));
+  const nextResolution = [4, 8, 16, 32].includes(Number(payload?.resolution))
+    ? Number(payload.resolution)
+    : 8;
+  const nextTimeSig = {
+    n: Math.max(1, Number(payload?.timeSig?.n) || 4),
+    d: Math.max(1, Number(payload?.timeSig?.d) || 4),
+  };
+  const quarterCount = getQuarterBeatsPerBar(nextTimeSig);
+  const nextTupletsByBar = Array.from({ length: nextBars }, (_, barIdx) =>
+    Array.from({ length: quarterCount }, (_, qIdx) => {
+      const raw = payload?.tupletsByBar?.[barIdx]?.[qIdx];
+      return clampTupletValue(raw) ?? null;
+    })
+  );
+  const nextGrid = {};
+  ALL_INSTRUMENTS.forEach((inst) => {
+    const source = Array.isArray(payload?.grid?.[inst.id]) ? payload.grid[inst.id] : [];
+    const events = source
+      .map((entry) =>
+        Array.isArray(entry)
+          ? [Math.max(0, Math.round(Number(entry[0]) || 0)), Math.max(1, Math.min(3, Math.round(Number(entry[1]) || 1)))]
+          : null
+      )
+      .filter(Boolean)
+      .sort((a, b) => a[0] - b[0]);
+    if (events.length) nextGrid[inst.id] = events;
+  });
+  const nextNotationStickingSelection =
+    payload?.notationStickingSelection && typeof payload.notationStickingSelection === "object"
+      ? Object.fromEntries(
+          Object.entries(payload.notationStickingSelection).filter(([, value]) => value === true)
+        )
+      : {};
+  const next = {
+    v: Number(payload?.v) || 1,
+    kitInstrumentIds:
+      Array.isArray(payload?.kitInstrumentIds) && payload.kitInstrumentIds.length
+        ? [...new Set(payload.kitInstrumentIds.filter((id) => INSTRUMENT_BY_ID[id]))]
+        : [...DRUMKIT_PRESETS.standard],
+    bars: nextBars,
+    resolution: nextResolution,
+    timeSig: nextTimeSig,
+    bpm: Math.max(20, Math.min(400, Number(payload?.bpm) || 120)),
+    layout:
+      payload?.layout === "grid-right" ||
+      payload?.layout === "notation-right" ||
+      payload?.layout === "notation-top"
+        ? payload.layout
+        : "grid-top",
+    tupletsByBar: nextTupletsByBar,
+    grid: nextGrid,
+    ...(Object.keys(nextNotationStickingSelection).length > 0
+      ? { notationStickingSelection: nextNotationStickingSelection }
+      : {}),
+  };
   delete next.libraryMeta;
   return next;
 }
@@ -2558,6 +2772,7 @@ export default function App() {
     width: window.innerWidth || document.documentElement.clientWidth || 0,
     height: window.innerHeight || document.documentElement.clientHeight || 0,
   }));
+  const isMobileFloatingPanels = viewportSize.width > 0 && viewportSize.width < 768;
   const useFixedDesktopFooter =
     !isEmbedMode && viewportSize.width >= 768 && viewportSize.height >= 820;
   const requestedExample = React.useMemo(() => {
@@ -2609,6 +2824,12 @@ export default function App() {
   const [authMessage, setAuthMessage] = useState("");
   const [authError, setAuthError] = useState("");
   const [authSession, setAuthSession] = useState(null);
+  const [pendingPersonalCloudImport, setPendingPersonalCloudImport] = useState(null);
+  const [personalCloudImportPending, setPersonalCloudImportPending] = useState(false);
+  const [selectedPersonalCloudImportBeatIds, setSelectedPersonalCloudImportBeatIds] = useState([]);
+  const [selectedPersonalCloudImportArrangementIds, setSelectedPersonalCloudImportArrangementIds] = useState([]);
+  const [selectedPersonalCloudImportFolderIds, setSelectedPersonalCloudImportFolderIds] = useState([]);
+  const [personalCloudImportExpandedFolderIds, setPersonalCloudImportExpandedFolderIds] = useState([]);
   const [preferencesCategory, setPreferencesCategory] = useState(() => {
     try {
       const raw = (window.localStorage.getItem(PREFERENCES_CATEGORY_STORAGE_KEY) || "").toLowerCase();
@@ -2816,48 +3037,91 @@ export default function App() {
   });
   const [arrangementNotationPreviewScale, setArrangementNotationPreviewScale] = useState(() => {
     try {
-      const raw = Number(window.localStorage.getItem(ARRANGEMENT_NOTATION_PREVIEW_SCALE_STORAGE_KEY));
-      if (!Number.isFinite(raw)) return 0.6;
-      return Math.max(0.6, Math.min(1, Math.round(raw * 100) / 100));
+      const raw = window.localStorage.getItem(ARRANGEMENT_NOTATION_PREVIEW_SCALE_STORAGE_KEY);
+      if (raw === "auto") return "auto";
+      const numeric = Number(raw);
+      if (!Number.isFinite(numeric)) return 0.6;
+      return Math.max(0.35, Math.min(1, Math.round(numeric * 100) / 100));
     } catch (_) {
       return 0.6;
     }
   });
   const [arrangementNotationPreviewScaledHeight, setArrangementNotationPreviewScaledHeight] = useState(0);
+  const arrangementNotationManualPreviewScale =
+    typeof arrangementNotationPreviewScale === "number" && Number.isFinite(arrangementNotationPreviewScale)
+      ? arrangementNotationPreviewScale
+      : 0.6;
   const arrangementNotationPanelWidth = React.useMemo(
     () => {
-      if (arrangementNotationPreviewScale === 0.6) return 545;
-      if (arrangementNotationPreviewScale === 0.65) return 605;
-      if (arrangementNotationPreviewScale === 0.7) return 651;
-      if (arrangementNotationPreviewScale === 0.75) return 696;
-      if (arrangementNotationPreviewScale === 0.8) return 741;
-      if (arrangementNotationPreviewScale === 0.85) return 787;
-      if (arrangementNotationPreviewScale === 0.9) return 832;
-      if (arrangementNotationPreviewScale === 0.95) return 877;
-      if (arrangementNotationPreviewScale === 1) return 923;
+      if (arrangementNotationManualPreviewScale === 0.35) return 420;
+      if (arrangementNotationManualPreviewScale === 0.4) return 445;
+      if (arrangementNotationManualPreviewScale === 0.45) return 470;
+      if (arrangementNotationManualPreviewScale === 0.5) return 495;
+      if (arrangementNotationManualPreviewScale === 0.55) return 520;
+      if (arrangementNotationManualPreviewScale === 0.6) return 545;
+      if (arrangementNotationManualPreviewScale === 0.65) return 605;
+      if (arrangementNotationManualPreviewScale === 0.7) return 651;
+      if (arrangementNotationManualPreviewScale === 0.75) return 696;
+      if (arrangementNotationManualPreviewScale === 0.8) return 741;
+      if (arrangementNotationManualPreviewScale === 0.85) return 787;
+      if (arrangementNotationManualPreviewScale === 0.9) return 832;
+      if (arrangementNotationManualPreviewScale === 0.95) return 877;
+      if (arrangementNotationManualPreviewScale === 1) return 923;
       return Math.max(
         520,
         Math.round(
-          794 * arrangementNotationPreviewScale +
+          794 * arrangementNotationManualPreviewScale +
             96 +
-            100 * (arrangementNotationPreviewScale - 0.7)
+            100 * (arrangementNotationManualPreviewScale - 0.7)
         )
       );
     },
-    [arrangementNotationPreviewScale]
+    [arrangementNotationManualPreviewScale]
   );
+  const arrangementNotationEffectivePreviewScale = React.useMemo(() => {
+    const viewportWidth = Number(viewportSize.width) || 0;
+    const availableWidth = Math.max(280, viewportWidth - 24);
+    const fitScale = Math.max(0.35, Math.min(1, availableWidth / 794));
+    if (arrangementNotationPreviewScale === "auto") return fitScale;
+    if (!isMobileFloatingPanels) return arrangementNotationManualPreviewScale;
+    return Math.min(arrangementNotationManualPreviewScale, fitScale);
+  }, [arrangementNotationPreviewScale, arrangementNotationManualPreviewScale, isMobileFloatingPanels, viewportSize.width]);
+  const arrangementNotationRenderedPageWidth = React.useMemo(
+    () => Math.ceil(794 * arrangementNotationEffectivePreviewScale),
+    [arrangementNotationEffectivePreviewScale]
+  );
+  const arrangementNotationShellWidth = React.useMemo(() => {
+    const viewportWidth = Number(viewportSize.width) || 0;
+    const preferredWidth = Math.max(
+      arrangementNotationPanelWidth,
+      arrangementNotationRenderedPageWidth + 12
+    );
+    if (viewportWidth > 0) {
+      return Math.min(Math.max(320, viewportWidth - 8), preferredWidth);
+    }
+    return preferredWidth;
+  }, [arrangementNotationPanelWidth, arrangementNotationRenderedPageWidth, viewportSize.width]);
   const arrangementNotationTopGap = React.useMemo(() => {
-    if (arrangementNotationPreviewScale === 0.6) return -6;
-    if (arrangementNotationPreviewScale === 0.65) return -5;
-    if (arrangementNotationPreviewScale === 0.7) return -4;
-    if (arrangementNotationPreviewScale === 0.75) return -4;
-    if (arrangementNotationPreviewScale === 0.8) return -4;
-    if (arrangementNotationPreviewScale === 0.85) return -3;
-    if (arrangementNotationPreviewScale === 0.9) return -2;
-    if (arrangementNotationPreviewScale === 0.95) return -2;
-    if (arrangementNotationPreviewScale === 1) return -1;
+    const scale =
+      arrangementNotationPreviewScale === "auto"
+        ? Math.round(arrangementNotationEffectivePreviewScale * 100) / 100
+        : arrangementNotationManualPreviewScale;
+    if (scale === 0.35) return -11;
+    if (scale === 0.4) return -10;
+    if (scale === 0.45) return -9;
+    if (scale === 0.5) return -8;
+    if (scale === 0.55) return -7;
+    if (scale === 0.6) return -6;
+    if (scale === 0.65) return -5;
+    if (scale === 0.7) return -4;
+    if (scale === 0.75) return -4;
+    if (scale === 0.8) return -4;
+    if (scale === 0.85) return -3;
+    if (scale === 0.9) return -2;
+    if (scale === 0.95) return -2;
+    if (scale === 1) return -1;
     return 0;
-  }, [arrangementNotationPreviewScale]);
+  }, [arrangementNotationPreviewScale, arrangementNotationManualPreviewScale, arrangementNotationEffectivePreviewScale]);
   const [arrangementPdfQrEnabled, setArrangementPdfQrEnabled] = useState(false);
   const [arrangementPdfWatermarkEnabled, setArrangementPdfWatermarkEnabled] = useState(true);
   useEffect(() => {
@@ -2869,6 +3133,7 @@ export default function App() {
     setArrangementPdfQrEnabled(false);
   }, [isArrangementPrintDialogOpen]);
   const [arrangementPlaybackEnabled, setArrangementPlaybackEnabled] = useState(false);
+  const [arrangementPlaybackUiActive, setArrangementPlaybackUiActive] = useState(false);
   const [arrangementPlaybackIndex, setArrangementPlaybackIndex] = useState(0);
   const [activeArrangementGlobalBarIndex, setActiveArrangementGlobalBarIndex] = useState(-1);
   const [arrangementSelection, setArrangementSelection] = useState(null); // {start,end} row indices
@@ -2878,7 +3143,25 @@ export default function App() {
   const arrangementTouchSelectionRef = React.useRef({
     pointerId: null,
     mode: null,
+    barIndex: null,
+    startX: null,
+    startY: null,
+    moved: false,
   });
+  const arrangementActiveTouchPointersRef = React.useRef(new Set());
+  const clearArrangementNotationSelection = React.useCallback(() => {
+    arrangementTouchSelectionRef.current.pointerId = null;
+    arrangementTouchSelectionRef.current.mode = null;
+    arrangementTouchSelectionRef.current.barIndex = null;
+    arrangementTouchSelectionRef.current.startX = null;
+    arrangementTouchSelectionRef.current.startY = null;
+    arrangementTouchSelectionRef.current.moved = false;
+    arrangementActiveTouchPointersRef.current.clear();
+    setArrangementSelection(null);
+    setArrangementSelectionAnchor(null);
+    setArrangementBarSelection(null);
+    setArrangementBarSelectionAnchor(null);
+  }, []);
   const arrangementPlayButtonRef = React.useRef(null);
   const blurActiveTextInput = React.useCallback(() => {
     const activeEl = document.activeElement;
@@ -2961,7 +3244,7 @@ export default function App() {
   const [arrangementNotationMoreMenuOpen, setArrangementNotationMoreMenuOpen] = useState(false);
   const arrangementGlobalSettingsMenuOpen = arrangementNotationMoreMenuOpen;
   const setArrangementGlobalSettingsMenuOpen = setArrangementNotationMoreMenuOpen;
-  const [arrangementNotationMoreMenuPosition, setArrangementNotationMoreMenuPosition] = useState({ top: 0, left: 0 });
+  const [arrangementNotationMoreMenuPosition, setArrangementNotationMoreMenuPosition] = useState({ top: 0, left: 0, width: 256 });
   const [arrangementNotationRowMenuState, setArrangementNotationRowMenuState] = useState(null);
   const [pendingArrangementDeleteEntry, setPendingArrangementDeleteEntry] = useState(null);
   const [fileMenuPosition, setFileMenuPosition] = useState({ top: 0, left: 0 });
@@ -3001,6 +3284,8 @@ export default function App() {
   const [activeGridSettingsPresetDragId, setActiveGridSettingsPresetDragId] = useState(null);
   const [presetLibraryDropTargetId, setPresetLibraryDropTargetId] = useState(null);
   const [beatLibraryContainers, setBeatLibraryContainers] = useState(() => readStoredBeatLibraryContainers());
+  const [selectedBeatLibraryBeatIds, setSelectedBeatLibraryBeatIds] = useState([]);
+  const [beatLibraryBeatSelectionAnchorId, setBeatLibraryBeatSelectionAnchorId] = useState(null);
   const [selectedBeatLibraryContainerId, setSelectedBeatLibraryContainerId] = useState(() => {
     try {
       return String(window.localStorage.getItem(BEAT_LIBRARY_SELECTED_CONTAINER_STORAGE_KEY) || "all");
@@ -3013,6 +3298,10 @@ export default function App() {
     const nextId = String(containerId || "all");
     selectedBeatLibraryContainerIdRef.current = nextId;
     setSelectedBeatLibraryContainerId(nextId);
+  }, []);
+  const clearBeatLibraryBeatSelection = React.useCallback(() => {
+    setSelectedBeatLibraryBeatIds([]);
+    setBeatLibraryBeatSelectionAnchorId(null);
   }, []);
   const [beatLibraryRootCollapsed, setBeatLibraryRootCollapsed] = useState(() => {
     try {
@@ -3043,13 +3332,18 @@ export default function App() {
   const [publicLibraryLoading, setPublicLibraryLoading] = useState(false);
   const [publicArrangementLibraryLoading, setPublicArrangementLibraryLoading] = useState(false);
   const [publicLibraryError, setPublicLibraryError] = useState("");
+  const [personalLibraryRefreshing, setPersonalLibraryRefreshing] = useState(false);
   const [libraryFiltersOpen, setLibraryFiltersOpen] = useState(false);
+  const [arrangementLibraryMenuOpen, setArrangementLibraryMenuOpen] = useState(false);
   const [isBeatLibraryActionsMenuOpen, setIsBeatLibraryActionsMenuOpen] = useState(false);
   const libraryFiltersRef = useRef(null);
   const libraryFiltersButtonRef = useRef(null);
+  const arrangementLibraryMenuRef = useRef(null);
+  const arrangementLibraryMenuButtonRef = useRef(null);
   const beatLibraryActionsMenuRef = useRef(null);
   const beatLibraryActionsMenuButtonRef = useRef(null);
   const [libraryFiltersMenuStyle, setLibraryFiltersMenuStyle] = useState(null);
+  const [arrangementLibraryMenuStyle, setArrangementLibraryMenuStyle] = useState(null);
   const [beatLibraryActionsMenuStyle, setBeatLibraryActionsMenuStyle] = useState(null);
   const [savedPresets, setSavedPresets] = useState(() => {
     try {
@@ -3143,6 +3437,56 @@ export default function App() {
       document.removeEventListener("keydown", handleKeyDown);
     };
   }, [libraryFiltersOpen]);
+  useEffect(() => {
+    if (!arrangementLibraryMenuOpen) return undefined;
+    const handlePointerDown = (event) => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      const root = arrangementLibraryMenuRef.current;
+      const button = arrangementLibraryMenuButtonRef.current;
+      if (root instanceof HTMLElement && root.contains(target)) return;
+      if (button instanceof HTMLElement && button.contains(target)) return;
+      setArrangementLibraryMenuOpen(false);
+    };
+    const handleKeyDown = (event) => {
+      if (event.key === "Escape") setArrangementLibraryMenuOpen(false);
+    };
+    document.addEventListener("pointerdown", handlePointerDown, true);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown, true);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [arrangementLibraryMenuOpen]);
+  useEffect(() => {
+    if (!arrangementLibraryMenuOpen) {
+      setArrangementLibraryMenuStyle(null);
+      return undefined;
+    }
+    const updatePosition = () => {
+      const button = arrangementLibraryMenuButtonRef.current;
+      if (!(button instanceof HTMLElement)) return;
+      const rect = button.getBoundingClientRect();
+      const gap = 8;
+      const estimatedHeight = 180;
+      const shouldOpenUp =
+        window.innerHeight - rect.bottom < estimatedHeight && rect.top > estimatedHeight / 2;
+      setArrangementLibraryMenuStyle({
+        position: "fixed",
+        zIndex: 120,
+        right: Math.max(8, window.innerWidth - rect.right),
+        top: shouldOpenUp ? "auto" : rect.bottom + gap,
+        bottom: shouldOpenUp ? Math.max(8, window.innerHeight - rect.top + gap) : "auto",
+      });
+    };
+    updatePosition();
+    window.addEventListener("resize", updatePosition);
+    window.addEventListener("scroll", updatePosition, true);
+    return () => {
+      window.removeEventListener("resize", updatePosition);
+      window.removeEventListener("scroll", updatePosition, true);
+    };
+  }, [arrangementLibraryMenuOpen]);
   useEffect(() => {
     if (!libraryFiltersOpen) {
       setLibraryFiltersMenuStyle(null);
@@ -3309,6 +3653,10 @@ export default function App() {
     drag.startX = 0;
     drag.startY = 0;
   }, []);
+  const cancelFloatingPanelDrag = React.useCallback((dragRef) => {
+    dragRef.current.dragging = false;
+    clearFloatingPanelTouchHold(dragRef);
+  }, [clearFloatingPanelTouchHold]);
   const beginFloatingPanelDrag = React.useCallback((event, panelRef, dragRef) => {
     if (event.button !== 0) return;
     const target = event.target;
@@ -3355,7 +3703,7 @@ export default function App() {
       drag.offsetX = drag.startX - rect.left;
       drag.offsetY = drag.startY - rect.top;
       drag.holdTimer = null;
-    }, 180);
+    }, 120);
   }, [clearFloatingPanelTouchHold, isFloatingPanelDragBlockedTarget]);
   const arrangementNotationMoreMenuRef = React.useRef(null);
   const arrangementNotationMoreMenuButtonRef = React.useRef(null);
@@ -3375,6 +3723,8 @@ export default function App() {
   const arrangementListRef = React.useRef(null);
   const arrangementSourceListRef = React.useRef(null);
   const applyImportedBeatPayloadRef = React.useRef(null);
+  const loadBeatIntoEditorRef = React.useRef(null);
+  const visibleLocalBeatIdsInLibraryOrderRef = React.useRef([]);
   const midiImportPreviewSnapshotRef = React.useRef(null);
   const arrangementStartedRef = React.useRef(false);
   const arrangementPlaybackIndexRef = React.useRef(0);
@@ -3471,6 +3821,33 @@ export default function App() {
     setAuthPasswordInput("");
     setIsAuthDialogOpen(true);
   }, [authUserEmail, authEmailInput]);
+  const dismissPendingPersonalCloudImport = React.useCallback(() => {
+    if (authUser?.id && pendingPersonalCloudImport?.fingerprint) {
+      writePersonalCloudImportDecision(authUser.id, pendingPersonalCloudImport.fingerprint, "cloud-only");
+    }
+    setPendingPersonalCloudImport(null);
+  }, [authUser?.id, pendingPersonalCloudImport]);
+  useEffect(() => {
+    if (!pendingPersonalCloudImport) {
+      setSelectedPersonalCloudImportBeatIds([]);
+      setSelectedPersonalCloudImportArrangementIds([]);
+      setSelectedPersonalCloudImportFolderIds([]);
+      setPersonalCloudImportExpandedFolderIds([]);
+      return;
+    }
+    setSelectedPersonalCloudImportBeatIds(
+      pendingPersonalCloudImport.beats.map((entry) => String(entry?.id || "")).filter(Boolean)
+    );
+    setSelectedPersonalCloudImportArrangementIds(
+      pendingPersonalCloudImport.arrangements.map((entry) => String(entry?.id || "")).filter(Boolean)
+    );
+    setSelectedPersonalCloudImportFolderIds(
+      pendingPersonalCloudImport.folders.map((entry) => String(entry?.id || "")).filter(Boolean)
+    );
+    setPersonalCloudImportExpandedFolderIds(
+      pendingPersonalCloudImport.folders.map((entry) => String(entry?.id || "")).filter(Boolean)
+    );
+  }, [pendingPersonalCloudImport]);
 
   const handleMagicLinkSignIn = React.useCallback(async () => {
     if (!hasSupabaseEnabled || !supabase) {
@@ -3646,51 +4023,677 @@ export default function App() {
       setPublicArrangementLibraryLoading(false);
     }
   }, []);
+  const fetchCloudLocalBeats = React.useCallback(async () => {
+    if (!hasSupabaseEnabled || !supabase || !authUser?.id) return [];
+    const { data, error } = await supabase
+      .from("beats")
+      .select("id,name,payload,created_at,updated_at")
+      .eq("user_id", authUser.id)
+      .order("updated_at", { ascending: false });
+    if (error) throw error;
+    return Array.isArray(data)
+      ? data.map(normalizeCloudBeatRow).filter(Boolean)
+      : [];
+  }, [authUser?.id]);
+  const fetchCloudSavedArrangements = React.useCallback(async () => {
+    if (!hasSupabaseEnabled || !supabase || !authUser?.id) return [];
+    const { data, error } = await supabase
+      .from("arrangements")
+      .select("id,name,title_line_1,title_line_2,author,rows,created_at,updated_at")
+      .eq("user_id", authUser.id)
+      .order("updated_at", { ascending: false });
+    if (error) throw error;
+    return Array.isArray(data)
+      ? data.map(normalizeCloudArrangementRow).filter(Boolean)
+      : [];
+  }, [authUser?.id]);
+  const fetchCloudBeatLibraryContainers = React.useCallback(async () => {
+    if (!hasSupabaseEnabled || !supabase || !authUser?.id) return null;
+    const stateId = getPersonalLibraryStateShareId(authUser.id);
+    if (!stateId) return null;
+    const { data, error } = await supabase
+      .from("share_links")
+      .select("payload")
+      .eq("id", stateId)
+      .eq("kind", PERSONAL_LIBRARY_STATE_SHARE_LINK_KIND)
+      .eq("owner_user_id", authUser.id)
+      .maybeSingle();
+    if (error) throw error;
+    const payload = data?.payload;
+    if (!payload || typeof payload !== "object") return null;
+    return normalizeBeatLibraryContainers(payload.beatLibraryContainers);
+  }, [authUser?.id]);
+  const personalLibraryCloudHydratedRef = React.useRef(false);
+  const lastSyncedBeatLibraryContainersJsonRef = React.useRef(
+    JSON.stringify(readStoredBeatLibraryContainers())
+  );
+  const saveCloudBeatLibraryContainers = React.useCallback(async (containers) => {
+    if (!hasSupabaseEnabled || !supabase || !authUser?.id) return false;
+    const stateId = getPersonalLibraryStateShareId(authUser.id);
+    if (!stateId) return false;
+    const nextContainers = normalizeBeatLibraryContainers(containers);
+    const { error } = await supabase.from("share_links").upsert(
+      {
+        id: stateId,
+        kind: PERSONAL_LIBRARY_STATE_SHARE_LINK_KIND,
+        owner_user_id: authUser.id,
+        payload: {
+          kind: PERSONAL_LIBRARY_STATE_PAYLOAD_KIND,
+          beatLibraryContainers: nextContainers,
+          updatedAt: new Date().toISOString(),
+        },
+      },
+      { onConflict: "id" }
+    );
+    if (error) throw error;
+    lastSyncedBeatLibraryContainersJsonRef.current = JSON.stringify(nextContainers);
+    return true;
+  }, [authUser?.id]);
+  const refreshPersonalLibraryFromCloud = React.useCallback(async (options = {}) => {
+    const { alertOnError = false, pushCurrentFoldersFirst = true } = options;
+    if (!hasSupabaseEnabled || !supabase || !authUser?.id) return false;
+    setPersonalLibraryRefreshing(true);
+    try {
+      if (pushCurrentFoldersFirst && personalLibraryCloudHydratedRef.current) {
+        await saveCloudBeatLibraryContainers(beatLibraryContainersRef.current);
+      }
+      const [nextBeats, nextArrangements, nextBeatLibraryContainers] = await Promise.all([
+        fetchCloudLocalBeats(),
+        fetchCloudSavedArrangements(),
+        fetchCloudBeatLibraryContainers(),
+      ]);
+      setLocalBeats(nextBeats);
+      setSavedArrangements(nextArrangements);
+      if (nextBeatLibraryContainers) {
+        setBeatLibraryContainers(nextBeatLibraryContainers);
+        setSelectedBeatLibraryContainerId((prev) =>
+          prev === "all" ||
+          nextBeatLibraryContainers.some((entry) => String(entry.id) === String(prev))
+            ? prev
+            : "all"
+        );
+        lastSyncedBeatLibraryContainersJsonRef.current = JSON.stringify(nextBeatLibraryContainers);
+      }
+      setAuthError("");
+      return true;
+    } catch (error) {
+      const message = error?.message || "Failed to refresh personal library.";
+      setAuthError(message);
+      if (alertOnError) alert(message);
+      return false;
+    } finally {
+      setPersonalLibraryRefreshing(false);
+    }
+  }, [authUser?.id, fetchCloudLocalBeats, fetchCloudSavedArrangements, saveCloudBeatLibraryContainers]);
   useEffect(() => {
     if (!hasSupabaseEnabled || !supabase) return undefined;
     if (!authUser?.id) {
-      const nextLocalBeats = readStoredLocalBeats();
-      const nextSavedArrangements = readStoredSavedArrangements();
+      const nextLocalBeats = deviceLocalBeatsRef.current;
+      const nextSavedArrangements = deviceLocalArrangementsRef.current;
+      const nextBeatLibraryContainers = deviceLocalBeatLibraryContainersRef.current;
       setLocalBeats(nextLocalBeats);
       setSavedArrangements(nextSavedArrangements);
+      setBeatLibraryContainers(nextBeatLibraryContainers);
+      writeStoredLocalBeats(nextLocalBeats);
+      writeStoredSavedArrangements(nextSavedArrangements);
+      writeStoredBeatLibraryContainers(nextBeatLibraryContainers);
+      writeStoredDeviceLocalBeats(nextLocalBeats);
+      writeStoredDeviceLocalArrangements(nextSavedArrangements);
+      writeStoredDeviceLocalBeatLibraryContainers(nextBeatLibraryContainers);
+      lastSyncedBeatLibraryContainersJsonRef.current = JSON.stringify(nextBeatLibraryContainers);
+      personalLibraryCloudHydratedRef.current = false;
       return undefined;
     }
     let cancelled = false;
+    personalLibraryCloudHydratedRef.current = false;
+    deviceLocalBeatsRef.current = localBeatsRef.current;
+    deviceLocalArrangementsRef.current = savedArrangementsRef.current;
+    deviceLocalBeatLibraryContainersRef.current = beatLibraryContainersRef.current;
+    writeStoredDeviceLocalBeats(deviceLocalBeatsRef.current);
+    writeStoredDeviceLocalArrangements(deviceLocalArrangementsRef.current);
+    writeStoredDeviceLocalBeatLibraryContainers(deviceLocalBeatLibraryContainersRef.current);
     const loadCloudLibrary = async () => {
-      const [{ data: beatRows, error: beatsError }, { data: arrangementRows, error: arrangementsError }] =
-        await Promise.all([
-          supabase
-            .from("beats")
-            .select("id,name,payload,created_at,updated_at")
-            .order("updated_at", { ascending: false }),
-          supabase
-            .from("arrangements")
-            .select("id,name,title_line_1,title_line_2,author,rows,created_at,updated_at")
-            .order("updated_at", { ascending: false }),
+      try {
+        const [nextBeats, nextArrangements, nextBeatLibraryContainers] = await Promise.all([
+          fetchCloudLocalBeats(),
+          fetchCloudSavedArrangements(),
+          fetchCloudBeatLibraryContainers(),
         ]);
-      if (cancelled) return;
-      if (beatsError || arrangementsError) {
-        setAuthError(
-          beatsError?.message ||
-            arrangementsError?.message ||
-            "Failed to load cloud library."
-        );
-        return;
+        if (cancelled) return;
+        setLocalBeats(nextBeats);
+        setSavedArrangements(nextArrangements);
+        if (nextBeatLibraryContainers) {
+          setBeatLibraryContainers(nextBeatLibraryContainers);
+          setSelectedBeatLibraryContainerId((prev) =>
+            prev === "all" ||
+            nextBeatLibraryContainers.some((entry) => String(entry.id) === String(prev))
+              ? prev
+              : "all"
+          );
+          lastSyncedBeatLibraryContainersJsonRef.current = JSON.stringify(nextBeatLibraryContainers);
+        } else {
+          lastSyncedBeatLibraryContainersJsonRef.current = JSON.stringify(
+            normalizeBeatLibraryContainers(beatLibraryContainersRef.current)
+          );
+        }
+        const offlineSnapshot = buildOfflineLocalLibrarySnapshot();
+        const hasOfflineLocalContent =
+          offlineSnapshot.beats.length > 0 ||
+          offlineSnapshot.arrangements.length > 0 ||
+          offlineSnapshot.folders.length > 0;
+        if (
+          hasOfflineLocalContent &&
+          !hasHandledPersonalCloudImportDecision(authUser.id, offlineSnapshot.fingerprint)
+        ) {
+          setPendingPersonalCloudImport(offlineSnapshot);
+        } else {
+          setPendingPersonalCloudImport(null);
+        }
+        personalLibraryCloudHydratedRef.current = true;
+      } catch (error) {
+        if (cancelled) return;
+        setAuthError(error?.message || "Failed to load cloud library.");
+        setPendingPersonalCloudImport(null);
+        personalLibraryCloudHydratedRef.current = true;
       }
-      const nextBeats = Array.isArray(beatRows)
-        ? beatRows.map(normalizeCloudBeatRow).filter(Boolean)
-        : [];
-      const nextArrangements = Array.isArray(arrangementRows)
-        ? arrangementRows.map(normalizeCloudArrangementRow).filter(Boolean)
-        : [];
-      setLocalBeats(nextBeats);
-      setSavedArrangements(nextArrangements);
     };
     loadCloudLibrary();
     return () => {
       cancelled = true;
     };
-  }, [authUser?.id]);
+  }, [authUser?.id, fetchCloudBeatLibraryContainers, fetchCloudLocalBeats, fetchCloudSavedArrangements]);
+  const mergeOfflineLocalLibraryIntoCloud = React.useCallback(async (snapshot, selection = {}) => {
+    if (!hasSupabaseEnabled || !supabase || !authUser?.id) return false;
+    const source = snapshot && typeof snapshot === "object" ? snapshot : buildOfflineLocalLibrarySnapshot();
+    const selectedBeatIds = new Set(
+      Array.isArray(selection?.beatIds) ? selection.beatIds.map((id) => String(id || "")) : []
+    );
+    const selectedArrangementIds = new Set(
+      Array.isArray(selection?.arrangementIds)
+        ? selection.arrangementIds.map((id) => String(id || ""))
+        : []
+    );
+    const selectedFolderIds = new Set(
+      Array.isArray(selection?.folderIds) ? selection.folderIds.map((id) => String(id || "")) : []
+    );
+    const localBeatsToMerge = (Array.isArray(source.beats) ? source.beats : []).filter((entry) =>
+      selectedBeatIds.has(String(entry?.id || ""))
+    );
+    const localArrangementsToMerge = (Array.isArray(source.arrangements) ? source.arrangements : []).filter((entry) =>
+      selectedArrangementIds.has(String(entry?.id || ""))
+    );
+    const localFoldersToMerge = (Array.isArray(source.folders) ? source.folders : []).filter((entry) =>
+      selectedFolderIds.has(String(entry?.id || ""))
+    );
+
+    let mergedFolders = normalizeBeatLibraryContainers(beatLibraryContainersRef.current);
+    const folderIdMap = new Map();
+    const usedFolderIds = new Set(mergedFolders.map((entry) => String(entry.id)));
+    localFoldersToMerge.forEach((folder, index) => {
+      const originalId = String(folder?.id || "");
+      if (!originalId) return;
+      const existing = mergedFolders.find((entry) => String(entry.id) === originalId) || null;
+      if (existing) {
+        folderIdMap.set(originalId, originalId);
+        return;
+      }
+      let nextId = originalId;
+      while (usedFolderIds.has(nextId)) {
+        nextId = `folder-${Math.random().toString(36).slice(2, 10)}`;
+      }
+      usedFolderIds.add(nextId);
+      folderIdMap.set(originalId, nextId);
+      mergedFolders.push({
+        id: nextId,
+        name: String(folder?.name || "").trim() || `Folder ${index + 1}`,
+        type: "folder",
+        parentId: folder?.parentId ? String(folder.parentId) : null,
+        collapsed: folder?.collapsed === true,
+        order: Number.isFinite(Number(folder?.order)) ? Number(folder.order) : index,
+      });
+    });
+    mergedFolders = mergedFolders.map((folder, index) => ({
+      ...folder,
+      parentId: folder.parentId ? folderIdMap.get(String(folder.parentId)) || String(folder.parentId) : null,
+      order: Number.isFinite(Number(folder?.order)) ? Number(folder.order) : index,
+    }));
+
+    for (const beat of localBeatsToMerge) {
+      const payload = beat?.payload && typeof beat.payload === "object" ? { ...beat.payload } : null;
+      if (!payload) continue;
+      const meta = getBeatLibraryMeta(beat);
+      payload.libraryMeta = {
+        parentId: meta.parentId && selectedFolderIds.has(String(meta.parentId))
+          ? folderIdMap.get(String(meta.parentId)) || String(meta.parentId)
+          : null,
+        manualOrder: Number.isFinite(Number(meta.manualOrder)) ? Number(meta.manualOrder) : 0,
+      };
+      const now = new Date().toISOString();
+      const { error } = await supabase.from("beats").insert({
+        user_id: authUser.id,
+        name: String(beat?.name || "").trim() || "Untitled Beat",
+        payload,
+        created_at: String(beat?.createdAt || now),
+        updated_at: now,
+      });
+      if (error) throw error;
+    }
+
+    let arrangementNamePool = [...savedArrangementsRef.current];
+    for (const entry of localArrangementsToMerge) {
+      const normalizedItems = normalizeArrangementItems(entry?.items);
+      const now = new Date().toISOString();
+      const name = getUniqueArrangementName(
+        String(entry?.name || "").trim() || "Arrangement",
+        arrangementNamePool
+      );
+      const payload = {
+        user_id: authUser.id,
+        name,
+        title_line_1: String(entry?.titleLine1 || ""),
+        title_line_2: String(entry?.titleLine2 || ""),
+        author: String(entry?.composer || ""),
+        rows: normalizedItems,
+        settings: {},
+        created_at: String(entry?.createdAt || now),
+        updated_at: now,
+      };
+      const { data, error } = await supabase
+        .from("arrangements")
+        .insert(payload)
+        .select("id,name,title_line_1,title_line_2,author,rows,created_at,updated_at")
+        .single();
+      if (error) throw error;
+      const normalized = normalizeCloudArrangementRow(data);
+      if (normalized) arrangementNamePool = [normalized, ...arrangementNamePool];
+    }
+
+    await saveCloudBeatLibraryContainers(mergedFolders);
+    writePersonalCloudImportDecision(authUser.id, source.fingerprint, "merged");
+    await refreshPersonalLibraryFromCloud({
+      alertOnError: true,
+      pushCurrentFoldersFirst: false,
+    });
+    return true;
+  }, [authUser?.id, refreshPersonalLibraryFromCloud, saveCloudBeatLibraryContainers]);
+  const pendingPersonalCloudImportFolderChildrenByParent = React.useMemo(() => {
+    const map = new Map();
+    if (!pendingPersonalCloudImport) return map;
+    pendingPersonalCloudImport.folders.forEach((entry) => {
+      const parentKey = String(entry?.parentId || "");
+      if (!map.has(parentKey)) map.set(parentKey, []);
+      map.get(parentKey).push(entry);
+    });
+    map.forEach((items) =>
+      items.sort((a, b) => {
+        const orderDiff = (Number(a?.order) || 0) - (Number(b?.order) || 0);
+        if (orderDiff) return orderDiff;
+        return String(a?.name || "").localeCompare(String(b?.name || ""));
+      })
+    );
+    return map;
+  }, [pendingPersonalCloudImport]);
+  const pendingPersonalCloudImportBeatChildrenByParent = React.useMemo(() => {
+    const map = new Map();
+    if (!pendingPersonalCloudImport) return map;
+    pendingPersonalCloudImport.beats.forEach((entry) => {
+      const parentKey = String(getBeatLibraryMeta(entry).parentId || "");
+      if (!map.has(parentKey)) map.set(parentKey, []);
+      map.get(parentKey).push(entry);
+    });
+    map.forEach((items) => items.sort(compareBeatLibraryOrder));
+    return map;
+  }, [pendingPersonalCloudImport]);
+  const getPendingPersonalCloudImportDescendantFolderIds = React.useCallback(
+    (folderId) => {
+      const key = String(folderId || "");
+      const result = [];
+      const stack = [key];
+      while (stack.length > 0) {
+        const current = stack.pop();
+        if (!current) continue;
+        result.push(current);
+        const children = pendingPersonalCloudImportFolderChildrenByParent.get(current) || [];
+        children.forEach((entry) => {
+          const childId = String(entry?.id || "");
+          if (childId) stack.push(childId);
+        });
+      }
+      return result;
+    },
+    [pendingPersonalCloudImportFolderChildrenByParent]
+  );
+  const togglePersonalCloudImportFolderExpanded = React.useCallback((folderId) => {
+    const key = String(folderId || "");
+    if (!key) return;
+    setPersonalCloudImportExpandedFolderIds((prev) =>
+      prev.includes(key) ? prev.filter((value) => value !== key) : [...prev, key]
+    );
+  }, []);
+  const togglePersonalCloudImportBeatChecked = React.useCallback((beatId, checked) => {
+    const key = String(beatId || "");
+    if (!key) return;
+    setSelectedPersonalCloudImportBeatIds((prev) =>
+      checked ? (prev.includes(key) ? prev : [...prev, key]) : prev.filter((value) => value !== key)
+    );
+    if (!checked) {
+      const beatEntry = pendingPersonalCloudImport?.beats?.find(
+        (entry) => String(entry?.id || "") === key
+      );
+      const parentId = beatEntry ? getBeatLibraryMeta(beatEntry).parentId : null;
+      if (parentId) {
+        const ancestorIds = [];
+        let currentParentId = String(parentId || "");
+        while (currentParentId) {
+          ancestorIds.push(currentParentId);
+          const nextParent = pendingPersonalCloudImport?.folders?.find(
+            (entry) => String(entry?.id || "") === currentParentId
+          )?.parentId;
+          currentParentId = String(nextParent || "");
+        }
+        if (ancestorIds.length > 0) {
+          setSelectedPersonalCloudImportFolderIds((prev) =>
+            prev.filter((value) => !ancestorIds.includes(String(value || "")))
+          );
+        }
+      }
+    }
+  }, [pendingPersonalCloudImport]);
+  const togglePersonalCloudImportBeatSelection = React.useCallback((beatId) => {
+    const key = String(beatId || "");
+    if (!key) return;
+    const checked = selectedPersonalCloudImportBeatIds.includes(key);
+    togglePersonalCloudImportBeatChecked(key, !checked);
+  }, [selectedPersonalCloudImportBeatIds, togglePersonalCloudImportBeatChecked]);
+  const togglePersonalCloudImportFolderChecked = React.useCallback(
+    (folderId, checked) => {
+      const key = String(folderId || "");
+      if (!key) return;
+      const descendantFolderIds = getPendingPersonalCloudImportDescendantFolderIds(key);
+      const descendantFolderIdSet = new Set(descendantFolderIds);
+      const descendantBeatIds = (pendingPersonalCloudImport?.beats || [])
+        .filter((entry) => descendantFolderIdSet.has(String(getBeatLibraryMeta(entry).parentId || "")))
+        .map((entry) => String(entry?.id || ""))
+        .filter(Boolean);
+      setSelectedPersonalCloudImportFolderIds((prev) =>
+        checked
+          ? [...new Set([...prev, ...descendantFolderIds])]
+          : prev.filter((value) => !descendantFolderIdSet.has(String(value || "")))
+      );
+      setSelectedPersonalCloudImportBeatIds((prev) =>
+        checked
+          ? [...new Set([...prev, ...descendantBeatIds])]
+          : prev.filter((value) => !descendantBeatIds.includes(String(value || "")))
+      );
+    },
+    [getPendingPersonalCloudImportDescendantFolderIds, pendingPersonalCloudImport]
+  );
+  const togglePersonalCloudImportFolderSelection = React.useCallback(
+    (folderId) => {
+      const key = String(folderId || "");
+      if (!key) return;
+      const descendantFolderIds = getPendingPersonalCloudImportDescendantFolderIds(key);
+      const descendantFolderIdSet = new Set(descendantFolderIds);
+      const descendantBeatIds = (pendingPersonalCloudImport?.beats || [])
+        .filter((entry) => descendantFolderIdSet.has(String(getBeatLibraryMeta(entry).parentId || "")))
+        .map((entry) => String(entry?.id || ""))
+        .filter(Boolean);
+      const fullySelected =
+        descendantFolderIds.every((id) => selectedPersonalCloudImportFolderIds.includes(id)) &&
+        descendantBeatIds.every((id) => selectedPersonalCloudImportBeatIds.includes(id));
+      togglePersonalCloudImportFolderChecked(folderId, !fullySelected);
+    },
+    [
+      getPendingPersonalCloudImportDescendantFolderIds,
+      pendingPersonalCloudImport,
+      selectedPersonalCloudImportBeatIds,
+      selectedPersonalCloudImportFolderIds,
+      togglePersonalCloudImportFolderChecked,
+    ]
+  );
+  const renderPendingPersonalCloudImportFolderContents = React.useCallback(
+    (parentId = null, depth = 0) => {
+      if (!pendingPersonalCloudImport) return null;
+      const parentKey = String(parentId || "");
+      const childFolders = pendingPersonalCloudImportFolderChildrenByParent.get(parentKey) || [];
+      const childBeats = pendingPersonalCloudImportBeatChildrenByParent.get(parentKey) || [];
+      const nodes = [];
+
+      childFolders.forEach((entry) => {
+        const folderId = String(entry?.id || "");
+        const descendantFolderIds = getPendingPersonalCloudImportDescendantFolderIds(folderId);
+        const descendantFolderIdSet = new Set(descendantFolderIds);
+        const descendantBeatIds = (pendingPersonalCloudImport.beats || [])
+          .filter((beat) => descendantFolderIdSet.has(String(getBeatLibraryMeta(beat).parentId || "")))
+          .map((beat) => String(beat?.id || ""))
+          .filter(Boolean);
+        const selectedFolderCount = descendantFolderIds.filter((id) =>
+          selectedPersonalCloudImportFolderIds.includes(id)
+        ).length;
+        const selectedBeatCount = descendantBeatIds.filter((id) =>
+          selectedPersonalCloudImportBeatIds.includes(id)
+        ).length;
+        const totalSelectableCount = descendantFolderIds.length + descendantBeatIds.length;
+        const selectedTotalCount = selectedFolderCount + selectedBeatCount;
+        const checked = totalSelectableCount > 0 && selectedTotalCount === totalSelectableCount;
+        const indeterminate = selectedTotalCount > 0 && selectedTotalCount < totalSelectableCount;
+        const expanded = personalCloudImportExpandedFolderIds.includes(folderId);
+        const hasChildren = descendantFolderIds.length > 1 || descendantBeatIds.length > 0;
+        nodes.push(
+          <div key={`pending-cloud-folder-${folderId}`}>
+            <div
+              role="button"
+              tabIndex={0}
+              onClick={() => togglePersonalCloudImportFolderSelection(folderId)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  togglePersonalCloudImportFolderSelection(folderId);
+                }
+              }}
+              className={`flex w-full cursor-pointer items-center gap-2 rounded-md px-1.5 py-0.5 text-left text-xs ${
+                checked || indeterminate
+                  ? "bg-sky-900/20 text-sky-100 ring-1 ring-inset ring-sky-500/70 shadow-[0_0_0_1px_rgba(14,165,233,0.35)]"
+                  : "text-neutral-400 hover:bg-neutral-900/40 hover:text-neutral-200"
+              }`}
+              style={{ marginLeft: `${Math.max(0, depth) * 0.5}rem` }}
+            >
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  togglePersonalCloudImportFolderExpanded(folderId);
+                }}
+                className={`inline-flex h-6 min-w-6 items-center justify-center ${
+                  hasChildren ? "text-neutral-500" : "text-neutral-800"
+                }`}
+                disabled={!hasChildren}
+              >
+                {hasChildren ? <TreeTriangle expanded={expanded} /> : null}
+              </button>
+              <span className="min-w-0 truncate px-1 py-0.5 text-left">{String(entry?.name || "Untitled Folder")}</span>
+            </div>
+            {expanded ? renderPendingPersonalCloudImportFolderContents(folderId, depth + 1) : null}
+          </div>
+        );
+      });
+
+      childBeats.forEach((entry) => {
+        const beatId = String(entry?.id || "");
+        const checked = selectedPersonalCloudImportBeatIds.includes(beatId);
+        const beatBpm = getBeatBpm(entry);
+        const beatBars = Math.max(1, Number(entry?.payload?.bars) || 1);
+        nodes.push(
+          <div
+            key={`pending-cloud-beat-${beatId}`}
+            className="mb-2.5 last:mb-0"
+            style={{ marginLeft: `${Math.max(0, depth) * 0.5}rem` }}
+          >
+            <div
+              role="button"
+              tabIndex={0}
+              onClick={() => togglePersonalCloudImportBeatSelection(beatId)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  togglePersonalCloudImportBeatSelection(beatId);
+                }
+              }}
+              className={`select-none flex items-center gap-2 rounded border px-2.5 py-2 text-left text-sm ${
+                checked
+                  ? "border-sky-500/70 bg-sky-900/20 shadow-[0_0_0_1px_rgba(14,165,233,0.35)]"
+                  : "border-neutral-800 bg-neutral-900/40"
+              }`}
+            >
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-sm text-white">{String(entry?.name || "Untitled Beat")}</div>
+                <div className="truncate text-xs text-neutral-400">
+                  {(entry.timeSigCategory || "4/4") +
+                    (Number.isFinite(beatBpm) ? ` · ${beatBpm} BPM` : "") +
+                    ` · ${beatBars} ${beatBars === 1 ? "bar" : "bars"}`}
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      });
+
+      return <div className="space-y-1">{nodes}</div>;
+    },
+    [
+      getPendingPersonalCloudImportDescendantFolderIds,
+      pendingPersonalCloudImport,
+      pendingPersonalCloudImportBeatChildrenByParent,
+      pendingPersonalCloudImportFolderChildrenByParent,
+      personalCloudImportExpandedFolderIds,
+      selectedPersonalCloudImportBeatIds,
+      selectedPersonalCloudImportFolderIds,
+      togglePersonalCloudImportBeatSelection,
+      togglePersonalCloudImportFolderExpanded,
+      togglePersonalCloudImportFolderSelection,
+    ]
+  );
+  const effectiveSelectedPersonalCloudImportBeatIds = React.useMemo(() => {
+    if (!pendingPersonalCloudImport) return [];
+    const validBeatIds = new Set(
+      pendingPersonalCloudImport.beats.map((entry) => String(entry?.id || "")).filter(Boolean)
+    );
+    return Array.from(
+      new Set(
+        selectedPersonalCloudImportBeatIds.filter((id) => validBeatIds.has(String(id || "")))
+      )
+    );
+  }, [pendingPersonalCloudImport, selectedPersonalCloudImportBeatIds]);
+  const effectiveSelectedPersonalCloudImportFolderIds = React.useMemo(() => {
+    if (!pendingPersonalCloudImport) return [];
+    return pendingPersonalCloudImport.folders
+      .map((entry) => String(entry?.id || ""))
+      .filter(Boolean)
+      .filter((folderId) => {
+        const descendantFolderIds = getPendingPersonalCloudImportDescendantFolderIds(folderId);
+        const descendantFolderIdSet = new Set(descendantFolderIds);
+        const descendantBeatIds = pendingPersonalCloudImport.beats
+          .filter((beat) => descendantFolderIdSet.has(String(getBeatLibraryMeta(beat).parentId || "")))
+          .map((beat) => String(beat?.id || ""))
+          .filter(Boolean);
+        return (
+          descendantFolderIds.every((id) => selectedPersonalCloudImportFolderIds.includes(id)) &&
+          descendantBeatIds.every((id) => effectiveSelectedPersonalCloudImportBeatIds.includes(id))
+        );
+      });
+  }, [
+    effectiveSelectedPersonalCloudImportBeatIds,
+    getPendingPersonalCloudImportDescendantFolderIds,
+    pendingPersonalCloudImport,
+    selectedPersonalCloudImportFolderIds,
+  ]);
+  const effectiveSelectedPersonalCloudImportArrangementIds = React.useMemo(() => {
+    if (!pendingPersonalCloudImport) return [];
+    const validArrangementIds = new Set(
+      pendingPersonalCloudImport.arrangements.map((entry) => String(entry?.id || "")).filter(Boolean)
+    );
+    return Array.from(
+      new Set(
+        selectedPersonalCloudImportArrangementIds.filter((id) =>
+          validArrangementIds.has(String(id || ""))
+        )
+      )
+    );
+  }, [pendingPersonalCloudImport, selectedPersonalCloudImportArrangementIds]);
+  const pendingPersonalCloudImportSelectedLibraryCount =
+    effectiveSelectedPersonalCloudImportBeatIds.length + effectiveSelectedPersonalCloudImportFolderIds.length;
+  const pendingPersonalCloudImportSelectedArrangementCount =
+    effectiveSelectedPersonalCloudImportArrangementIds.length;
+  const pendingPersonalCloudImportVisibleSelectedLibraryCount = React.useMemo(() => {
+    if (!pendingPersonalCloudImport) return 0;
+    let count = 0;
+    const walk = (parentId = null) => {
+      const parentKey = String(parentId || "");
+      const childFolders = pendingPersonalCloudImportFolderChildrenByParent.get(parentKey) || [];
+      const childBeats = pendingPersonalCloudImportBeatChildrenByParent.get(parentKey) || [];
+      childFolders.forEach((entry) => {
+        const folderId = String(entry?.id || "");
+        const descendantFolderIds = getPendingPersonalCloudImportDescendantFolderIds(folderId);
+        const descendantFolderIdSet = new Set(descendantFolderIds);
+        const descendantBeatIds = pendingPersonalCloudImport.beats
+          .filter((beat) => descendantFolderIdSet.has(String(getBeatLibraryMeta(beat).parentId || "")))
+          .map((beat) => String(beat?.id || ""))
+          .filter(Boolean);
+        const selectedFolderCount = descendantFolderIds.filter((id) =>
+          selectedPersonalCloudImportFolderIds.includes(id)
+        ).length;
+        const selectedBeatCount = descendantBeatIds.filter((id) =>
+          selectedPersonalCloudImportBeatIds.includes(id)
+        ).length;
+        const totalSelectableCount = descendantFolderIds.length + descendantBeatIds.length;
+        const selectedTotalCount = selectedFolderCount + selectedBeatCount;
+        const checked = totalSelectableCount > 0 && selectedTotalCount === totalSelectableCount;
+        const indeterminate = selectedTotalCount > 0 && selectedTotalCount < totalSelectableCount;
+        if (checked || indeterminate) count += 1;
+        if (personalCloudImportExpandedFolderIds.includes(folderId)) walk(folderId);
+      });
+      childBeats.forEach((entry) => {
+        const beatId = String(entry?.id || "");
+        if (selectedPersonalCloudImportBeatIds.includes(beatId)) count += 1;
+      });
+    };
+    walk(null);
+    return count;
+  }, [
+    getPendingPersonalCloudImportDescendantFolderIds,
+    pendingPersonalCloudImport,
+    pendingPersonalCloudImportBeatChildrenByParent,
+    pendingPersonalCloudImportFolderChildrenByParent,
+    personalCloudImportExpandedFolderIds,
+    selectedPersonalCloudImportBeatIds,
+    selectedPersonalCloudImportFolderIds,
+  ]);
+  const handleMergePendingPersonalCloudImport = React.useCallback(async () => {
+    if (!pendingPersonalCloudImport) return;
+    setPersonalCloudImportPending(true);
+    try {
+      const ok = await mergeOfflineLocalLibraryIntoCloud(pendingPersonalCloudImport, {
+        beatIds: effectiveSelectedPersonalCloudImportBeatIds,
+        arrangementIds: effectiveSelectedPersonalCloudImportArrangementIds,
+        folderIds: effectiveSelectedPersonalCloudImportFolderIds,
+      });
+      if (!ok) return;
+      setPendingPersonalCloudImport(null);
+      setAuthMessage("Local device library merged into your personal cloud library.");
+      setAuthError("");
+    } catch (error) {
+      setAuthError(error?.message || "Failed to merge local library into personal cloud.");
+    } finally {
+      setPersonalCloudImportPending(false);
+    }
+  }, [
+    mergeOfflineLocalLibraryIntoCloud,
+    effectiveSelectedPersonalCloudImportArrangementIds,
+    effectiveSelectedPersonalCloudImportBeatIds,
+    effectiveSelectedPersonalCloudImportFolderIds,
+    pendingPersonalCloudImport,
+  ]);
   const notationMenuRowRef = React.useRef(null);
   const selectionMenuRowRef = React.useRef(null);
 
@@ -3714,10 +4717,9 @@ export default function App() {
   useEffect(() => {
     try {
       if (authUser?.id) return;
-      window.localStorage.setItem(
-        SONG_ARRANGEMENT_LIBRARY_STORAGE_KEY,
-        JSON.stringify(savedArrangements)
-      );
+      deviceLocalArrangementsRef.current = savedArrangements;
+      writeStoredSavedArrangements(savedArrangements);
+      writeStoredDeviceLocalArrangements(savedArrangements);
     } catch (_) {}
   }, [savedArrangements, authUser?.id]);
   useEffect(() => {
@@ -3839,12 +4841,24 @@ export default function App() {
   }, [preferencesCategory]);
   useEffect(() => {
     try {
-      window.localStorage.setItem(
-        BEAT_LIBRARY_CONTAINERS_STORAGE_KEY,
-        JSON.stringify(beatLibraryContainers)
-      );
+      if (authUser?.id) return;
+      deviceLocalBeatLibraryContainersRef.current = beatLibraryContainers;
+      writeStoredBeatLibraryContainers(beatLibraryContainers);
+      writeStoredDeviceLocalBeatLibraryContainers(beatLibraryContainers);
     } catch (_) {}
-  }, [beatLibraryContainers]);
+  }, [beatLibraryContainers, authUser?.id]);
+  useEffect(() => {
+    if (!authUser?.id) return;
+    if (!personalLibraryCloudHydratedRef.current) return;
+    const nextJson = JSON.stringify(normalizeBeatLibraryContainers(beatLibraryContainers));
+    if (nextJson === lastSyncedBeatLibraryContainersJsonRef.current) return;
+    const timeoutId = window.setTimeout(() => {
+      saveCloudBeatLibraryContainers(beatLibraryContainers).catch((error) => {
+        setAuthError(error?.message || "Failed to sync personal cloud library.");
+      });
+    }, 250);
+    return () => window.clearTimeout(timeoutId);
+  }, [authUser?.id, beatLibraryContainers, saveCloudBeatLibraryContainers]);
   useEffect(() => {
     try {
       window.localStorage.setItem(
@@ -3906,7 +4920,9 @@ export default function App() {
     try {
       window.localStorage.setItem(
         ARRANGEMENT_NOTATION_PREVIEW_SCALE_STORAGE_KEY,
-        String(arrangementNotationPreviewScale)
+        arrangementNotationPreviewScale === "auto"
+          ? "auto"
+          : String(arrangementNotationPreviewScale)
       );
     } catch (_) {}
   }, [arrangementNotationPreviewScale]);
@@ -3977,12 +4993,20 @@ export default function App() {
     const updateMenuPosition = () => {
       const button = arrangementNotationMoreMenuButtonRef.current;
       if (!(button instanceof HTMLElement)) return;
+      const menu = arrangementNotationMoreMenuRef.current;
       const rect = button.getBoundingClientRect();
-      const menuWidth = 224;
       const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
-      const left = Math.max(8, Math.min(rect.left, viewportWidth - menuWidth - 8));
-      const top = Math.max(8, rect.bottom + 8);
-      setArrangementNotationMoreMenuPosition({ top, left });
+      const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+      const menuWidth = Math.max(180, Math.min(256, viewportWidth - 16));
+      const menuHeight = menu instanceof HTMLElement ? menu.offsetHeight : 360;
+      const left = Math.max(8, Math.min(rect.right - menuWidth, viewportWidth - menuWidth - 8));
+      const preferredTop = rect.bottom + 8;
+      const maxTop = Math.max(8, viewportHeight - menuHeight - 8);
+      const top =
+        preferredTop <= maxTop
+          ? preferredTop
+          : Math.max(8, Math.min(rect.top - menuHeight - 8, maxTop));
+      setArrangementNotationMoreMenuPosition({ top, left, width: menuWidth });
     };
     const handlePointerDown = (event) => {
       const target = event.target;
@@ -4601,11 +5625,14 @@ useEffect(() => {
   useEffect(() => {
     if (!isArrangementNotationOpen) return;
     const margin = 8;
-    const panelWidth = arrangementNotationPanelWidth;
+    const panelWidth = arrangementNotationShellWidth;
     const panelHeight = arrangementNotationPanelRef.current?.offsetHeight || 760;
-    const nextX = Math.max(margin, window.innerWidth - panelWidth - margin);
-    const nextY = Math.max(margin, Math.round((window.innerHeight - panelHeight) / 2));
-    setArrangementNotationPos({ x: nextX, y: nextY });
+    const maxX = Math.max(margin, window.innerWidth - panelWidth - margin);
+    const maxY = Math.max(margin, window.innerHeight - panelHeight - margin);
+    setArrangementNotationPos((prev) => ({
+      x: Math.max(margin, Math.min(Number(prev?.x) || margin, maxX)),
+      y: Math.max(margin, Math.min(Number(prev?.y) || margin, maxY)),
+    }));
     const onKeyDown = (e) => {
       if (e.key !== "Escape") return;
       e.preventDefault();
@@ -4613,14 +5640,14 @@ useEffect(() => {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [isArrangementNotationOpen, arrangementNotationPanelWidth]);
+  }, [isArrangementNotationOpen, arrangementNotationShellWidth]);
   useEffect(() => {
     if (!isArrangementNotationOpen) return;
     const node = arrangementNotationPreviewInnerRef.current;
     if (!(node instanceof HTMLElement)) return;
     let raf = 0;
     const measure = () => {
-      const nextHeight = Math.ceil(node.scrollHeight * arrangementNotationPreviewScale);
+      const nextHeight = Math.ceil(node.scrollHeight * arrangementNotationEffectivePreviewScale);
       setArrangementNotationPreviewScaledHeight((prev) =>
         Math.abs(prev - nextHeight) < 1 ? prev : nextHeight
       );
@@ -4640,7 +5667,7 @@ useEffect(() => {
     };
   }, [
     isArrangementNotationOpen,
-    arrangementNotationPreviewScale,
+    arrangementNotationEffectivePreviewScale,
     arrangementNotationViewMode,
     arrangementNotationPageMode,
     arrangementNotationBarsPerRow,
@@ -4696,18 +5723,26 @@ useEffect(() => {
     const stopDrag = (e) => {
       const drag = arrangementDragRef.current;
       if (drag.pointerId != null && e.pointerId !== drag.pointerId) return;
-      drag.dragging = false;
-      clearFloatingPanelTouchHold(arrangementDragRef);
+      cancelFloatingPanelDrag(arrangementDragRef);
     };
+    const onKeyDown = (e) => {
+      if (e.key !== "Escape") return;
+      cancelFloatingPanelDrag(arrangementDragRef);
+    };
+    const onBlur = () => cancelFloatingPanelDrag(arrangementDragRef);
     window.addEventListener("pointermove", onPointerMove);
     window.addEventListener("pointerup", stopDrag);
     window.addEventListener("pointercancel", stopDrag);
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("blur", onBlur);
     return () => {
       window.removeEventListener("pointermove", onPointerMove);
       window.removeEventListener("pointerup", stopDrag);
       window.removeEventListener("pointercancel", stopDrag);
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("blur", onBlur);
     };
-  }, [isArrangementOpen, arrangementPanelWidth, clearFloatingPanelTouchHold]);
+  }, [isArrangementOpen, arrangementPanelWidth, cancelFloatingPanelDrag, clearFloatingPanelTouchHold]);
   useEffect(() => {
     if (!isArrangementNotationOpen) return;
     const onPointerMove = (e) => {
@@ -4728,18 +5763,26 @@ useEffect(() => {
     const stopDrag = (e) => {
       const drag = arrangementNotationDragRef.current;
       if (drag.pointerId != null && e.pointerId !== drag.pointerId) return;
-      drag.dragging = false;
-      clearFloatingPanelTouchHold(arrangementNotationDragRef);
+      cancelFloatingPanelDrag(arrangementNotationDragRef);
     };
+    const onKeyDown = (e) => {
+      if (e.key !== "Escape") return;
+      cancelFloatingPanelDrag(arrangementNotationDragRef);
+    };
+    const onBlur = () => cancelFloatingPanelDrag(arrangementNotationDragRef);
     window.addEventListener("pointermove", onPointerMove);
     window.addEventListener("pointerup", stopDrag);
     window.addEventListener("pointercancel", stopDrag);
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("blur", onBlur);
     return () => {
       window.removeEventListener("pointermove", onPointerMove);
       window.removeEventListener("pointerup", stopDrag);
       window.removeEventListener("pointercancel", stopDrag);
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("blur", onBlur);
     };
-  }, [isArrangementNotationOpen, clearFloatingPanelTouchHold]);
+  }, [isArrangementNotationOpen, cancelFloatingPanelDrag, clearFloatingPanelTouchHold]);
 
   useEffect(() => {
     if (!isLegalDialogOpen) return;
@@ -5664,6 +6707,10 @@ useEffect(() => {
   const localBeatsRef = React.useRef(localBeats);
   const arrangementItemsRef = React.useRef(arrangementItems);
   const savedArrangementsRef = React.useRef(savedArrangements);
+  const beatLibraryContainersRef = React.useRef(beatLibraryContainers);
+  const deviceLocalBeatsRef = React.useRef(readStoredDeviceLocalBeats());
+  const deviceLocalArrangementsRef = React.useRef(readStoredDeviceLocalArrangements());
+  const deviceLocalBeatLibraryContainersRef = React.useRef(readStoredDeviceLocalBeatLibraryContainers());
   const arrangementNameDraftRef = React.useRef(arrangementNameDraft);
   const arrangementTitleLine1DraftRef = React.useRef(arrangementTitleLine1Draft);
   const arrangementTitleLine2DraftRef = React.useRef(arrangementTitleLine2Draft);
@@ -5691,6 +6738,9 @@ useEffect(() => {
   React.useEffect(() => {
     savedArrangementsRef.current = savedArrangements;
   }, [savedArrangements]);
+  React.useEffect(() => {
+    beatLibraryContainersRef.current = beatLibraryContainers;
+  }, [beatLibraryContainers]);
   React.useEffect(() => {
     arrangementNameDraftRef.current = arrangementNameDraft;
   }, [arrangementNameDraft]);
@@ -6041,6 +7091,31 @@ useEffect(() => {
     setLocalBeatsWithUndo((prev) => prev.filter((beat) => String(beat?.id) !== key));
     return true;
   }, [authUser?.id, setLocalBeatsWithUndo]);
+  const deleteLocalBeatsByIds = React.useCallback(async (beatIds) => {
+    const ids = Array.from(new Set((Array.isArray(beatIds) ? beatIds : []).map((id) => String(id || "")).filter(Boolean)));
+    if (!ids.length) return true;
+    if (authUser?.id && hasSupabaseEnabled && supabase) {
+      const results = await Promise.all(
+        ids.map((id) =>
+          isUuidLike(id)
+            ? supabase
+                .from("beats")
+                .delete()
+                .eq("id", id)
+                .eq("user_id", authUser.id)
+            : Promise.resolve({ error: null })
+        )
+      );
+      const failed = results.find((result) => result.error);
+      if (failed?.error) {
+        alert(failed.error.message || "Failed to delete beats");
+        return false;
+      }
+    }
+    const idSet = new Set(ids);
+    setLocalBeatsWithUndo((prev) => prev.filter((beat) => !idSet.has(String(beat?.id || ""))));
+    return true;
+  }, [authUser?.id, setLocalBeatsWithUndo]);
   const handleDeleteLocalBeatClick = React.useCallback(async (event, beatId) => {
     event.stopPropagation();
     if (event.metaKey || event.ctrlKey) {
@@ -6221,7 +7296,9 @@ useEffect(() => {
   useEffect(() => {
     try {
       if (authUser?.id) return;
-      window.localStorage.setItem(LOCAL_BEAT_LIBRARY_STORAGE_KEY, JSON.stringify(localBeats));
+      deviceLocalBeatsRef.current = localBeats;
+      writeStoredLocalBeats(localBeats);
+      writeStoredDeviceLocalBeats(localBeats);
     } catch (_) {}
   }, [localBeats, authUser?.id]);
   useEffect(() => {
@@ -6837,6 +7914,7 @@ useEffect(() => {
       order: nextOrder,
     };
     setBeatLibraryContainers((prev) => [...prev, nextContainer]);
+    return nextContainer;
   }, [beatLibraryContainers, selectedBeatLibraryContainerId]);
   const toggleBeatLibraryContainerCollapsed = React.useCallback((containerId) => {
     beatLibraryExpandAllSnapshotRef.current = null;
@@ -6940,6 +8018,55 @@ useEffect(() => {
       selectBeatLibraryContainer("all");
     },
     [authUser?.id, beatLibraryContainers, localBeats, setLocalBeatsWithUndo]
+  );
+  const deleteBeatLibraryContainerWithContents = React.useCallback(
+    async (containerId) => {
+      const key = String(containerId || "");
+      if (!key || key === "all") return;
+      const target = beatLibraryContainers.find((entry) => String(entry.id) === key);
+      if (!target) return;
+      const descendantIds = new Set([key]);
+      const walk = (parentId) => {
+        beatLibraryContainers.forEach((entry) => {
+          if (String(entry.parentId || "") !== String(parentId)) return;
+          descendantIds.add(String(entry.id));
+          walk(entry.id);
+        });
+      };
+      walk(key);
+      const affectedBeats = localBeats.filter((beat) =>
+        descendantIds.has(String(getBeatLibraryMeta(beat).parentId || ""))
+      );
+
+      if (authUser?.id && hasSupabaseEnabled && supabase && affectedBeats.length > 0) {
+        const beatDeleteResults = await Promise.all(
+          affectedBeats.map((beat) =>
+            isUuidLike(beat?.id)
+              ? supabase
+                  .from("beats")
+                  .delete()
+                  .eq("id", String(beat.id))
+                  .eq("user_id", authUser.id)
+              : Promise.resolve({ error: null })
+          )
+        );
+        const failedBeatDelete = beatDeleteResults.find((result) => result.error);
+        if (failedBeatDelete?.error) {
+          alert(failedBeatDelete.error.message || "Failed to delete beats in folder");
+          return;
+        }
+      }
+
+      setLocalBeatsWithUndo((prev) =>
+        prev.filter((beat) => !descendantIds.has(String(getBeatLibraryMeta(beat).parentId || "")))
+      );
+      setBeatLibraryContainers((prev) =>
+        prev.filter((entry) => !descendantIds.has(String(entry.id)))
+      );
+      selectBeatLibraryContainer("all");
+      clearBeatLibraryBeatSelection();
+    },
+    [authUser?.id, beatLibraryContainers, localBeats, setLocalBeatsWithUndo, clearBeatLibraryBeatSelection, selectBeatLibraryContainer]
   );
   const startEditingBeatLibraryContainer = React.useCallback(
     (containerId) => {
@@ -7091,6 +8218,69 @@ useEffect(() => {
             : beat
         )
       );
+    },
+    [authUser?.id, localBeats, setLocalBeatsWithUndo]
+  );
+  const moveBeatsToLibraryContainer = React.useCallback(
+    async (beatIds, targetParentId) => {
+      const orderedIds = Array.from(
+        new Set((Array.isArray(beatIds) ? beatIds : []).map((id) => String(id || "")).filter(Boolean))
+      );
+      if (!orderedIds.length) return [];
+      const normalizedTargetParentId = targetParentId ? String(targetParentId) : null;
+      const beatById = new Map(
+        localBeats.map((beat) => [String(beat?.id || ""), beat])
+      );
+      const updatedById = new Map();
+      orderedIds.forEach((id, index) => {
+        const beat = beatById.get(id);
+        if (!beat) return;
+        const nextLibraryMeta = {
+          ...getBeatLibraryMeta(beat),
+          parentId: normalizedTargetParentId,
+          manualOrder: index + 1,
+        };
+        const nextPayload =
+          beat?.payload && typeof beat.payload === "object"
+            ? {
+                ...beat.payload,
+                libraryMeta: nextLibraryMeta,
+              }
+            : beat.payload;
+        updatedById.set(id, {
+          ...beat,
+          payload: nextPayload,
+          libraryMeta: nextLibraryMeta,
+        });
+      });
+      if (!updatedById.size) return [];
+
+      if (authUser?.id && hasSupabaseEnabled && supabase) {
+        const results = await Promise.all(
+          Array.from(updatedById.values()).map((beat) =>
+            isUuidLike(beat?.id)
+              ? supabase
+                  .from("beats")
+                  .update({
+                    payload: beat.payload,
+                    updated_at: new Date().toISOString(),
+                  })
+                  .eq("id", String(beat.id))
+                  .eq("user_id", authUser.id)
+              : Promise.resolve({ error: null })
+          )
+        );
+        const failed = results.find((result) => result.error);
+        if (failed?.error) {
+          alert(failed.error.message || "Failed to move beats");
+          return [];
+        }
+      }
+
+      setLocalBeatsWithUndo((prev) =>
+        prev.map((beat) => updatedById.get(String(beat?.id || "")) || beat)
+      );
+      return Array.from(updatedById.keys());
     },
     [authUser?.id, localBeats, setLocalBeatsWithUndo]
   );
@@ -7272,12 +8462,19 @@ useEffect(() => {
     const activeId = String(event?.active?.id || "");
     if (!activeId.startsWith("beat:")) return;
     const beatId = activeId.slice(5);
-    beatLibraryTreeDragRef.current = { kind: "beat", beatId };
+    const selectedIds = selectedBeatLibraryBeatIds.includes(beatId)
+      ? visibleLocalBeatIdsInLibraryOrderRef.current.filter((id) => selectedBeatLibraryBeatIds.includes(id))
+      : [beatId];
+    beatLibraryTreeDragRef.current = {
+      kind: "beat",
+      beatId,
+      beatIds: selectedIds,
+    };
     setActiveBeatLibraryDragBeatId(beatId);
     beatLibraryLastHoverTargetRef.current = "";
     beatLibraryLastBeatOverIdRef.current = "";
     clearBeatLibraryFolderExpandTimer();
-  }, [clearBeatLibraryFolderExpandTimer]);
+  }, [clearBeatLibraryFolderExpandTimer, selectedBeatLibraryBeatIds]);
   const handleBeatLibrarySortDragOver = React.useCallback((event) => {
     const overId = String(event?.over?.id || "");
     if (overId.startsWith("beat:")) beatLibraryLastBeatOverIdRef.current = overId.slice(5);
@@ -7286,6 +8483,7 @@ useEffect(() => {
   const handleBeatLibrarySortDragEnd = React.useCallback(async (event) => {
     const activeId = String(event?.active?.id || "");
     const overId = String(event?.over?.id || "");
+    const dragged = beatLibraryTreeDragRef.current;
     beatLibraryTreeDragRef.current = null;
     setActiveBeatLibraryDragBeatId(null);
     beatLibraryLastHoverTargetRef.current = "";
@@ -7294,8 +8492,12 @@ useEffect(() => {
     clearBeatLibraryFolderExpandTimer();
     if (!activeId.startsWith("beat:") || !overId) return;
     const draggedBeatId = activeId.slice(5);
+    const draggedBeatIds =
+      dragged?.kind === "beat" && Array.isArray(dragged?.beatIds)
+        ? dragged.beatIds
+        : [draggedBeatId];
     if (overId === "__trash__") {
-      await deleteLocalBeatById(draggedBeatId);
+      await deleteLocalBeatsByIds(draggedBeatIds);
       return;
     }
     if (overId === "__up__") {
@@ -7306,11 +8508,11 @@ useEffect(() => {
               (entry) => String(entry.id || "") === String(selectedBeatLibraryContainerId || "")
             ) || null;
       const targetParentId = selectedContainer?.parentId ? String(selectedContainer.parentId) : null;
-      await moveBeatToLibraryContainer(draggedBeatId, targetParentId);
+      await moveBeatsToLibraryContainer(draggedBeatIds, targetParentId);
       return;
     }
     if (overId === "all") {
-      await moveBeatToLibraryContainer(draggedBeatId, null);
+      await moveBeatsToLibraryContainer(draggedBeatIds, null);
       return;
     }
     if (overId.startsWith("beat:")) {
@@ -7319,8 +8521,8 @@ useEffect(() => {
       await reorderBeatInLibrary(draggedBeatId, targetBeatId);
       return;
     }
-    await moveBeatToLibraryContainer(draggedBeatId, overId);
-  }, [beatLibraryContainers, clearBeatLibraryFolderExpandTimer, deleteLocalBeatById, moveBeatToLibraryContainer, reorderBeatInLibrary, selectedBeatLibraryContainerId]);
+    await moveBeatsToLibraryContainer(draggedBeatIds, overId);
+  }, [beatLibraryContainers, clearBeatLibraryFolderExpandTimer, deleteLocalBeatsByIds, moveBeatsToLibraryContainer, reorderBeatInLibrary, selectedBeatLibraryContainerId]);
   const handleBeatLibrarySortDragCancel = React.useCallback(() => {
     beatLibraryTreeDragRef.current = null;
     setActiveBeatLibraryDragBeatId(null);
@@ -7373,10 +8575,13 @@ useEffect(() => {
         return;
       }
       if (dragged.kind === "beat") {
-        await moveBeatToLibraryContainer(dragged.beatId, normalizedTargetParentId);
+        await moveBeatsToLibraryContainer(
+          Array.isArray(dragged.beatIds) && dragged.beatIds.length ? dragged.beatIds : [dragged.beatId],
+          normalizedTargetParentId
+        );
       }
     },
-    [clearBeatLibraryFolderExpandTimer, moveBeatLibraryContainer, moveBeatToLibraryContainer]
+    [clearBeatLibraryFolderExpandTimer, moveBeatLibraryContainer, moveBeatsToLibraryContainer]
   );
   const handleBeatLibraryBeatDrop = React.useCallback(
     async (targetBeatId) => {
@@ -7397,13 +8602,15 @@ useEffect(() => {
     setBeatLibraryDropTargetId(null);
     if (!dragged || typeof dragged !== "object") return;
     if (dragged.kind === "container") {
-      await deleteBeatLibraryContainer(dragged.containerId);
+      await deleteBeatLibraryContainerWithContents(dragged.containerId);
       return;
     }
     if (dragged.kind === "beat") {
-      await deleteLocalBeatById(dragged.beatId);
+      await deleteLocalBeatsByIds(
+        Array.isArray(dragged.beatIds) && dragged.beatIds.length ? dragged.beatIds : [dragged.beatId]
+      );
     }
-  }, [deleteBeatLibraryContainer, deleteLocalBeatById]);
+  }, [deleteBeatLibraryContainerWithContents, deleteLocalBeatsByIds]);
   const libraryBpmValues = React.useMemo(() => {
     const source = arrangementSourceTab === "public" ? publicBeats : localBeats;
     const values = source
@@ -7583,6 +8790,54 @@ useEffect(() => {
         (entry) => String(entry.parentId || "") === String(currentBeatLibraryParentId || "")
       ),
     [beatLibraryContainers, currentBeatLibraryParentId]
+  );
+  const visibleLocalBeatIdsInLibraryOrder = React.useMemo(() => {
+    const walk = (parentId) => {
+      const ids = [];
+      const childBeats = filteredLocalBeats
+        .filter((beat) => String(getBeatLibraryMeta(beat).parentId || "") === String(parentId || ""))
+        .sort(compareBeatLibraryOrder);
+      childBeats.forEach((beat) => {
+        ids.push(String(beat?.id || ""));
+      });
+      const childFolders = beatLibraryContainers
+        .filter((entry) => String(entry.parentId || "") === String(parentId || ""))
+        .sort((a, b) => (Number(a.order) || 0) - (Number(b.order) || 0) || a.name.localeCompare(b.name));
+      childFolders.forEach((entry) => {
+        if (!entry.collapsed) {
+          ids.push(...walk(entry.id));
+        }
+      });
+      return ids;
+    };
+    return walk(currentBeatLibraryParentId);
+  }, [beatLibraryContainers, currentBeatLibraryParentId, filteredLocalBeats]);
+  useEffect(() => {
+    visibleLocalBeatIdsInLibraryOrderRef.current = visibleLocalBeatIdsInLibraryOrder;
+  }, [visibleLocalBeatIdsInLibraryOrder]);
+  const handleBeatLibraryBeatSelect = React.useCallback(
+    async (beat, extend = false) => {
+      const beatId = String(beat?.id || "");
+      if (!beatId) return;
+      if (extend && beatLibraryBeatSelectionAnchorId) {
+        const anchorIndex = visibleLocalBeatIdsInLibraryOrder.findIndex(
+          (id) => id === String(beatLibraryBeatSelectionAnchorId || "")
+        );
+        const targetIndex = visibleLocalBeatIdsInLibraryOrder.findIndex((id) => id === beatId);
+        if (anchorIndex >= 0 && targetIndex >= 0) {
+          const start = Math.min(anchorIndex, targetIndex);
+          const end = Math.max(anchorIndex, targetIndex);
+          setSelectedBeatLibraryBeatIds(visibleLocalBeatIdsInLibraryOrder.slice(start, end + 1));
+          setBeatLibraryBeatSelectionAnchorId(beatId);
+          await loadBeatIntoEditorRef.current?.("local", beat);
+          return;
+        }
+      }
+      setSelectedBeatLibraryBeatIds([beatId]);
+      setBeatLibraryBeatSelectionAnchorId(beatId);
+      await loadBeatIntoEditorRef.current?.("local", beat);
+    },
+    [beatLibraryBeatSelectionAnchorId, visibleLocalBeatIdsInLibraryOrder]
   );
   const currentBeatLibraryBeats = React.useMemo(
     () =>
@@ -8388,6 +9643,9 @@ useEffect(() => {
       setLoadedLocalBeatId(null);
     }
   }, []);
+  useEffect(() => {
+    loadBeatIntoEditorRef.current = loadBeatIntoEditor;
+  }, [loadBeatIntoEditor]);
   const buildCurrentArrangementSharePayload = React.useCallback(() => {
     const normalizedItems = normalizeArrangementItems(arrangementItems);
     const sharedBeats = [];
@@ -9177,6 +10435,10 @@ useEffect(() => {
   }, []);
   const handleArrangementRowSelect = React.useCallback((rowIndex, extend = false) => {
     if (!Number.isFinite(rowIndex) || rowIndex < 0) return;
+    if (!extend) {
+      setArrangementSelection(null);
+      setArrangementBarSelection(null);
+    }
     if (extend && Number.isFinite(arrangementSelectionAnchor)) {
       const startRow = Math.min(arrangementSelectionAnchor, rowIndex);
       const endRow = Math.max(arrangementSelectionAnchor, rowIndex);
@@ -9211,6 +10473,12 @@ useEffect(() => {
   }, [arrangementSelectionAnchor, getArrangementRowBarRange]);
   const handleArrangementNotationBarSelect = React.useCallback((barIndex, extend = false) => {
     if (!Number.isFinite(barIndex) || barIndex < 0) return;
+    if (!extend) {
+      setArrangementSelection(null);
+      setArrangementSelectionAnchor(null);
+      setArrangementBarSelection(null);
+      setArrangementBarSelectionAnchor(null);
+    }
     if (extend && Number.isFinite(arrangementBarSelectionAnchor)) {
       const startBar = Math.min(arrangementBarSelectionAnchor, barIndex);
       const endBar = Math.max(arrangementBarSelectionAnchor, barIndex);
@@ -9252,18 +10520,54 @@ useEffect(() => {
     if (!Number.isFinite(touch.pointerId)) touch.pointerId = pointerId;
     touch.mode = "row";
   }, [arrangementSelectionAnchor, handleArrangementRowSelect]);
-  const handleArrangementNotationBarTouchSelect = React.useCallback((barIndex, pointerId) => {
+  const handleArrangementNotationBarTouchSelect = React.useCallback((barIndex, pointerId, clientX = null, clientY = null) => {
+    if (!Number.isFinite(barIndex) || barIndex < 0) return;
     const touch = arrangementTouchSelectionRef.current;
-    const extend =
-      Number.isFinite(pointerId) &&
+    if (!Number.isFinite(pointerId)) return;
+    arrangementActiveTouchPointersRef.current.add(pointerId);
+    if (
       Number.isFinite(touch.pointerId) &&
-      touch.pointerId !== pointerId &&
-      touch.mode === "bar" &&
-      Number.isFinite(arrangementBarSelectionAnchor);
-    handleArrangementNotationBarSelect(barIndex, extend);
-    if (!Number.isFinite(touch.pointerId)) touch.pointerId = pointerId;
-    touch.mode = "bar";
-  }, [arrangementBarSelectionAnchor, handleArrangementNotationBarSelect]);
+      !arrangementActiveTouchPointersRef.current.has(touch.pointerId)
+    ) {
+      touch.pointerId = null;
+      touch.mode = null;
+      touch.barIndex = null;
+      touch.startX = null;
+      touch.startY = null;
+      touch.moved = false;
+    }
+    if (!Number.isFinite(touch.pointerId)) {
+      touch.pointerId = pointerId;
+      touch.mode = "bar-arm";
+      touch.barIndex = barIndex;
+      touch.startX = Number.isFinite(clientX) ? clientX : null;
+      touch.startY = Number.isFinite(clientY) ? clientY : null;
+      touch.moved = false;
+      return;
+    }
+    if (touch.pointerId === pointerId) return;
+    if (arrangementActiveTouchPointersRef.current.size < 2) return;
+    if (touch.mode !== "bar-arm" || !Number.isFinite(touch.barIndex)) return;
+    const startBar = Math.min(touch.barIndex, barIndex);
+    const endBar = Math.max(touch.barIndex, barIndex);
+    const startRow = findArrangementRowIndexForBar(startBar);
+    const endRow = findArrangementRowIndexForBar(endBar);
+    setArrangementBarSelectionAnchor(touch.barIndex);
+    setArrangementBarSelection({ start: touch.barIndex, end: barIndex });
+    if (startRow >= 0 && endRow >= 0) {
+      setArrangementSelection({ start: startRow, end: endRow });
+      setArrangementSelectionAnchor(startRow);
+    } else {
+      setArrangementSelection(null);
+      setArrangementSelectionAnchor(null);
+    }
+    touch.pointerId = null;
+    touch.mode = null;
+    touch.barIndex = null;
+    touch.startX = null;
+    touch.startY = null;
+    touch.moved = false;
+  }, [findArrangementRowIndexForBar]);
   const openArrangementNotationRowMenuAtBar = React.useCallback((barIndex, clientX, clientY) => {
     if (!Number.isFinite(barIndex) || barIndex < 0) return false;
     const rowIndex = findArrangementRowIndexForBar(barIndex);
@@ -9281,26 +10585,55 @@ useEffect(() => {
     return true;
   }, [findArrangementRowIndexForBar, normalizedArrangementSelection]);
   useEffect(() => {
-    const resetTouchSelection = (event) => {
+    const trackTouchSelectionMove = (event) => {
       if (event.pointerType === "mouse") return;
       const touch = arrangementTouchSelectionRef.current;
+      if (touch.pointerId !== event.pointerId) return;
+      if (touch.mode !== "bar-arm") return;
+      if (!Number.isFinite(touch.startX) || !Number.isFinite(touch.startY)) return;
+      const dx = Math.abs((Number(event.clientX) || 0) - touch.startX);
+      const dy = Math.abs((Number(event.clientY) || 0) - touch.startY);
+      if (dx > 8 || dy > 8) touch.moved = true;
+    };
+    const resetTouchSelection = (event) => {
+      if (event.pointerType === "mouse") return;
+      arrangementActiveTouchPointersRef.current.delete(event.pointerId);
+      const touch = arrangementTouchSelectionRef.current;
       if (touch.pointerId === event.pointerId) {
+        if (
+          touch.mode === "bar-arm" &&
+          Number.isFinite(touch.barIndex) &&
+          !touch.moved
+        ) {
+          handleArrangementNotationBarSelect(touch.barIndex, false);
+        }
         touch.pointerId = null;
         touch.mode = null;
+        touch.barIndex = null;
+        touch.startX = null;
+        touch.startY = null;
+        touch.moved = false;
       }
     };
+    window.addEventListener("pointermove", trackTouchSelectionMove, { passive: true });
     window.addEventListener("pointerup", resetTouchSelection);
     window.addEventListener("pointercancel", resetTouchSelection);
     return () => {
+      window.removeEventListener("pointermove", trackTouchSelectionMove);
       window.removeEventListener("pointerup", resetTouchSelection);
       window.removeEventListener("pointercancel", resetTouchSelection);
     };
-  }, []);
+  }, [handleArrangementNotationBarSelect]);
   const selectedSavedArrangementEntry = React.useMemo(() => {
     if (!savedArrangements.length || !loadedArrangementId) return null;
     return savedArrangements.find((entry) => entry.id === loadedArrangementId) || null;
   }, [savedArrangements, loadedArrangementId]);
   const selectedLocalBeatForTrash = React.useMemo(() => {
+    if (selectedBeatLibraryBeatIds.length === 1) {
+      const selectedId = String(selectedBeatLibraryBeatIds[0] || "");
+      const selectedBeat = localBeats.find((entry) => String(entry?.id || "") === selectedId) || null;
+      if (selectedBeat) return selectedBeat;
+    }
     const loadedBeat =
       loadedLocalBeatId != null
         ? localBeats.find((entry) => String(entry?.id || "") === String(loadedLocalBeatId || "")) || null
@@ -9310,7 +10643,7 @@ useEffect(() => {
     const beatId = String(selectedArrangementSourceBeatKey || "").slice("local:".length);
     if (!beatId) return null;
     return localBeats.find((entry) => String(entry?.id || "") === beatId) || null;
-  }, [loadedLocalBeatId, localBeats, selectedArrangementSourceBeatKey]);
+  }, [loadedLocalBeatId, localBeats, selectedArrangementSourceBeatKey, selectedBeatLibraryBeatIds]);
   const arrangementDisplayName = React.useMemo(
     () =>
       getArrangementNameFromTitles(
@@ -10721,11 +12054,19 @@ useEffect(() => {
   );
   const stepArrangementNotationPreviewScale = React.useCallback((delta) => {
     setArrangementNotationPreviewScale((prev) => {
-      const steps = [0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 1];
+      const steps = ["auto", 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 1];
+      if (prev === "auto") {
+        const nextIdx = Math.max(0, Math.min(steps.length - 1, delta > 0 ? 1 : 0));
+        return steps[nextIdx];
+      }
       const currentIdx = steps.reduce(
         (bestIdx, step, idx) =>
-          Math.abs(step - prev) < Math.abs(steps[bestIdx] - prev) ? idx : bestIdx,
-        0
+          typeof step === "number" &&
+          typeof steps[bestIdx] === "number" &&
+          Math.abs(step - prev) < Math.abs(steps[bestIdx] - prev)
+            ? idx
+            : bestIdx,
+        1
       );
       const nextIdx = Math.max(0, Math.min(steps.length - 1, currentIdx + delta));
       return steps[nextIdx];
@@ -10952,6 +12293,7 @@ useEffect(() => {
     const countInBeats = metronomeCountInEnabled ? Math.max(1, Number(startTimeSig?.n) || 4) : 0;
     setArrangementPlaybackIndex(startIndex);
     setArrangementPlaybackEnabled(true);
+    setArrangementPlaybackUiActive(true);
     setArrangementNotationVirtualize(true);
     window.requestAnimationFrame(() => {
       playback.playCompiled({
@@ -10966,6 +12308,7 @@ useEffect(() => {
       }).catch(() => {
         playback.hardStop();
         setArrangementPlaybackEnabled(false);
+        setArrangementPlaybackUiActive(false);
         setArrangementPlaybackIndex(0);
         setArrangementNotationVirtualize(false);
       });
@@ -10989,6 +12332,7 @@ useEffect(() => {
     arrangementStartedRef.current = false;
     playback.setStopAtTime(null);
     setArrangementPlaybackEnabled(false);
+    setArrangementPlaybackUiActive(false);
     setArrangementPlaybackIndex(0);
     setArrangementNotationVirtualize(false);
   }, [playback.hardStop, playback.setStopAtTime]);
@@ -10996,6 +12340,7 @@ useEffect(() => {
     arrangementStartedRef.current = false;
     playback.setStopAtTime(null);
     setArrangementPlaybackEnabled(false);
+    setArrangementPlaybackUiActive(false);
     setArrangementPlaybackIndex(0);
     setArrangementNotationVirtualize(false);
   }, [playback.setStopAtTime]);
@@ -11048,9 +12393,23 @@ useEffect(() => {
     if (!arrangementPlaybackEnabled) return;
     playback.hardStop();
     setArrangementPlaybackEnabled(false);
+    setArrangementPlaybackUiActive(false);
     arrangementStartedRef.current = false;
     playback.setStopAtTime(null);
   }, [isArrangementOpen, isArrangementNotationOpen, arrangementPlaybackEnabled, playback.hardStop]);
+  const toggleArrangementNotationPlayback = React.useCallback(() => {
+    if (arrangementPlaybackUiActive) {
+      flushSync(() => {
+        setArrangementPlaybackUiActive(false);
+      });
+      stopArrangementPlayback();
+      return;
+    }
+    flushSync(() => {
+      setArrangementPlaybackUiActive(true);
+    });
+    startArrangementPlayback();
+  }, [arrangementPlaybackUiActive, startArrangementPlayback, stopArrangementPlayback]);
 
   
   const notationExportRef = useRef(null);
@@ -12459,7 +13818,9 @@ useEffect(() => {
                           (event?.pointerType && event.pointerType !== "mouse")
                             ? handleArrangementNotationBarTouchSelect(
                                 (segment.startBarOffset || 0) + localBarIndex,
-                                event.pointerId
+                                event.pointerId,
+                                event.clientX,
+                                event.clientY
                               )
                             : handleArrangementNotationBarSelect(
                                 (segment.startBarOffset || 0) + localBarIndex,
@@ -12831,6 +14192,7 @@ useEffect(() => {
         beatLibraryDropTargetId={beatLibraryDropTargetId}
         isLoadedTrackedBeat={isLoadedTrackedBeat}
         isSelectedArrangementSourceBeat={isSelectedArrangementSourceBeat}
+        isBeatLibraryBeatSelected={selectedBeatLibraryBeatIds.includes(String(beat.id))}
         editingBeatLibraryBeatId={editingBeatLibraryBeatId}
         editingBeatLibraryBeatName={editingBeatLibraryBeatName}
         setEditingBeatLibraryBeatName={setEditingBeatLibraryBeatName}
@@ -12843,7 +14205,7 @@ useEffect(() => {
           canUpdateLoadedLocalBeat
         }
         updateCurrentLoadedBeatLocal={updateCurrentLoadedBeatLocal}
-        loadBeatIntoEditor={loadBeatIntoEditor}
+        onSelectBeat={handleBeatLibraryBeatSelect}
         arrangementAddBeat={arrangementAddBeat}
         handleDeleteLocalBeatClick={handleDeleteLocalBeatClick}
         hideSourceWhileDragging={hideSourceWhileDragging}
@@ -12870,8 +14232,10 @@ useEffect(() => {
     loadBeatIntoEditor,
     setEditingBeatLibraryBeatName,
     selectedArrangementSourceBeatKey,
+    selectedBeatLibraryBeatIds,
     startEditingBeatLibraryBeat,
     updateCurrentLoadedBeatLocal,
+    handleBeatLibraryBeatSelect,
   ]);
 
   const countBeatLibraryFolderBeats = React.useCallback((containerId) => {
@@ -12998,6 +14362,7 @@ useEffect(() => {
                     beatLibraryJustDraggedContainerRef.current = { id: "", at: 0 };
                     return;
                   }
+                  clearBeatLibraryBeatSelection();
                   selectBeatLibraryContainer(entry.id);
                 }}
                 className="inline-flex min-w-0 max-w-full items-center rounded px-1 py-0.5 text-left hover:bg-neutral-800/40"
@@ -13068,6 +14433,7 @@ useEffect(() => {
     selectedArrangementSourceBeatKey,
     selectedBeatLibraryContainerId,
     scheduleBeatLibraryFolderExpand,
+    clearBeatLibraryBeatSelection,
     setEditingBeatLibraryContainerName,
     startEditingBeatLibraryContainer,
     toggleBeatLibraryContainerCollapsed,
@@ -13372,15 +14738,15 @@ useEffect(() => {
               <>
                 <button
                   type="button"
-                  onClick={authUser ? handleSignOut : openAuthDialog}
+                  onClick={openAuthDialog}
                   disabled={authPending}
                   className={`touch-none select-none inline-flex h-[2.125rem] w-[2.125rem] items-center justify-center rounded border ${
                     authPending
                       ? "bg-neutral-900 border-neutral-800 text-neutral-500 cursor-not-allowed"
                       : "bg-neutral-900 border-neutral-800 text-neutral-300 hover:bg-neutral-800/60"
                   }`}
-                  title={authPending ? "Authentication pending" : authUser ? `Sign out ${authUserLabel}` : "Sign in with email"}
-                  aria-label={authPending ? "Authentication pending" : authUser ? `Sign out ${authUserLabel}` : "Sign in with email"}
+                  title={authPending ? "Authentication pending" : authUser ? `Open account for ${authUserLabel}` : "Sign in with email"}
+                  aria-label={authPending ? "Authentication pending" : authUser ? `Open account for ${authUserLabel}` : "Sign in with email"}
                 >
                   {authPending ? "…" : <UserIcon />}
                 </button>
@@ -13774,13 +15140,30 @@ useEffect(() => {
             )}
           </div>
           <div className="relative">
-            <button
-              type="button"
-              onClick={(e) => {
-                setActiveTab("none");
-                if (e.shiftKey) {
-                  if (!isArrangementOpen) {
-                    setArrangementSourcesCollapsed(false);
+	            <button
+	              type="button"
+	              onClick={(e) => {
+	                setActiveTab("none");
+	                if (isMobileFloatingPanels) {
+	                  if (!isArrangementOpen) {
+	                    setArrangementSourcesCollapsed(false);
+	                    setArrangementDetailsCollapsed(true);
+	                    setArrangementSourceTab("local");
+	                    setIsArrangementOpen(true);
+	                    return;
+	                  }
+	                  if (!arrangementSourcesCollapsed && arrangementDetailsCollapsed) {
+	                    setIsArrangementOpen(false);
+	                    return;
+	                  }
+	                  setArrangementSourcesCollapsed(false);
+	                  setArrangementDetailsCollapsed(true);
+	                  setArrangementSourceTab("local");
+	                  return;
+	                }
+	                if (e.shiftKey) {
+	                  if (!isArrangementOpen) {
+	                    setArrangementSourcesCollapsed(false);
                     setArrangementDetailsCollapsed(true);
                     setArrangementSourceTab("local");
                     setIsArrangementOpen(true);
@@ -13820,6 +15203,9 @@ useEffect(() => {
               Library
             </button>
           </div>
+          <span className="select-none whitespace-nowrap text-[11px] text-neutral-500" title={`Version ${APP_VERSION}`}>
+            v{APP_VERSION}
+          </span>
           {playabilityWarningsEnabled && playabilityWarningSteps.length > 0 && (
             <span className="text-[11px] text-red-500 whitespace-nowrap">
               {playabilityWarningSteps.length} playability warning{playabilityWarningSteps.length === 1 ? "" : "s"}
@@ -14488,12 +15874,14 @@ useEffect(() => {
         <div className="fixed inset-0 z-[88] pointer-events-none">
           <div
             ref={arrangementPanelRef}
-            className={`w-full ${
-              arrangementDetailsCollapsed && !arrangementSourcesCollapsed
-                ? "max-w-[23rem]"
-                : arrangementSourcesCollapsed || arrangementDetailsCollapsed
-                  ? "max-w-[27rem]"
-                  : "max-w-[50rem]"
+            className={`${
+              isMobileFloatingPanels
+                ? "w-[calc(100vw-16px)] max-w-none"
+                : arrangementDetailsCollapsed && !arrangementSourcesCollapsed
+                  ? "w-full max-w-[23rem]"
+                  : arrangementSourcesCollapsed || arrangementDetailsCollapsed
+                    ? "w-full max-w-[27rem]"
+                    : "w-[50rem] max-w-none min-w-[50rem]"
             } max-h-[94vh] overflow-auto pointer-events-auto ${
               !arrangementSourcesCollapsed && !arrangementDetailsCollapsed
                 ? "rounded-xl border border-neutral-700 bg-neutral-900 p-0 shadow-2xl overflow-hidden"
@@ -14501,12 +15889,16 @@ useEffect(() => {
             }`}
             style={{
               position: "absolute",
-              left: arrangementPos.x,
-              top: arrangementPos.y,
+              left: isMobileFloatingPanels ? 8 : arrangementPos.x,
+              top: isMobileFloatingPanels ? 8 : arrangementPos.y,
+              maxHeight: isMobileFloatingPanels ? "calc(100vh - 16px)" : undefined,
             }}
-            onMouseDown={(e) => beginFloatingPanelDrag(e, arrangementPanelRef, arrangementDragRef)}
+            onMouseDown={(e) => {
+              if (isMobileFloatingPanels) return;
+              beginFloatingPanelDrag(e, arrangementPanelRef, arrangementDragRef);
+            }}
           >
-            <div className={`grid grid-cols-1 ${!arrangementSourcesCollapsed && !arrangementDetailsCollapsed ? "lg:grid-cols-[23rem_27rem]" : ""} gap-0`}>
+            <div className={`grid ${!arrangementSourcesCollapsed && !arrangementDetailsCollapsed ? "grid-cols-[23rem_27rem]" : "grid-cols-1"} gap-0`}>
               {!arrangementSourcesCollapsed && (
               <div
                 className={`${
@@ -14521,14 +15913,22 @@ useEffect(() => {
                       ? "w-full max-w-[27rem] justify-self-start"
                       : "w-full max-w-[23rem] justify-self-start"
                     : ""
-                }`}
+                } flex h-full flex-col`}
               >
                 <div className="flex items-center justify-between gap-2">
                   <div
                     ref={arrangementSourceTab === "local" ? beatLibraryMoveUpTargetRef : null}
-                    className={`min-w-0 flex items-center gap-2 rounded ${
+                    className={`min-w-0 flex items-center gap-2 rounded cursor-move select-none ${
                       beatLibraryDropTargetId === "__up__" ? "bg-cyan-900/15 text-cyan-50" : ""
                     }`}
+                    onMouseDown={(e) => {
+                      if (isMobileFloatingPanels) return;
+                      beginFloatingPanelDrag(e, arrangementPanelRef, arrangementDragRef);
+                    }}
+                    onPointerDown={(e) => {
+                      if (isMobileFloatingPanels) return;
+                      beginFloatingPanelTouchHold(e, arrangementPanelRef, arrangementDragRef);
+                    }}
                     onDragOver={(e) => {
                       if (arrangementSourceTab !== "local") return;
                       if (beatLibraryTreeDragRef.current?.kind !== "container") return;
@@ -14627,6 +16027,38 @@ useEffect(() => {
                     )}
                   </div>
                   <div className="ml-auto flex items-center gap-2">
+	                    {isMobileFloatingPanels && (
+	                      <>
+	                        <button
+	                          type="button"
+	                          onClick={() => {
+	                            setArrangementSourcesCollapsed(true);
+	                            setArrangementDetailsCollapsed(false);
+	                            setIsArrangementOpen(false);
+	                            setIsArrangementNotationOpen(true);
+	                            setLibraryFiltersOpen(false);
+	                          }}
+	                          className="inline-flex h-[1.625rem] items-center justify-center rounded border border-neutral-800 bg-neutral-900/60 px-2 text-xs leading-none text-neutral-400 hover:bg-neutral-800/60"
+	                          title="Open sheet"
+	                        >
+	                          Sheet
+	                        </button>
+	                        <button
+	                          type="button"
+	                          onClick={() => {
+	                            setArrangementSourcesCollapsed(true);
+	                            setArrangementDetailsCollapsed(false);
+	                            setIsArrangementNotationOpen(false);
+	                            setIsArrangementOpen(true);
+	                            setLibraryFiltersOpen(false);
+	                          }}
+	                          className="inline-flex h-[1.625rem] items-center justify-center rounded border border-neutral-800 bg-neutral-900/60 px-2 text-xs leading-none text-neutral-400 hover:bg-neutral-800/60"
+	                          title="Open arrangement"
+	                        >
+	                          Arr.
+	                        </button>
+	                      </>
+	                    )}
                     <div className="relative">
                       <button
                         ref={libraryFiltersButtonRef}
@@ -14649,6 +16081,36 @@ useEffect(() => {
                           className="min-w-[16rem] rounded-lg border border-neutral-700 bg-neutral-900 p-2.5 shadow-xl"
                         >
                           <div className="flex flex-col gap-2">
+                            <div className="grid grid-cols-2 gap-2">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setArrangementSourceTab("local");
+                                  setLibraryFiltersOpen(false);
+                                }}
+                                className={`inline-flex h-[1.625rem] items-center justify-center rounded border px-1.5 text-xs ${
+                                  arrangementSourceTab === "local"
+                                    ? "border-neutral-700 text-white bg-neutral-800"
+                                    : "border-neutral-800 bg-neutral-900/60 text-neutral-400 hover:bg-neutral-800/60"
+                                }`}
+                              >
+                                Local
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setArrangementSourceTab("public");
+                                  setLibraryFiltersOpen(false);
+                                }}
+                                className={`inline-flex h-[1.625rem] items-center justify-center rounded border px-1.5 text-xs ${
+                                  arrangementSourceTab === "public"
+                                    ? "border-neutral-700 text-white bg-neutral-800"
+                                    : "border-neutral-800 bg-neutral-900/60 text-neutral-400 hover:bg-neutral-800/60"
+                                }`}
+                              >
+                                Public
+                              </button>
+                            </div>
                             <button
                               type="button"
                               onClick={() => {
@@ -14686,6 +16148,19 @@ useEffect(() => {
                             <button
                               type="button"
                               onClick={() => {
+                                setArrangementSourcesCollapsed(true);
+                                setArrangementDetailsCollapsed(false);
+                                setIsArrangementOpen(true);
+                                setIsArrangementNotationOpen(true);
+                                setLibraryFiltersOpen(false);
+                              }}
+                              className="inline-flex h-[1.625rem] items-center justify-center rounded border border-neutral-800 bg-neutral-900/60 px-1.5 text-xs text-neutral-400 hover:bg-neutral-800/60"
+                            >
+                              Sheet
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
                                 setArrangementSourcesCollapsed(false);
                                 setArrangementDetailsCollapsed(true);
                                 setArrangementSourceTab("presets");
@@ -14695,6 +16170,23 @@ useEffect(() => {
                             >
                               Presets
                             </button>
+                            {arrangementSourceTab === "local" && authUser?.id && hasSupabaseEnabled ? (
+                              <button
+                                type="button"
+                                onClick={async () => {
+                                  await refreshPersonalLibraryFromCloud({ alertOnError: true });
+                                  setLibraryFiltersOpen(false);
+                                }}
+                                disabled={personalLibraryRefreshing}
+                                className={`inline-flex h-[1.625rem] items-center justify-center rounded border px-1.5 text-xs ${
+                                  personalLibraryRefreshing
+                                    ? "border-neutral-800 bg-neutral-900/60 text-neutral-500 cursor-not-allowed"
+                                    : "border-neutral-800 bg-neutral-900/60 text-neutral-400 hover:bg-neutral-800/60"
+                                }`}
+                              >
+                                {personalLibraryRefreshing ? "Syncing..." : "Sync personal cloud library"}
+                              </button>
+                            ) : null}
                             {arrangementSourceTab !== "presets" ? (
                               <>
                             <div className="flex items-center justify-between gap-3">
@@ -14773,32 +16265,6 @@ useEffect(() => {
                         , document.body)
                         : null}
                     </div>
-                    {arrangementSourceTab !== "presets" && (
-                      <>
-                        <button
-                          type="button"
-                          onClick={() => setArrangementSourceTab("local")}
-                          className={`inline-flex h-[1.625rem] items-center justify-center px-1.5 rounded border text-xs ${
-                            arrangementSourceTab === "local"
-                              ? "border-neutral-700 text-white bg-neutral-800"
-                              : "border-neutral-800 text-neutral-400 bg-neutral-900/60"
-                          }`}
-                        >
-                          Local
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setArrangementSourceTab("public")}
-                          className={`inline-flex h-[1.625rem] items-center justify-center px-1.5 rounded border text-xs ${
-                            arrangementSourceTab === "public"
-                              ? "border-neutral-700 text-white bg-neutral-800"
-                              : "border-neutral-800 text-neutral-400 bg-neutral-900/60"
-                          }`}
-                        >
-                          Public
-                        </button>
-                      </>
-                    )}
                     <button
                       type="button"
                       onClick={() => setIsArrangementOpen(false)}
@@ -14826,8 +16292,8 @@ useEffect(() => {
                 )}
                 {!arrangementSourcesCollapsed ? (
                   arrangementSourceTab === "local" ? (
-                    <div className="mt-3">
-                        <div ref={arrangementSourceListRef} className="max-h-[52vh] overflow-auto pr-1">
+                    <div className="mt-3 flex min-h-0 flex-1 flex-col">
+                        <div ref={arrangementSourceListRef} className="max-h-[52vh] flex-1 overflow-auto pr-1">
                           <DndContext
                             sensors={beatLibraryOrderSensors}
                             collisionDetection={detectBeatLibraryDropCollision}
@@ -14868,7 +16334,20 @@ useEffect(() => {
                           <div className="flex items-center gap-2">
                             <button
                               type="button"
-                              onClick={() => createBeatLibraryContainer("folder")}
+                              onClick={async () => {
+                                const nextContainer = createBeatLibraryContainer("folder");
+                                if (!nextContainer) return;
+                                setEditingBeatLibraryContainerId(String(nextContainer.id));
+                                setEditingBeatLibraryContainerName(String(nextContainer.name || ""));
+                                if (selectedBeatLibraryBeatIds.length > 0) {
+                                  const orderedSelectedIds = visibleLocalBeatIdsInLibraryOrder.filter((id) =>
+                                    selectedBeatLibraryBeatIds.includes(id)
+                                  );
+                                  await moveBeatsToLibraryContainer(orderedSelectedIds, nextContainer.id);
+                                  clearBeatLibraryBeatSelection();
+                                  return;
+                                }
+                              }}
                               className="flex h-7 flex-1 items-center justify-center rounded border border-neutral-800 bg-neutral-900/40 px-2 text-sm text-neutral-400 hover:bg-neutral-800/60"
                             >
                               + Folder
@@ -14983,8 +16462,8 @@ useEffect(() => {
                         </div>
                     </div>
                   ) : arrangementSourceTab === "presets" ? (
-                    <div className="mt-0.5">
-                      <div ref={arrangementSourceListRef} className="max-h-[52vh] overflow-auto pr-1 dg-scroll-follow-list">
+                    <div className="mt-0.5 flex min-h-0 flex-1 flex-col">
+                      <div ref={arrangementSourceListRef} className="max-h-[52vh] flex-1 overflow-auto pr-1 dg-scroll-follow-list">
                         <DndContext
                           sensors={beatLibraryOrderSensors}
                           collisionDetection={detectGridSettingsPresetDropCollision}
@@ -15261,13 +16740,23 @@ useEffect(() => {
                   <div className="pointer-events-none absolute left-0 top-4 bottom-4 w-px bg-neutral-800" />
                 ) : null}
                 <div className="flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-2">
+                  <div
+                    className="flex items-center gap-2 cursor-move select-none"
+                    onMouseDown={(e) => {
+                      if (isMobileFloatingPanels) return;
+                      beginFloatingPanelDrag(e, arrangementPanelRef, arrangementDragRef);
+                    }}
+                    onPointerDown={(e) => {
+                      if (isMobileFloatingPanels) return;
+                      beginFloatingPanelTouchHold(e, arrangementPanelRef, arrangementDragRef);
+                    }}
+                  >
                     <div className="text-sm text-neutral-200">Arrangement</div>
                     <button
                       ref={arrangementPlayButtonRef}
                       type="button"
                       onClick={() => {
-                        if (arrangementPlaybackEnabled && playback.isPlaying) stopArrangementPlayback();
+                        if (arrangementPlaybackUiActive) stopArrangementPlayback();
                         else startArrangementPlayback();
                       }}
                       disabled={arrangementPlayableEntries.length < 1}
@@ -15279,7 +16768,7 @@ useEffect(() => {
                           : "border-neutral-800 text-neutral-500 bg-neutral-900/60 cursor-not-allowed"
                       }`}
                     >
-                      {arrangementPlaybackEnabled && playback.isPlaying
+                      {arrangementPlaybackUiActive
                         ? "Stop"
                         : "Play"}
                     </button>
@@ -15289,7 +16778,7 @@ useEffect(() => {
                         onClick={() => {
                           setArrangementSourcesCollapsed(true);
                           setArrangementDetailsCollapsed(false);
-                          setIsArrangementOpen(true);
+                          setIsArrangementOpen(false);
                           setIsArrangementNotationOpen(true);
                         }}
                         className="px-2 py-1 rounded border border-neutral-800 text-xs text-neutral-400 bg-neutral-900/60 hover:bg-neutral-800/60"
@@ -15300,28 +16789,131 @@ useEffect(() => {
                     )}
                   </div>
                   <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setArrangementLibraryTab("local")}
-                      className={`inline-flex h-[1.625rem] items-center justify-center rounded border px-1.5 text-xs leading-none ${
-                        arrangementLibraryTab === "local"
-                          ? "border-neutral-700 text-white bg-neutral-800"
-                          : "border-neutral-800 text-neutral-400 bg-neutral-900/60"
-                      }`}
-                    >
-                      Local
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setArrangementLibraryTab("public")}
-                      className={`inline-flex h-[1.625rem] items-center justify-center rounded border px-1.5 text-xs leading-none ${
-                        arrangementLibraryTab === "public"
-                          ? "border-neutral-700 text-white bg-neutral-800"
-                          : "border-neutral-800 text-neutral-400 bg-neutral-900/60"
-                      }`}
-                    >
-                      Public
-                    </button>
+                    <div className="relative">
+                      <button
+                        ref={arrangementLibraryMenuButtonRef}
+                        type="button"
+                        onClick={() => setArrangementLibraryMenuOpen((v) => !v)}
+                        className={`inline-flex h-[1.625rem] items-center justify-center px-1.5 rounded border text-xs leading-none ${
+                          arrangementLibraryMenuOpen
+                            ? "border-neutral-700 text-white bg-neutral-800"
+                            : "border-neutral-800 text-neutral-400 bg-neutral-900/60"
+                        }`}
+                        title={arrangementLibraryMenuOpen ? "Hide arrangement options" : "Show arrangement options"}
+                      >
+                        ...
+                      </button>
+                      {arrangementLibraryMenuOpen && arrangementLibraryMenuStyle
+                        ? createPortal(
+                            <div
+                              ref={arrangementLibraryMenuRef}
+                              style={arrangementLibraryMenuStyle}
+                              className="min-w-[11rem] rounded-lg border border-neutral-700 bg-neutral-900 p-2 shadow-xl"
+                            >
+                              <div className="flex flex-col gap-2">
+                                <div className="grid grid-cols-2 gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setArrangementLibraryTab("local");
+                                      setArrangementLibraryMenuOpen(false);
+                                    }}
+                                    className={`inline-flex h-[1.625rem] items-center justify-center rounded border px-1.5 text-xs ${
+                                      arrangementLibraryTab === "local"
+                                        ? "border-neutral-700 text-white bg-neutral-800"
+                                        : "border-neutral-800 bg-neutral-900/60 text-neutral-400 hover:bg-neutral-800/60"
+                                    }`}
+                                  >
+                                    Local
+                                  </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setArrangementLibraryTab("public");
+                                    setArrangementLibraryMenuOpen(false);
+                                    }}
+                                    className={`inline-flex h-[1.625rem] items-center justify-center rounded border px-1.5 text-xs ${
+                                      arrangementLibraryTab === "public"
+                                        ? "border-neutral-700 text-white bg-neutral-800"
+                                        : "border-neutral-800 bg-neutral-900/60 text-neutral-400 hover:bg-neutral-800/60"
+                                    }`}
+                                  >
+                                    Public
+                                  </button>
+                                </div>
+                                {arrangementLibraryTab === "local" && authUser?.id && hasSupabaseEnabled ? (
+                                  <button
+                                    type="button"
+                                    onClick={async () => {
+                                      await refreshPersonalLibraryFromCloud({ alertOnError: true });
+                                      setArrangementLibraryMenuOpen(false);
+                                    }}
+                                    disabled={personalLibraryRefreshing}
+                                    className={`inline-flex h-[1.625rem] items-center justify-center rounded border px-1.5 text-xs ${
+                                      personalLibraryRefreshing
+                                        ? "border-neutral-800 bg-neutral-900/60 text-neutral-500 cursor-not-allowed"
+                                        : "border-neutral-800 bg-neutral-900/60 text-neutral-400 hover:bg-neutral-800/60"
+                                    }`}
+                                  >
+                                    {personalLibraryRefreshing ? "Syncing..." : "Sync personal cloud library"}
+                                  </button>
+                                ) : null}
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setArrangementSourcesCollapsed(false);
+                                    setArrangementDetailsCollapsed(true);
+                                    setIsArrangementOpen(true);
+                                    setArrangementSourceTab("local");
+                                    setArrangementLibraryMenuOpen(false);
+                                  }}
+                                  className="inline-flex h-[1.625rem] items-center justify-center rounded border border-neutral-800 bg-neutral-900/60 px-1.5 text-xs text-neutral-400 hover:bg-neutral-800/60"
+                                >
+                                  Beats
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setArrangementSourcesCollapsed(true);
+                                    setArrangementDetailsCollapsed(false);
+                                    setIsArrangementOpen(true);
+                                    setArrangementLibraryMenuOpen(false);
+                                  }}
+                                  className="inline-flex h-[1.625rem] items-center justify-center rounded border border-neutral-800 bg-neutral-900/60 px-1.5 text-xs text-neutral-400 hover:bg-neutral-800/60"
+                                >
+                                  Arrangement
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setArrangementSourcesCollapsed(false);
+                                    setArrangementDetailsCollapsed(false);
+                                    setIsArrangementOpen(true);
+                                    setArrangementLibraryMenuOpen(false);
+                                  }}
+                                  className="inline-flex h-[1.625rem] items-center justify-center rounded border border-neutral-800 bg-neutral-900/60 px-1.5 text-xs text-neutral-400 hover:bg-neutral-800/60"
+                                >
+                                  Beats + Arrangement
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setArrangementSourcesCollapsed(true);
+                                    setArrangementDetailsCollapsed(false);
+                                    setIsArrangementOpen(false);
+                                    setIsArrangementNotationOpen(true);
+                                    setArrangementLibraryMenuOpen(false);
+                                  }}
+                                  className="inline-flex h-[1.625rem] items-center justify-center rounded border border-neutral-800 bg-neutral-900/60 px-1.5 text-xs text-neutral-400 hover:bg-neutral-800/60"
+                                >
+                                  Sheet
+                                </button>
+                              </div>
+                            </div>,
+                            document.body
+                          )
+                        : null}
+                    </div>
                     <button
                       type="button"
                       onClick={() => setIsArrangementOpen(false)}
@@ -15379,6 +16971,23 @@ useEffect(() => {
                   {publicArrangements.length === 0 && !publicArrangementLibraryLoading ? (
                     <div className="text-xs text-neutral-500">No public arrangements available.</div>
                   ) : null}
+                </div>
+                <div className="mt-3 flex flex-wrap items-center gap-3 text-[10px] text-neutral-500">
+                  {normalizedArrangementBarLoopSelection ? (
+                    <span className="text-neutral-500">
+                      {`Loop selection: bars ${normalizedArrangementBarLoopSelection.start + 1}-${normalizedArrangementBarLoopSelection.end + 1}`}
+                    </span>
+                  ) : normalizedArrangementLoopSelection ? (
+                    <span className="text-neutral-500">
+                      {`Loop selection: ${normalizedArrangementLoopSelection.start + 1}-${normalizedArrangementLoopSelection.end + 1}`}
+                    </span>
+                  ) : null}
+                  <span>{`Total bars: ${arrangementTotals.totalBars}`}</span>
+                  <span>
+                    {`Est. length: ${Math.floor(Math.max(0, Math.round(arrangementTotals.totalSeconds)) / 60)}:${String(
+                      Math.max(0, Math.round(arrangementTotals.totalSeconds)) % 60
+                    ).padStart(2, "0")}`}
+                  </span>
                 </div>
                 <div className="mt-auto pt-3">
                   <div className="border-t border-neutral-800 pt-3">
@@ -15538,7 +17147,7 @@ useEffect(() => {
                 )}
                 {arrangementLibraryTab === "local" && (
                 <>
-                <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-neutral-500">
+                <div className="mt-3 flex flex-wrap items-center gap-3 text-[10px] text-neutral-500">
                   {normalizedArrangementBarLoopSelection ? (
                     <span className="text-neutral-500">
                       {`Loop selection: bars ${normalizedArrangementBarLoopSelection.start + 1}-${normalizedArrangementBarLoopSelection.end + 1}`}
@@ -15726,50 +17335,74 @@ useEffect(() => {
         <div className="fixed inset-0 z-[87] pointer-events-none">
           <div
             ref={arrangementNotationPanelRef}
-            className="max-h-[88vh] overflow-auto rounded-xl border border-neutral-700 bg-neutral-900 pt-0 pointer-events-auto shadow-2xl"
+            className={`overflow-auto rounded-xl border border-neutral-700 bg-neutral-900 pt-0 pointer-events-auto shadow-2xl ${
+              isMobileFloatingPanels ? "max-h-[calc(100vh-8px)]" : "max-h-[88vh]"
+            }`}
             style={{
               position: "absolute",
-              left: arrangementNotationPos.x,
-              top: arrangementNotationPos.y,
-              width: `${arrangementNotationPanelWidth}px`,
-              maxWidth: "calc(100vw - 16px)",
+              left: isMobileFloatingPanels ? 4 : arrangementNotationPos.x,
+              top: isMobileFloatingPanels ? 4 : arrangementNotationPos.y,
+              width: `${arrangementNotationShellWidth}px`,
+              maxWidth: "calc(100vw - 8px)",
               paddingBottom: "0px",
             }}
-            onMouseDown={(e) =>
-              beginFloatingPanelDrag(e, arrangementNotationPanelRef, arrangementNotationDragRef)
-            }
+            onMouseDown={(e) => {
+              if (isMobileFloatingPanels) return;
+              beginFloatingPanelDrag(e, arrangementNotationPanelRef, arrangementNotationDragRef);
+            }}
           >
-            <div className="sticky top-0 z-10 mb-3 border-b border-neutral-800 bg-neutral-900 px-3 pt-2 pb-1.5 md:pt-3">
+            <div
+              className="sticky top-0 z-10 mb-3 border-b border-neutral-800 bg-neutral-900 px-3 pt-2 pb-1.5 md:pt-3 cursor-move select-none touch-none"
+              onMouseDown={(e) => {
+                if (isMobileFloatingPanels) return;
+                beginFloatingPanelDrag(e, arrangementNotationPanelRef, arrangementNotationDragRef);
+              }}
+              onPointerDown={(e) => {
+                if (isMobileFloatingPanels) return;
+                beginFloatingPanelTouchHold(e, arrangementNotationPanelRef, arrangementNotationDragRef);
+              }}
+            >
               <div className="flex items-center justify-between gap-3">
-                <div className="flex items-center gap-3">
-                  <div
-                    className="flex items-center gap-3 cursor-move select-none"
-                    onMouseDown={(e) =>
-                      beginFloatingPanelDrag(e, arrangementNotationPanelRef, arrangementNotationDragRef)
-                    }
-                    onPointerDown={(e) =>
-                      beginFloatingPanelTouchHold(e, arrangementNotationPanelRef, arrangementNotationDragRef)
-                    }
+	                  <div className="flex items-center gap-3">
+	                    <div
+	                      className="flex items-center gap-3"
+                    onMouseDown={(e) => {
+                      if (isMobileFloatingPanels) return;
+                      beginFloatingPanelDrag(e, arrangementNotationPanelRef, arrangementNotationDragRef);
+                    }}
+                    onPointerDown={(e) => {
+                      if (isMobileFloatingPanels) return;
+                      beginFloatingPanelTouchHold(e, arrangementNotationPanelRef, arrangementNotationDragRef);
+                    }}
                     title="Drag window"
                   >
-                    <div className="grid grid-cols-2 gap-0.5 text-neutral-500" aria-hidden="true">
-                      <span className="h-0.5 w-0.5 rounded-full bg-current" />
-                      <span className="h-0.5 w-0.5 rounded-full bg-current" />
-                      <span className="h-0.5 w-0.5 rounded-full bg-current" />
-                      <span className="h-0.5 w-0.5 rounded-full bg-current" />
-                      <span className="h-0.5 w-0.5 rounded-full bg-current" />
-                      <span className="h-0.5 w-0.5 rounded-full bg-current" />
-                    </div>
-                    <h3 className="text-[15px] font-semibold leading-tight">Arrangement Notation</h3>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (arrangementPlaybackEnabled && playback.isPlaying) stopArrangementPlayback();
-                      else startArrangementPlayback();
-                    }}
+	                    <h3 className="text-sm text-neutral-200">Arrangement Notation</h3>
+	                  </div>
+	                  {isMobileFloatingPanels && (
+	                    <button
+	                      type="button"
+	                      onClick={() => {
+	                        setIsArrangementNotationOpen(false);
+	                        setIsArrangementOpen(true);
+	                        setArrangementSourcesCollapsed(true);
+	                        setArrangementDetailsCollapsed(false);
+	                      }}
+	                      className="inline-flex h-[1.625rem] items-center justify-center rounded border border-neutral-800 bg-neutral-900/60 px-2 text-xs leading-none text-neutral-400 hover:bg-neutral-800/60"
+	                      title="Open arrangement"
+	                    >
+	                      Arrangement
+	                    </button>
+	                  )}
+	                  <button
+	                    type="button"
+	                    onPointerDown={(e) => {
+	                      e.stopPropagation();
+	                      e.preventDefault();
+	                      toggleArrangementNotationPlayback();
+	                    }}
+	                    onClick={() => {}}
                     disabled={arrangementPlayableEntries.length < 1}
-                    className={`px-3 py-1 rounded border text-sm ${
+                    className={`inline-flex h-[1.625rem] items-center justify-center rounded border px-2 text-xs leading-none ${
                       arrangementPlayableEntries.length > 0
                         ? (normalizedArrangementBarLoopSelection || normalizedArrangementLoopSelection)
                           ? "border-sky-500/70 text-sky-100 bg-sky-900/20 hover:bg-sky-900/30"
@@ -15777,7 +17410,7 @@ useEffect(() => {
                         : "border-neutral-800 text-neutral-500 bg-neutral-900/60 cursor-not-allowed"
                     }`}
                   >
-                    {arrangementPlaybackEnabled && playback.isPlaying
+                    {arrangementPlaybackUiActive
                       ? "Stop"
                       : "Play"}
                   </button>
@@ -15787,10 +17420,10 @@ useEffect(() => {
                     ref={arrangementNotationMoreMenuButtonRef}
                     type="button"
                     onClick={() => setArrangementNotationMoreMenuOpen((v) => !v)}
-                    className={`px-3 py-1 rounded border text-xs ${
+                    className={`inline-flex h-[1.625rem] items-center justify-center rounded border px-1.5 text-xs leading-none ${
                       arrangementNotationMoreMenuOpen
-                        ? "border-neutral-600 text-white bg-neutral-800"
-                        : "border-neutral-700 text-white bg-neutral-800 hover:bg-neutral-700/60"
+                        ? "border-neutral-700 text-white bg-neutral-800"
+                        : "border-neutral-800 text-neutral-400 bg-neutral-900/60 hover:bg-neutral-800/60"
                     }`}
                     title="Open arrangement notation options"
                   >
@@ -15800,10 +17433,11 @@ useEffect(() => {
                     ? createPortal(
                         <div
                           ref={arrangementNotationMoreMenuRef}
-                          className="fixed z-[140] w-64 rounded border border-neutral-700 bg-neutral-900 p-2 shadow-2xl"
+                          className="fixed z-[140] rounded border border-neutral-700 bg-neutral-900 p-2 shadow-2xl"
                           style={{
                             top: `${arrangementNotationMoreMenuPosition.top}px`,
                             left: `${arrangementNotationMoreMenuPosition.left}px`,
+                            width: `${arrangementNotationMoreMenuPosition.width}px`,
                           }}
                           onClick={(e) => e.stopPropagation()}
                           onMouseDown={(e) => e.stopPropagation()}
@@ -15944,7 +17578,9 @@ useEffect(() => {
                                   −
                                 </button>
                                 <div className="min-w-[64px] border-l border-r border-neutral-700 px-2 py-1 text-center text-xs text-white">
-                                  {`${Math.round(arrangementNotationPreviewScale * 100)}%`}
+                                  {arrangementNotationPreviewScale === "auto"
+                                    ? "Auto"
+                                    : `${Math.round(arrangementNotationPreviewScale * 100)}%`}
                                 </div>
                                 <button
                                   type="button"
@@ -15978,7 +17614,7 @@ useEffect(() => {
                   <button
                     type="button"
                     onClick={() => setIsArrangementNotationOpen(false)}
-                    className="px-2.5 py-1 rounded border border-neutral-700 text-sm text-neutral-300 bg-neutral-900/60 hover:bg-neutral-800/60"
+                    className="inline-flex h-[1.625rem] w-[1.625rem] items-center justify-center rounded border border-neutral-800 bg-neutral-900/60 text-xs leading-none text-neutral-400 hover:bg-neutral-800/60"
                     aria-label="Close arrangement notation"
                     title="Close arrangement notation"
                   >
@@ -15988,16 +17624,22 @@ useEffect(() => {
               </div>
             </div>
 
-            <div
-              className="w-full overflow-visible"
-              style={{
-                marginTop: `${arrangementNotationTopGap}px`,
-              }}
-            >
+	            <div
+	              className="w-full overflow-visible"
+	              style={{
+	                marginTop: `${arrangementNotationTopGap}px`,
+	              }}
+	              onPointerDown={(e) => {
+	                if (!isMobileFloatingPanels) return;
+	                if (e.pointerType === "mouse") return;
+	                if (e.target !== e.currentTarget) return;
+	                clearArrangementNotationSelection();
+	              }}
+	            >
               <div
                 className="mx-auto overflow-visible"
                 style={{
-                  width: `${794 * arrangementNotationPreviewScale}px`,
+                  width: `${794 * arrangementNotationEffectivePreviewScale}px`,
                   height: arrangementNotationPreviewScaledHeight > 0
                     ? `${arrangementNotationPreviewScaledHeight}px`
                     : undefined,
@@ -16008,7 +17650,7 @@ useEffect(() => {
                   className="max-w-none overflow-visible p-0"
                   style={{
                     width: "794px",
-                    transform: `scale(${arrangementNotationPreviewScale})`,
+                    transform: `scale(${arrangementNotationEffectivePreviewScale})`,
                     transformOrigin: "top left",
                   }}
                 >
@@ -17778,6 +19420,7 @@ useEffect(() => {
         isOpen={isAuthDialogOpen}
         mode={authMode}
         onModeChange={setAuthMode}
+        signedInEmail={authUserEmail}
         emailInputRef={authEmailInputRef}
         email={authEmailInput}
         onEmailChange={setAuthEmailInput}
@@ -17794,10 +19437,191 @@ useEffect(() => {
           if (authMode === "magic-link") return handleMagicLinkSignIn();
           return handlePasswordSignIn();
         }}
+        onSignOut={authUser ? handleSignOut : null}
         pending={authPending}
         error={authError}
         message={authMessage}
       />
+      {pendingPersonalCloudImport ? (
+        (() => {
+          const hasPendingPersonalCloudImportSelection =
+            pendingPersonalCloudImportVisibleSelectedLibraryCount > 0 ||
+            effectiveSelectedPersonalCloudImportArrangementIds.length > 0;
+          return (
+        <div
+          className="fixed inset-0 z-[151] bg-black/60 p-4 flex items-center justify-center"
+          onMouseDown={() => {
+            if (personalCloudImportPending) return;
+            dismissPendingPersonalCloudImport();
+          }}
+        >
+          <div
+            className="w-full max-w-lg rounded-xl border border-neutral-700 bg-neutral-900 p-4 md:p-5"
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <h3 className="text-base font-semibold text-white">Sync Local Library To Personal Cloud?</h3>
+            <div className="mt-3 text-sm text-neutral-300">
+              This device still has offline local content that is not yet part of your personal cloud library.
+            </div>
+            <div className="mt-3 rounded border border-neutral-800 bg-neutral-950/40 px-3 py-2 text-sm text-neutral-400">
+              <div>
+                {pendingPersonalCloudImport.beats.length} beat{pendingPersonalCloudImport.beats.length === 1 ? "" : "s"}
+              </div>
+              <div>
+                {pendingPersonalCloudImport.arrangements.length} arrangement{pendingPersonalCloudImport.arrangements.length === 1 ? "" : "s"}
+              </div>
+              <div>
+                {pendingPersonalCloudImport.folders.length} folder{pendingPersonalCloudImport.folders.length === 1 ? "" : "s"}
+              </div>
+            </div>
+            <div className="mt-3 text-sm text-neutral-400">
+              Choose whether to merge this device’s local library into your personal cloud library, or keep using the cloud library as-is.
+            </div>
+            <div className="mt-3 flex items-center justify-between gap-3 rounded border border-neutral-800 bg-neutral-950/40 px-3 py-2 text-sm text-neutral-400">
+              <span>
+                Selected for merge: {pendingPersonalCloudImportVisibleSelectedLibraryCount} library item
+                {pendingPersonalCloudImportVisibleSelectedLibraryCount === 1 ? "" : "s"}, {pendingPersonalCloudImportSelectedArrangementCount} arrangement
+                {pendingPersonalCloudImportSelectedArrangementCount === 1 ? "" : "s"}
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedPersonalCloudImportBeatIds([]);
+                  setSelectedPersonalCloudImportFolderIds([]);
+                  setSelectedPersonalCloudImportArrangementIds([]);
+                }}
+                className="text-xs text-neutral-400 hover:text-white"
+              >
+                None
+              </button>
+            </div>
+            {pendingPersonalCloudImportSelectedLibraryCount === 0 &&
+              pendingPersonalCloudImportSelectedArrangementCount > 0 ? (
+              <div className="mt-3 rounded border border-neutral-800 bg-neutral-950/40 px-3 py-2 text-sm text-neutral-400">
+                The library tree is currently unselected, but arrangements are still selected for merge.
+              </div>
+            ) : null}
+            <div className="mt-4 space-y-3">
+              <div className="rounded border border-neutral-800 bg-neutral-950/40 px-3 py-2">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="text-sm text-neutral-300">Library</div>
+                  <div className="flex items-center gap-2 text-xs">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedPersonalCloudImportBeatIds(
+                          pendingPersonalCloudImport.beats.map((entry) => String(entry?.id || "")).filter(Boolean)
+                        );
+                        setSelectedPersonalCloudImportFolderIds(
+                          pendingPersonalCloudImport.folders.map((entry) => String(entry?.id || "")).filter(Boolean)
+                        );
+                      }}
+                      className="text-neutral-400 hover:text-white"
+                    >
+                      All
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedPersonalCloudImportBeatIds([]);
+                        setSelectedPersonalCloudImportFolderIds([]);
+                      }}
+                      className="text-neutral-400 hover:text-white"
+                    >
+                      None
+                    </button>
+                  </div>
+                </div>
+                <div className="mt-2 max-h-56 overflow-auto pr-1">
+                  {renderPendingPersonalCloudImportFolderContents(null, 0)}
+                </div>
+              </div>
+              <div className="rounded border border-neutral-800 bg-neutral-950/40 px-3 py-2">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="text-sm text-neutral-300">Arrangements</div>
+                  <div className="flex items-center gap-2 text-xs">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setSelectedPersonalCloudImportArrangementIds(
+                          pendingPersonalCloudImport.arrangements.map((entry) => String(entry?.id || "")).filter(Boolean)
+                        )
+                      }
+                      className="text-neutral-400 hover:text-white"
+                    >
+                      All
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedPersonalCloudImportArrangementIds([])}
+                      className="text-neutral-400 hover:text-white"
+                    >
+                      None
+                    </button>
+                  </div>
+                </div>
+                <div className="mt-2 max-h-28 space-y-1 overflow-auto pr-1">
+                  {pendingPersonalCloudImport.arrangements.map((entry) => {
+                    const id = String(entry?.id || "");
+                    const checked = selectedPersonalCloudImportArrangementIds.includes(id);
+                    return (
+                      <label key={`cloud-import-arrangement-${id}`} className="flex items-center gap-2 text-sm text-neutral-400">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={(e) =>
+                            setSelectedPersonalCloudImportArrangementIds((prev) =>
+                              e.target.checked
+                                ? [...prev, id]
+                                : prev.filter((value) => value !== id)
+                            )
+                          }
+                          className="accent-neutral-500"
+                        />
+                        <span className="truncate">{String(entry?.name || "Untitled Arrangement")}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+            <div className="mt-4 flex flex-wrap items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={dismissPendingPersonalCloudImport}
+                disabled={personalCloudImportPending}
+                className={`px-3 py-1.5 rounded border text-sm ${
+                  personalCloudImportPending
+                    ? "border-neutral-800 text-neutral-500 bg-neutral-900/60 cursor-not-allowed"
+                    : !hasPendingPersonalCloudImportSelection
+                      ? "border-sky-500/70 text-sky-100 bg-sky-900/20 hover:bg-sky-900/30"
+                      : "border-neutral-700 text-neutral-300 hover:bg-neutral-800/60"
+                }`}
+              >
+                Use cloud now, keep local on this device
+              </button>
+              <button
+                type="button"
+                onClick={handleMergePendingPersonalCloudImport}
+                disabled={
+                  personalCloudImportPending ||
+                  !hasPendingPersonalCloudImportSelection
+                }
+                className={`px-3 py-1.5 rounded border text-sm ${
+                  personalCloudImportPending ||
+                  !hasPendingPersonalCloudImportSelection
+                    ? "border-neutral-800 text-neutral-500 bg-neutral-900/60 cursor-not-allowed"
+                    : "border-sky-500/70 text-sky-100 bg-sky-900/20 hover:bg-sky-900/30"
+                }`}
+              >
+                {personalCloudImportPending ? "Merging…" : "Merge into personal cloud"}
+              </button>
+            </div>
+          </div>
+        </div>
+          );
+        })()
+      ) : null}
       {isPreferencesDialogOpen && (
         <div
           className="fixed inset-0 z-[92] bg-black/60 p-4 flex items-center justify-center"
@@ -18532,7 +20356,7 @@ function SortableArrangementRow({
       }}
       onDragOver={onExternalDragOver}
       onDrop={onExternalDrop}
-      className={`rounded border px-2.5 py-2 ${
+      className={`select-none rounded border px-2.5 py-2 ${
         isPlaying
           ? "border-cyan-500/80 bg-cyan-900/20 shadow-[0_0_0_1px_rgba(6,182,212,0.35)]"
           : isSelected
@@ -21666,10 +23490,15 @@ for (let i = 0; i < notes.length; i++) {
         hit.setAttribute("class", "dg-click-bar");
         hit.style.cursor = "pointer";
         hit.style.pointerEvents = "all";
-        hit.style.touchAction = "none";
+        hit.style.touchAction = "pan-y";
         hit.addEventListener("pointerdown", (event) => {
           pointerDownHandledClick = false;
           if (event.pointerType === "mouse" && event.button !== 0) return;
+          if (event.pointerType !== "mouse") {
+            pointerDownHandledClick = true;
+            onBarClick(barIndex, event);
+            return;
+          }
           pointerDownHandledClick = true;
           event.preventDefault();
           onBarClick(barIndex, event);
@@ -21697,7 +23526,7 @@ for (let i = 0; i < notes.length; i++) {
     <div
       ref={ref}
       style={{
-        touchAction: typeof onBarClick === "function" ? "none" : "auto",
+        touchAction: typeof onBarClick === "function" ? "pan-y" : "auto",
         paddingRight: "1rem",
       }}
     />

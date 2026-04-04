@@ -1477,15 +1477,46 @@ function normalizePublishedBeatEntry(row) {
 function normalizePublishedArrangementEntry(row) {
   const payload = row?.payload;
   if (!payload || payload.kind !== "arrangement-default" || !Array.isArray(payload.items)) return null;
+  const sharedBeats = Array.isArray(payload?.beats)
+    ? payload.beats
+        .map((beat, idx) => {
+          const nextPayload = beat?.payload && typeof beat.payload === "object" ? beat.payload : null;
+          if (!nextPayload) return null;
+          return {
+            id: String(beat?.id || `shared-${idx + 1}`),
+            name: String(beat?.name || `Beat ${idx + 1}`),
+            category: String(beat?.category || "Groove"),
+            style: beat?.style ? String(beat.style) : undefined,
+            timeSigCategory: String(
+              beat?.timeSigCategory ||
+                `${Number(nextPayload.timeSig?.n) || 4}/${Number(nextPayload.timeSig?.d) || 4}`
+            ),
+            bpm: Number.isFinite(Number(beat?.bpm))
+              ? Math.round(Number(beat.bpm))
+              : Number(nextPayload.bpm) || 120,
+            payload: nextPayload,
+            source: "shared",
+          };
+        })
+        .filter(Boolean)
+    : [];
+  const beatNameById = new Map(sharedBeats.map((beat) => [String(beat.id || ""), String(beat.name || "")]));
+  const beatNames = normalizeArrangementItems(payload.items)
+    .map((item) => beatNameById.get(String(item?.beatId || "")) || "")
+    .filter(Boolean);
   return {
     id: String(row.id || ""),
-    name: String(payload.name || "").trim() || "Untitled Arrangement",
+    name:
+      getArrangementNameFromTitles(payload.titleLine1, payload.titleLine2, String(payload.name || "")) ||
+      "Untitled Arrangement",
     titleLine1: String(payload.titleLine1 || ""),
     titleLine2: String(payload.titleLine2 || ""),
     composer: String(payload.composer || ""),
     updatedAt: String(row.created_at || payload.createdAt || ""),
     createdAt: String(row.created_at || payload.createdAt || ""),
     items: normalizeArrangementItems(payload.items),
+    beats: sharedBeats,
+    beatNames,
     publishedShareId: String(row.id || ""),
   };
 }
@@ -3691,6 +3722,7 @@ export default function App() {
   const arrangementTrashTargetRef = React.useRef(null);
   const arrangementSortLastOverIdRef = React.useRef("");
   const arrangementSortDragOverTrashRef = React.useRef(false);
+  const arrangementSortDraggedRowIdsRef = React.useRef([]);
   const arrangementOrderTrashHoverRef = React.useRef(false);
   const isFloatingPanelDragBlockedTarget = React.useCallback((target) => {
     return (
@@ -9411,6 +9443,7 @@ useEffect(() => {
       updatedAt: now,
       items: normalizedItems,
     };
+    const targetHasCloudId = Boolean(target?.id && isUuidLike(String(target.id)));
     if (authUser?.id && hasSupabaseEnabled && supabase) {
       const payload = {
         user_id: authUser.id,
@@ -9423,7 +9456,7 @@ useEffect(() => {
         updated_at: now,
       };
       const query =
-        target?.id && mode === "update"
+        targetHasCloudId && mode === "update"
           ? supabase
               .from("arrangements")
               .update(payload)
@@ -9592,7 +9625,7 @@ useEffect(() => {
   const deleteSavedArrangement = React.useCallback(async (entryId) => {
     const existingEntry =
       savedArrangementsRef.current.find((entry) => String(entry?.id || "") === String(entryId || "")) || null;
-    if (authUser?.id && hasSupabaseEnabled && supabase) {
+    if (authUser?.id && hasSupabaseEnabled && supabase && isUuidLike(String(entryId || ""))) {
       const { error } = await supabase
         .from("arrangements")
         .delete()
@@ -9926,22 +9959,50 @@ useEffect(() => {
         importedTitleLine2,
         preparedImported.title || safeFileName.replace(/\.[^.]+$/, "") || `Arrangement ${savedArrangements.length + 1}`
       );
+      const reusableImportFolderId =
+        replaceLastImport && lastMidiImportSession?.generatedFolderId
+          ? beatLibraryContainersRef.current.find(
+              (entry) => String(entry?.id || "") === String(lastMidiImportSession.generatedFolderId)
+            )?.id || null
+          : null;
+      const importFolderId =
+        reusableImportFolderId ||
+        createBeatLibraryContainer("folder", { parentId: null })?.id ||
+        `beatlib-${Math.random().toString(36).slice(2, 10)}`;
+      setBeatLibraryContainers((prev) =>
+        prev.map((entry) =>
+          String(entry?.id || "") === String(importFolderId)
+            ? { ...entry, name: importedArrangementName }
+            : entry
+        )
+      );
       pushLocalBeatHistory();
       const previousImportedBeatIds =
         replaceLastImport && Array.isArray(lastMidiImportSession?.generatedBeatIds)
           ? new Set(lastMidiImportSession.generatedBeatIds)
           : null;
-      const sectionBeats = preparedImported.sections.map((section, idx) => ({
-        id: `local-${Math.random().toString(36).slice(2, 10)}`,
-        name: importedArrangementName,
-        category: "Groove",
-        style: undefined,
-        timeSigCategory: `${section.timeSig?.n || 4}/${section.timeSig?.d || 4}`,
-        bpm: Math.max(20, Math.min(400, Number(section.bpm) || 120)),
-        createdAt: now,
-        payload: section.payload,
-        source: "local",
-      }));
+      const sectionBeats = preparedImported.sections.map((section, idx) => {
+        const manualOrder = idx + 1;
+        const libraryMeta = {
+          parentId: String(importFolderId),
+          manualOrder,
+        };
+        return {
+          id: `local-${Math.random().toString(36).slice(2, 10)}`,
+          name: importedArrangementName,
+          category: "Groove",
+          style: undefined,
+          timeSigCategory: `${section.timeSig?.n || 4}/${section.timeSig?.d || 4}`,
+          bpm: Math.max(20, Math.min(400, Number(section.bpm) || 120)),
+          createdAt: now,
+          payload: {
+            ...(section.payload && typeof section.payload === "object" ? section.payload : {}),
+            libraryMeta,
+          },
+          libraryMeta,
+          source: "local",
+        };
+      });
       const nextArrangementId =
         arrangementImportMode === "new-arrangement"
           ? (
@@ -10051,6 +10112,7 @@ useEffect(() => {
         arrangementImportMode,
         kind: "arrangement",
         generatedBeatIds: sectionBeats.map((beat) => beat.id),
+        generatedFolderId: String(importFolderId),
         generatedArrangementId:
           arrangementImportMode === "new-arrangement"
             ? (
@@ -10093,6 +10155,7 @@ useEffect(() => {
         arrangementImportMode,
         kind: "beat",
         generatedBeatIds: [],
+        generatedFolderId: null,
         generatedArrangementId: null,
         generatedArrangementRowIds: [],
       }));
@@ -10512,19 +10575,10 @@ useEffect(() => {
       }
       return;
     }
-    const range = getArrangementRowBarRange(rowIndex);
     setArrangementSelectionAnchor(rowIndex);
     setArrangementSelection({ start: rowIndex, end: rowIndex });
-    if (range) {
-      setArrangementBarSelection({
-        start: range.start,
-        end: range.end,
-      });
-      setArrangementBarSelectionAnchor(range.start);
-    } else {
-      setArrangementBarSelection(null);
-      setArrangementBarSelectionAnchor(null);
-    }
+    setArrangementBarSelection(null);
+    setArrangementBarSelectionAnchor(null);
   }, [arrangementSelectionAnchor, getArrangementRowBarRange]);
   const handleArrangementNotationBarSelect = React.useCallback((barIndex, extend = false) => {
     if (!Number.isFinite(barIndex) || barIndex < 0) return;
@@ -11096,9 +11150,24 @@ useEffect(() => {
   const onArrangementOrderDragEnd = React.useCallback((event) => {
     const { active, over } = event;
     if (arrangementSortDragOverTrashRef.current) {
-      arrangementRemoveRow(String(active?.id || ""));
+      const draggedRowIds = Array.isArray(arrangementSortDraggedRowIdsRef.current)
+        ? arrangementSortDraggedRowIdsRef.current
+        : [];
+      if (draggedRowIds.length > 1) {
+        const draggedRowIdSet = new Set(draggedRowIds.map((id) => String(id || "")));
+        setArrangementItemsWithUndo((prev) =>
+          prev.filter((row) => !draggedRowIdSet.has(String(row?.id || "")))
+        );
+        setArrangementSelection(null);
+        setArrangementSelectionAnchor(null);
+        setArrangementBarSelection(null);
+        setArrangementBarSelectionAnchor(null);
+      } else {
+        arrangementRemoveRow(String(active?.id || ""));
+      }
       arrangementSortLastOverIdRef.current = "";
       arrangementSortDragOverTrashRef.current = false;
+      arrangementSortDraggedRowIdsRef.current = [];
       setActiveArrangementSortRowId(null);
       setArrangementOrderDropTargetId(null);
       setArrangementOrderTrashHover(false);
@@ -11108,6 +11177,7 @@ useEffect(() => {
     if (!over || active.id === over.id) {
       arrangementSortLastOverIdRef.current = "";
       arrangementSortDragOverTrashRef.current = false;
+      arrangementSortDraggedRowIdsRef.current = [];
       setActiveArrangementSortRowId(null);
       setArrangementOrderDropTargetId(null);
       setArrangementOrderTrashHover(false);
@@ -11121,10 +11191,11 @@ useEffect(() => {
     });
     arrangementSortLastOverIdRef.current = "";
     arrangementSortDragOverTrashRef.current = false;
+    arrangementSortDraggedRowIdsRef.current = [];
     setActiveArrangementSortRowId(null);
     setArrangementOrderDropTargetId(null);
     setArrangementOrderTrashHover(false);
-  }, [arrangementRemoveRow, setArrangementItemsWithUndo]);
+  }, [arrangementRemoveRow, setArrangementBarSelection, setArrangementBarSelectionAnchor, setArrangementItemsWithUndo, setArrangementSelection, setArrangementSelectionAnchor]);
   const restrictArrangementDragToList = React.useCallback(({ transform, activeNodeRect }) => {
     const listEl = arrangementListRef.current;
     if (!listEl || !transform || !activeNodeRect) {
@@ -13420,12 +13491,81 @@ useEffect(() => {
     () => publicArrangements.find((entry) => entry.id === selectedPublicArrangementId) || null,
     [publicArrangements, selectedPublicArrangementId]
   );
+  const publicArrangementRows = React.useMemo(() => {
+    if (!selectedPublicArrangementEntry) return [];
+    const beats = Array.isArray(selectedPublicArrangementEntry.beats)
+      ? selectedPublicArrangementEntry.beats
+      : [];
+    const beatById = new Map(beats.map((beat) => [String(beat?.id || ""), beat]));
+    const rows = normalizeArrangementItems(selectedPublicArrangementEntry.items).map((item) => {
+      const beat = beatById.get(String(item?.beatId || "")) || null;
+      const beatBars = Math.max(1, Number(beat?.payload?.bars) || 1);
+      const beatTimeSig = beat?.timeSigCategory || "4/4";
+      const beatBpm = getBeatBpm(beat);
+      const [nRaw, dRaw] = String(beatTimeSig).split("/");
+      const n = Math.max(1, Number(nRaw) || 4);
+      const d = Math.max(1, Number(dRaw) || 4);
+      const barSeconds = beatBpm ? (60 / beatBpm) * ((n * 4) / d) : 0;
+      return {
+        ...item,
+        beat,
+        beatBars,
+        beatTimeSig,
+        beatBpm,
+        sectionBars: beatBars * item.repeats,
+        sectionSeconds: barSeconds * beatBars * item.repeats,
+      };
+    });
+    let runningBarNumber = 1;
+    return rows.map((row) => {
+      const nextRow = {
+        ...row,
+        startBarNumber: runningBarNumber,
+      };
+      runningBarNumber += Math.max(1, Number(row?.sectionBars) || 1);
+      return nextRow;
+    });
+  }, [selectedPublicArrangementEntry, getBeatBpm]);
+  const publicArrangementTotals = React.useMemo(() => {
+    return publicArrangementRows.reduce(
+      (acc, row) => ({
+        totalBars: acc.totalBars + Math.max(1, Number(row?.sectionBars) || 1),
+        totalSeconds: acc.totalSeconds + Math.max(0, Number(row?.sectionSeconds) || 0),
+      }),
+      { totalBars: 0, totalSeconds: 0 }
+    );
+  }, [publicArrangementRows]);
+  const nudgeSelectedPublicArrangementRepeat = React.useCallback((rowId, delta) => {
+    const normalizedRowId = String(rowId || "");
+    if (!normalizedRowId || !selectedPublicArrangementId) return;
+    const applyItemsUpdate = (items) =>
+      normalizeArrangementItems(items).map((item) =>
+        String(item?.id || "") === normalizedRowId
+          ? {
+              ...item,
+              repeats: Math.max(1, Math.min(64, (Number(item?.repeats) || 1) + delta)),
+            }
+          : item
+      );
+    setPublicArrangements((prev) =>
+      prev.map((entry) =>
+        String(entry?.id || "") === String(selectedPublicArrangementId)
+          ? { ...entry, items: applyItemsUpdate(entry?.items || []) }
+          : entry
+      )
+    );
+    setArrangementItems((prev) => {
+      const hasTarget = prev.some((item) => String(item?.id || "") === normalizedRowId);
+      return hasTarget ? applyItemsUpdate(prev) : prev;
+    });
+  }, [selectedPublicArrangementId]);
   const publishCurrentArrangementPublic = React.useCallback(async () => {
     if (!isAdminUser || !authUser?.id || !hasSupabaseEnabled || !supabase) {
       setPublicLibraryError("Admin login required.");
       return;
     }
-    const normalizedItems = normalizeArrangementItems(arrangementItems);
+    const arrangementPayload = buildCurrentArrangementSharePayload();
+    const normalizedItems = normalizeArrangementItems(arrangementPayload?.items);
     if (!normalizedItems.length) {
       setPublicLibraryError("Arrangement is empty.");
       return;
@@ -13434,11 +13574,12 @@ useEffect(() => {
     const nextPayload = {
       kind: "arrangement-default",
       publishedDefault: true,
-      name: arrangementDisplayName || "Arrangement",
-      titleLine1: String(arrangementTitleLine1Draft || ""),
-      titleLine2: String(arrangementTitleLine2Draft || ""),
-      composer: String(arrangementComposerDraft || ""),
+      name: String(arrangementPayload?.name || arrangementDisplayName || "Arrangement"),
+      titleLine1: String(arrangementPayload?.titleLine1 || arrangementTitleLine1Draft || ""),
+      titleLine2: String(arrangementPayload?.titleLine2 || arrangementTitleLine2Draft || ""),
+      composer: String(arrangementPayload?.composer || arrangementComposerDraft || ""),
       createdAt: now,
+      beats: Array.isArray(arrangementPayload?.beats) ? arrangementPayload.beats : [],
       items: normalizedItems,
     };
     const targetId = selectedPublicArrangementEntry?.publishedShareId || `pubarr-${makeShortShareId()}`;
@@ -13480,6 +13621,7 @@ useEffect(() => {
   }, [
     isAdminUser,
     authUser?.id,
+    buildCurrentArrangementSharePayload,
     arrangementItems,
     arrangementDisplayName,
     arrangementTitleLine1Draft,
@@ -13511,7 +13653,13 @@ useEffect(() => {
       setArrangementPlaybackIndex(0);
     }
     pushLocalBeatHistory();
-    setArrangementItems(normalizeArrangementItems(entry.items));
+    setSharedArrangementBeats(Array.isArray(entry?.beats) ? entry.beats : []);
+    setArrangementItems(
+      normalizeArrangementItems(entry.items).map((item) => ({
+        ...item,
+        source: "shared",
+      }))
+    );
     setArrangementSelection(null);
     setArrangementSelectionAnchor(null);
     setArrangementBarSelection(null);
@@ -13522,6 +13670,14 @@ useEffect(() => {
     setArrangementComposerDraft(String(entry.composer || ""));
     setLoadedArrangementId(null);
     setSelectedPublicArrangementId(String(entry.id || ""));
+    const firstBeat = Array.isArray(entry?.beats) ? entry.beats[0] || null : null;
+    if (firstBeat?.payload) {
+      applyImportedBeatPayloadRef.current?.(
+        firstBeat.payload,
+        `public-arrangement:${entry?.id || ""}:0`
+      );
+      setLoadedLocalBeatId(null);
+    }
   }, [arrangementPlaybackEnabled, pushLocalBeatHistory]);
   const openArrangementSheetFromLibrary = React.useCallback(() => {
     if (arrangementLibraryTab === "public") {
@@ -16483,6 +16639,23 @@ useEffect(() => {
                               ref={beatLibraryTrashTargetRef}
                               type="button"
                               onClick={async () => {
+                                if (selectedBeatLibraryBeatIds.length > 0) {
+                                  const orderedSelectedIds = visibleLocalBeatIdsInLibraryOrder.filter((id) =>
+                                    selectedBeatLibraryBeatIds.includes(id)
+                                  );
+                                  if (!orderedSelectedIds.length) return;
+                                  const confirmLabel =
+                                    orderedSelectedIds.length === 1
+                                      ? `"${String(
+                                          localBeats.find((beat) => String(beat?.id || "") === orderedSelectedIds[0])?.name ||
+                                            "this beat"
+                                        )}"`
+                                      : `${orderedSelectedIds.length} selected beats`;
+                                  if (!window.confirm(`Delete ${confirmLabel}?`)) return;
+                                  await deleteLocalBeatsByIds(orderedSelectedIds);
+                                  clearBeatLibraryBeatSelection();
+                                  return;
+                                }
                                 if (selectedLocalBeatForTrash?.id) {
                                   const beatName = String(selectedLocalBeatForTrash.name || "this beat");
                                   if (!window.confirm(`Delete "${beatName}"?`)) return;
@@ -17020,43 +17193,35 @@ useEffect(() => {
                 {arrangementLibraryTab === "public" && (
                 <>
                 <div className="mt-3 max-h-[52vh] overflow-auto pr-1">
-                  <div className="space-y-2">
-                    {publicArrangements.map((entry) => {
-                      const sectionCount = Array.isArray(entry?.items) ? entry.items.length : 0;
-                      const isSelected = String(selectedPublicArrangementId || "") === String(entry.id || "");
-                      return (
-                        <div
-                          key={`public-arr-${entry.id}`}
-                          role="button"
-                          tabIndex={0}
-                          onClick={() => setSelectedPublicArrangementId(String(entry.id || ""))}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter" || e.key === " ") {
-                              e.preventDefault();
-                              setSelectedPublicArrangementId(String(entry.id || ""));
+                  {selectedPublicArrangementEntry ? (
+                    <div className="space-y-2">
+                      {publicArrangementRows.map((row, idx) => (
+                        <ReadonlyArrangementRow
+                          key={`public-arr-row-${selectedPublicArrangementEntry.id}-${row.id || idx}`}
+                          row={row}
+                          index={idx}
+                          isSelected={Boolean(
+                            normalizedArrangementSelection &&
+                              idx >= normalizedArrangementSelection.start &&
+                              idx <= normalizedArrangementSelection.end
+                          )}
+                          isPlaying={arrangementPlaybackEnabled && idx === activeArrangementPlayingRowIndex}
+                          onSelect={(e) => {
+                            handleArrangementRowSelect(idx, !!e?.shiftKey);
+                            if (row?.beat) {
+                              loadBeatIntoEditorRef.current?.("shared", row.beat);
                             }
                           }}
-                          className={`rounded border px-2.5 py-2 cursor-pointer outline-none focus:outline-none focus-visible:outline-none ${
-                            isSelected
-                              ? "border-sky-500/70 bg-sky-900/20 shadow-[0_0_0_1px_rgba(14,165,233,0.35)]"
-                              : "border-neutral-800 bg-neutral-900/40 hover:bg-neutral-800/60"
-                          }`}
-                        >
-                          <div className="flex items-center justify-between gap-2">
-                            <div className="min-w-0">
-                              <div className="text-sm text-white truncate">
-                                {entry.name || "Untitled Arrangement"}
-                              </div>
-                              <div className="text-xs text-neutral-400 truncate">
-                                {`${sectionCount} ${sectionCount === 1 ? "section" : "sections"}` +
-                                  (entry.composer ? ` · ${entry.composer}` : "")}
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
+                          onRepeatDown={() => nudgeSelectedPublicArrangementRepeat(row.id, -1)}
+                          onRepeatUp={() => nudgeSelectedPublicArrangementRepeat(row.id, 1)}
+                        />
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="text-xs text-neutral-500">
+                      Select a public arrangement from the footer to view its beats.
+                    </div>
+                  )}
                   {publicArrangementLibraryLoading ? (
                     <div className="mt-2 text-[11px] text-neutral-500">Loading public arrangements…</div>
                   ) : null}
@@ -17065,19 +17230,10 @@ useEffect(() => {
                   ) : null}
                 </div>
                 <div className="mt-3 flex flex-wrap items-center gap-3 text-[10px] text-neutral-500">
-                  {normalizedArrangementBarLoopSelection ? (
-                    <span className="text-neutral-500">
-                      {`Loop selection: bars ${normalizedArrangementBarLoopSelection.start + 1}-${normalizedArrangementBarLoopSelection.end + 1}`}
-                    </span>
-                  ) : normalizedArrangementLoopSelection ? (
-                    <span className="text-neutral-500">
-                      {`Loop selection: ${normalizedArrangementLoopSelection.start + 1}-${normalizedArrangementLoopSelection.end + 1}`}
-                    </span>
-                  ) : null}
-                  <span>{`Total bars: ${arrangementTotals.totalBars}`}</span>
+                  <span>{`Total bars: ${publicArrangementTotals.totalBars}`}</span>
                   <span>
-                    {`Est. length: ${Math.floor(Math.max(0, Math.round(arrangementTotals.totalSeconds)) / 60)}:${String(
-                      Math.max(0, Math.round(arrangementTotals.totalSeconds)) % 60
+                    {`Est. length: ${Math.floor(Math.max(0, Math.round(publicArrangementTotals.totalSeconds)) / 60)}:${String(
+                      Math.max(0, Math.round(publicArrangementTotals.totalSeconds)) % 60
                     ).padStart(2, "0")}`}
                   </span>
                 </div>
@@ -17087,7 +17243,13 @@ useEffect(() => {
                       <div className="flex min-w-0 flex-1 items-center gap-2">
                         <select
                           value={selectedPublicArrangementId}
-                          onChange={(e) => setSelectedPublicArrangementId(e.target.value)}
+                          onChange={(e) => {
+                            const nextId = e.target.value || "";
+                            setSelectedPublicArrangementId(nextId);
+                            const nextEntry =
+                              publicArrangements.find((entry) => String(entry.id || "") === nextId) || null;
+                            if (nextEntry) loadPublishedArrangement(nextEntry);
+                          }}
                           className="min-w-0 flex-1 h-7 bg-neutral-900/40 border border-neutral-800 rounded px-2 text-sm text-neutral-400"
                         >
                           <option value="">Select public arrangement</option>
@@ -17150,9 +17312,27 @@ useEffect(() => {
                     sensors={arrangementOrderSensors}
                     collisionDetection={detectArrangementOrderDropCollision}
                     onDragStart={(event) => {
-                      arrangementSortLastOverIdRef.current = String(event?.active?.id || "");
+                      const activeRowId = String(event?.active?.id || "");
+                      arrangementSortLastOverIdRef.current = activeRowId;
                       arrangementSortDragOverTrashRef.current = false;
-                      setActiveArrangementSortRowId(String(event?.active?.id || ""));
+                      const draggedRowIds =
+                        activeRowId &&
+                        normalizedArrangementSelection &&
+                        arrangementRows
+                          .slice(
+                            normalizedArrangementSelection.start,
+                            normalizedArrangementSelection.end + 1
+                          )
+                          .some((row) => String(row?.id || "") === activeRowId)
+                          ? arrangementRows
+                              .slice(
+                                normalizedArrangementSelection.start,
+                                normalizedArrangementSelection.end + 1
+                              )
+                              .map((row) => String(row?.id || ""))
+                          : [activeRowId];
+                      arrangementSortDraggedRowIdsRef.current = draggedRowIds.filter(Boolean);
+                      setActiveArrangementSortRowId(activeRowId);
                       setArrangementOrderDropTargetId(null);
                       setArrangementOrderTrashHover(false);
                     }}
@@ -17170,6 +17350,7 @@ useEffect(() => {
                     onDragCancel={() => {
                       arrangementSortLastOverIdRef.current = "";
                       arrangementSortDragOverTrashRef.current = false;
+                      arrangementSortDraggedRowIdsRef.current = [];
                       setActiveArrangementSortRowId(null);
                       setArrangementOrderDropTargetId(null);
                       setArrangementOrderTrashHover(false);
@@ -20545,6 +20726,72 @@ function SortableArrangementRow({
       {dropPosition === "after" ? (
         <div className="mt-1.5 -mb-1.5 h-0.5 rounded bg-cyan-400/90" />
       ) : null}
+    </div>
+  );
+}
+
+function ReadonlyArrangementRow({ row, index, isSelected, isPlaying, onSelect, onRepeatDown, onRepeatUp }) {
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={(e) => onSelect?.(e)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onSelect?.(e);
+        }
+      }}
+      className={`select-none rounded border px-2.5 py-2 ${
+        isPlaying
+          ? "border-cyan-500/80 bg-cyan-900/20 shadow-[0_0_0_1px_rgba(6,182,212,0.35)]"
+          : isSelected
+          ? "border-sky-500/70 bg-sky-900/20 shadow-[0_0_0_1px_rgba(14,165,233,0.35)]"
+          : "border-neutral-800 bg-neutral-900/40"
+      }`}
+    >
+      <div className="flex items-center justify-between gap-2">
+        <div className="min-w-0">
+          <div className="text-sm text-white truncate">
+            {`${row.startBarNumber || index + 1}. ${row.beat?.name || "(missing beat)"}`}
+          </div>
+          <div className="text-xs text-neutral-400 truncate">
+            {`${row.sectionBars} ${row.sectionBars === 1 ? "bar" : "bars"} (${row.repeats}x ${row.beatBars} ${row.beatBars === 1 ? "bar" : "bars"}) · ${row.beatTimeSig}` +
+              (Number.isFinite(row.beatBpm) ? ` · ${row.beatBpm} BPM` : "")}
+          </div>
+        </div>
+        <div className="flex items-center gap-1">
+          <div className="flex items-stretch overflow-hidden rounded border border-neutral-800 bg-neutral-900/60">
+            <button
+              type="button"
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                onRepeatDown?.();
+              }}
+              className="px-2 text-xs text-neutral-400 hover:bg-neutral-800/60"
+              aria-label="Decrease repeats"
+            >
+              −
+            </button>
+            <div className="min-w-[44px] border-l border-r border-neutral-800 bg-neutral-900/60 px-2 py-1 text-center text-xs text-neutral-400">
+              x{row.repeats}
+            </div>
+            <button
+              type="button"
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                onRepeatUp?.();
+              }}
+              className="px-2 text-xs text-neutral-400 hover:bg-neutral-800/60"
+              aria-label="Increase repeats"
+            >
+              +
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

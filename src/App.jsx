@@ -688,7 +688,7 @@ const PERSONAL_LIBRARY_STATE_SHARE_LINK_KIND = "arrangement";
 const BEAT_LIBRARY_SELECTED_CONTAINER_STORAGE_KEY = "drum-grid-beat-library-selected-container-v1";
 const BEAT_LIBRARY_ROOT_COLLAPSED_STORAGE_KEY = "drum-grid-beat-library-root-collapsed-v1";
 const GRID_SETTINGS_PRESET_LIBRARY_STORAGE_KEY = "drum-grid-grid-settings-presets-v1";
-const APP_VERSION = "0.1.1";
+const APP_VERSION = "0.1.2";
 const BEAT_CATEGORY_OPTIONS = [
   "Groove",
   "Fill",
@@ -13559,7 +13559,8 @@ useEffect(() => {
       return hasTarget ? applyItemsUpdate(prev) : prev;
     });
   }, [selectedPublicArrangementId]);
-  const publishCurrentArrangementPublic = React.useCallback(async () => {
+  const publishCurrentArrangementPublic = React.useCallback(async (options = {}) => {
+    const { forceNew = false } = options || {};
     if (!isAdminUser || !authUser?.id || !hasSupabaseEnabled || !supabase) {
       setPublicLibraryError("Admin login required.");
       return;
@@ -13582,8 +13583,9 @@ useEffect(() => {
       beats: Array.isArray(arrangementPayload?.beats) ? arrangementPayload.beats : [],
       items: normalizedItems,
     };
-    const targetId = selectedPublicArrangementEntry?.publishedShareId || `pubarr-${makeShortShareId()}`;
-    const query = selectedPublicArrangementEntry
+    const targetEntry = !forceNew ? selectedPublicArrangementEntry : null;
+    const targetId = targetEntry?.publishedShareId || `pubarr-${makeShortShareId()}`;
+    const query = targetEntry
       ? supabase
           .from("share_links")
           .update({
@@ -17530,10 +17532,10 @@ useEffect(() => {
                                   type="button"
                                   onClick={() => {
                                     setIsArrangementActionsMenuOpen(false);
-                                    publishCurrentArrangementPublic();
+                                    publishCurrentArrangementPublic({ forceNew: true });
                                   }}
                                   className="w-full rounded px-3 py-2 text-left text-sm text-white hover:bg-neutral-800/60"
-                                  title="Publish current arrangement to the public arrangement library"
+                                  title="Publish current arrangement as a new public arrangement"
                                 >
                                   Publish public
                                 </button>

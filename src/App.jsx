@@ -14751,9 +14751,15 @@ useEffect(() => {
                 >
                   {authPending ? "…" : <UserIcon />}
                 </button>
-                {isAdminUser ? (
-                  <span className="hidden md:inline-block rounded border border-amber-700/60 bg-amber-950/30 px-2 py-1 text-[11px] text-amber-200">
-                    Admin
+                {authUser ? (
+                  <span
+                    className={`hidden md:inline-block rounded border px-2 py-1 text-[11px] ${
+                      isAdminUser
+                        ? "border-amber-700/60 bg-amber-950/30 text-amber-200"
+                        : "border-sky-700/50 bg-sky-950/20 text-sky-200"
+                    }`}
+                  >
+                    {isAdminUser ? "Admin" : "Signed in"}
                   </span>
                 ) : null}
                 {authUserEmail ? (

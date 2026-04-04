@@ -3337,15 +3337,19 @@ export default function App() {
   const [libraryFiltersOpen, setLibraryFiltersOpen] = useState(false);
   const [arrangementLibraryMenuOpen, setArrangementLibraryMenuOpen] = useState(false);
   const [isBeatLibraryActionsMenuOpen, setIsBeatLibraryActionsMenuOpen] = useState(false);
+  const [isArrangementActionsMenuOpen, setIsArrangementActionsMenuOpen] = useState(false);
   const libraryFiltersRef = useRef(null);
   const libraryFiltersButtonRef = useRef(null);
   const arrangementLibraryMenuRef = useRef(null);
   const arrangementLibraryMenuButtonRef = useRef(null);
   const beatLibraryActionsMenuRef = useRef(null);
   const beatLibraryActionsMenuButtonRef = useRef(null);
+  const arrangementActionsMenuRef = useRef(null);
+  const arrangementActionsMenuButtonRef = useRef(null);
   const [libraryFiltersMenuStyle, setLibraryFiltersMenuStyle] = useState(null);
   const [arrangementLibraryMenuStyle, setArrangementLibraryMenuStyle] = useState(null);
   const [beatLibraryActionsMenuStyle, setBeatLibraryActionsMenuStyle] = useState(null);
+  const [arrangementActionsMenuStyle, setArrangementActionsMenuStyle] = useState(null);
   const [savedPresets, setSavedPresets] = useState(() => {
     try {
       const raw = window.localStorage.getItem(USER_PRESETS_STORAGE_KEY);
@@ -3565,6 +3569,56 @@ export default function App() {
       window.removeEventListener("scroll", updatePosition, true);
     };
   }, [isBeatLibraryActionsMenuOpen]);
+  useEffect(() => {
+    if (!isArrangementActionsMenuOpen) return undefined;
+    const handlePointerDown = (event) => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      const menu = arrangementActionsMenuRef.current;
+      const button = arrangementActionsMenuButtonRef.current;
+      if (menu instanceof HTMLElement && menu.contains(target)) return;
+      if (button instanceof HTMLElement && button.contains(target)) return;
+      setIsArrangementActionsMenuOpen(false);
+    };
+    const handleKeyDown = (event) => {
+      if (event.key === "Escape") setIsArrangementActionsMenuOpen(false);
+    };
+    document.addEventListener("pointerdown", handlePointerDown, true);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown, true);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [isArrangementActionsMenuOpen]);
+  useEffect(() => {
+    if (!isArrangementActionsMenuOpen) {
+      setArrangementActionsMenuStyle(null);
+      return undefined;
+    }
+    const updatePosition = () => {
+      const button = arrangementActionsMenuButtonRef.current;
+      if (!(button instanceof HTMLElement)) return;
+      const rect = button.getBoundingClientRect();
+      const gap = 8;
+      const estimatedHeight = 100;
+      const shouldOpenUp =
+        window.innerHeight - rect.bottom < estimatedHeight && rect.top > estimatedHeight / 2;
+      setArrangementActionsMenuStyle({
+        position: "fixed",
+        zIndex: 120,
+        right: Math.max(8, window.innerWidth - rect.right),
+        top: shouldOpenUp ? "auto" : rect.bottom + gap,
+        bottom: shouldOpenUp ? Math.max(8, window.innerHeight - rect.top + gap) : "auto",
+      });
+    };
+    updatePosition();
+    window.addEventListener("resize", updatePosition);
+    window.addEventListener("scroll", updatePosition, true);
+    return () => {
+      window.removeEventListener("resize", updatePosition);
+      window.removeEventListener("scroll", updatePosition, true);
+    };
+  }, [isArrangementActionsMenuOpen]);
   const [playbackRate, setPlaybackRate] = useState(() => {
     try {
       const raw = window.localStorage.getItem(PLAYBACK_RATE_STORAGE_KEY);
@@ -17269,6 +17323,45 @@ useEffect(() => {
                     >
                       Save as new
                     </button>
+                    {isAdminUser && (
+                      <div className="relative">
+                        <button
+                          ref={arrangementActionsMenuButtonRef}
+                          type="button"
+                          onClick={() => setIsArrangementActionsMenuOpen((v) => !v)}
+                          className={`h-7 rounded border px-2 text-sm leading-none ${
+                            isArrangementActionsMenuOpen
+                              ? "border-neutral-700 text-white bg-neutral-800"
+                              : "border-neutral-800 text-neutral-400 bg-neutral-900/60 hover:bg-neutral-800/60"
+                          }`}
+                          title="More arrangement actions"
+                        >
+                          ...
+                        </button>
+                        {isArrangementActionsMenuOpen && arrangementActionsMenuStyle
+                          ? createPortal(
+                              <div
+                                ref={arrangementActionsMenuRef}
+                                style={arrangementActionsMenuStyle}
+                                className="min-w-[11rem] rounded-lg border border-neutral-700 bg-neutral-900 p-2 shadow-xl"
+                              >
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setIsArrangementActionsMenuOpen(false);
+                                    publishCurrentArrangementPublic();
+                                  }}
+                                  className="w-full rounded px-3 py-2 text-left text-sm text-white hover:bg-neutral-800/60"
+                                  title="Publish current arrangement to the public arrangement library"
+                                >
+                                  Publish public
+                                </button>
+                              </div>,
+                              document.body
+                            )
+                          : null}
+                      </div>
+                    )}
                     <BeatLibraryDropTarget id="__trash__">
                       <button
                         ref={arrangementTrashTargetRef}

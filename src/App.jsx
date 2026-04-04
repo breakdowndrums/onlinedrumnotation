@@ -13469,6 +13469,16 @@ useEffect(() => {
     setLoadedArrangementId(null);
     setSelectedPublicArrangementId(String(entry.id || ""));
   }, [arrangementPlaybackEnabled, pushLocalBeatHistory]);
+  const openArrangementSheetFromLibrary = React.useCallback(() => {
+    if (arrangementLibraryTab === "public") {
+      if (!selectedPublicArrangementEntry) return;
+      loadPublishedArrangement(selectedPublicArrangementEntry);
+    }
+    setArrangementSourcesCollapsed(true);
+    setArrangementDetailsCollapsed(false);
+    setIsArrangementOpen(false);
+    setIsArrangementNotationOpen(true);
+  }, [arrangementLibraryTab, loadPublishedArrangement, selectedPublicArrangementEntry]);
   useEffect(() => {
     if (!isArrangementOpen || arrangementDetailsCollapsed) return;
     refreshPublicArrangementLibrary();
@@ -16791,14 +16801,22 @@ useEffect(() => {
                     {!isArrangementNotationOpen && (
                       <button
                         type="button"
-                        onClick={() => {
-                          setArrangementSourcesCollapsed(true);
-                          setArrangementDetailsCollapsed(false);
-                          setIsArrangementOpen(false);
-                          setIsArrangementNotationOpen(true);
-                        }}
-                        className="px-2 py-1 rounded border border-neutral-800 text-xs text-neutral-400 bg-neutral-900/60 hover:bg-neutral-800/60"
-                        title="Arrangement sheet"
+                        onClick={openArrangementSheetFromLibrary}
+                        disabled={
+                          arrangementLibraryTab === "public" && !selectedPublicArrangementEntry
+                        }
+                        className={`px-2 py-1 rounded border text-xs ${
+                          arrangementLibraryTab === "public" && !selectedPublicArrangementEntry
+                            ? "border-neutral-800 text-neutral-500 bg-neutral-900/60 cursor-not-allowed"
+                            : "border-neutral-800 text-neutral-400 bg-neutral-900/60 hover:bg-neutral-800/60"
+                        }`}
+                        title={
+                          arrangementLibraryTab === "public"
+                            ? selectedPublicArrangementEntry
+                              ? "Open selected public arrangement in sheet"
+                              : "Select a public arrangement first"
+                            : "Arrangement sheet"
+                        }
                       >
                         Open sheet
                       </button>
@@ -16914,13 +16932,17 @@ useEffect(() => {
                                 <button
                                   type="button"
                                   onClick={() => {
-                                    setArrangementSourcesCollapsed(true);
-                                    setArrangementDetailsCollapsed(false);
-                                    setIsArrangementOpen(false);
-                                    setIsArrangementNotationOpen(true);
+                                    openArrangementSheetFromLibrary();
                                     setArrangementLibraryMenuOpen(false);
                                   }}
-                                  className="inline-flex h-[1.625rem] items-center justify-center rounded border border-neutral-800 bg-neutral-900/60 px-1.5 text-xs text-neutral-400 hover:bg-neutral-800/60"
+                                  disabled={
+                                    arrangementLibraryTab === "public" && !selectedPublicArrangementEntry
+                                  }
+                                  className={`inline-flex h-[1.625rem] items-center justify-center rounded border px-1.5 text-xs ${
+                                    arrangementLibraryTab === "public" && !selectedPublicArrangementEntry
+                                      ? "border-neutral-800 bg-neutral-900/60 text-neutral-500 cursor-not-allowed"
+                                      : "border-neutral-800 bg-neutral-900/60 text-neutral-400 hover:bg-neutral-800/60"
+                                  }`}
                                 >
                                   Sheet
                                 </button>

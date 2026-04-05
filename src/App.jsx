@@ -688,7 +688,7 @@ const PERSONAL_LIBRARY_STATE_SHARE_LINK_KIND = "arrangement";
 const BEAT_LIBRARY_SELECTED_CONTAINER_STORAGE_KEY = "drum-grid-beat-library-selected-container-v1";
 const BEAT_LIBRARY_ROOT_COLLAPSED_STORAGE_KEY = "drum-grid-beat-library-root-collapsed-v1";
 const GRID_SETTINGS_PRESET_LIBRARY_STORAGE_KEY = "drum-grid-grid-settings-presets-v1";
-const APP_VERSION = "0.1.2";
+const APP_VERSION = "0.1.11";
 const BEAT_CATEGORY_OPTIONS = [
   "Groove",
   "Fill",
@@ -9263,6 +9263,31 @@ useEffect(() => {
       ];
     });
   }, [setArrangementItemsWithUndo]);
+  const arrangementAddBeatEntries = React.useCallback((entries) => {
+    const normalizedEntries = Array.isArray(entries)
+      ? entries
+          .map((entry) => ({
+            source: entry?.source === "public" ? "public" : "local",
+            beatId: String(entry?.beatId || ""),
+          }))
+          .filter((entry) => entry.beatId)
+      : [];
+    if (!normalizedEntries.length) return;
+    setArrangementItemsWithUndo((prev) => [
+      ...prev,
+      ...normalizedEntries.map((entry) => ({
+        id: `arr-${Math.random().toString(36).slice(2, 10)}`,
+        source: entry.source,
+        beatId: entry.beatId,
+        repeats: 1,
+        showNotationBeatName: false,
+        notationCustomText: "",
+        notationJoinWithNext: false,
+        notationBarsPerRowCustom: false,
+        notationBarsPerRowOverride: null,
+      })),
+    ]);
+  }, [setArrangementItemsWithUndo]);
   const arrangementInsertBeatAt = React.useCallback((source, beatId, insertIndex) => {
     setArrangementItemsWithUndo((prev) => {
       const normalizedSource = source === "public" ? "public" : "local";
@@ -9432,12 +9457,20 @@ useEffect(() => {
             savedArrangements
           )
         : getUniqueArrangementName(derivedName, savedArrangements, target?.id || null);
+    const nextTitleLine1 =
+      name !== derivedName
+        ? name
+        : String(arrangementTitleLine1Draft || "");
+    const nextTitleLine2 =
+      name !== derivedName
+        ? ""
+        : String(arrangementTitleLine2Draft || "");
     const nextId = target?.id || `arrlib-${Math.random().toString(36).slice(2, 10)}`;
     const nextEntry = {
       id: nextId,
       name,
-      titleLine1: String(arrangementTitleLine1Draft || ""),
-      titleLine2: String(arrangementTitleLine2Draft || ""),
+      titleLine1: nextTitleLine1,
+      titleLine2: nextTitleLine2,
       composer: String(arrangementComposerDraft || ""),
       createdAt: target?.createdAt || now,
       updatedAt: now,
@@ -14471,6 +14504,33 @@ useEffect(() => {
     );
     return directCount + childFolders.reduce((sum, child) => sum + countBeatLibraryFolderBeats(child.id), 0);
   }, [beatLibraryContainers, getBeatLibraryParentId, localBeats]);
+  const collectBeatLibraryFolderBeatsInOrder = React.useCallback((containerId) => {
+    const targetId = String(containerId || "");
+    if (!targetId) return [];
+    const walk = (parentId) => {
+      const beats = localBeats
+        .filter((beat) => String(getBeatLibraryParentId(beat) || "") === String(parentId || ""))
+        .sort(compareBeatLibraryOrder);
+      const childFolders = beatLibraryContainers
+        .filter((entry) => String(entry.parentId || "") === String(parentId || ""))
+        .sort((a, b) => (Number(a.order) || 0) - (Number(b.order) || 0) || a.name.localeCompare(b.name));
+      return [
+        ...beats,
+        ...childFolders.flatMap((entry) => walk(entry.id)),
+      ];
+    };
+    return walk(targetId);
+  }, [beatLibraryContainers, getBeatLibraryParentId, localBeats]);
+  const addBeatLibraryFolderToArrangement = React.useCallback((containerId) => {
+    const beats = collectBeatLibraryFolderBeatsInOrder(containerId);
+    if (!beats.length) return;
+    arrangementAddBeatEntries(
+      beats.map((beat) => ({
+        source: "local",
+        beatId: String(beat?.id || ""),
+      }))
+    );
+  }, [arrangementAddBeatEntries, collectBeatLibraryFolderBeatsInOrder]);
 
   const renderArrangementSourceFolderRow = React.useCallback((entry, depth = 0) => {
     const hasChildren = true;
@@ -14595,8 +14655,10 @@ useEffect(() => {
               </button>
             )}
           </div>
-          <div className="ml-auto flex items-center gap-2">
-            {folderBeatCount > 0 && <span className="text-[10px] text-neutral-600">{folderBeatCount}</span>}
+          <div className="ml-auto flex items-center gap-1.5 pr-1">
+            <span className="min-w-[15px] text-right text-[10px] text-neutral-600">
+              {folderBeatCount > 0 ? folderBeatCount : ""}
+            </span>
             <button
               type="button"
               onPointerDown={(e) => {
@@ -14628,10 +14690,23 @@ useEffect(() => {
                   startEditingBeatLibraryContainer(entry.id);
                 }
               }}
-              className="inline-flex h-6 min-w-6 items-center justify-center text-neutral-400 hover:text-white"
+              className="inline-flex h-6 min-w-6 items-center justify-center rounded text-neutral-400 hover:bg-neutral-800/60 hover:text-white"
               title="Rename folder"
             >
             <PencilIcon />
+            </button>
+            <button
+              type="button"
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                addBeatLibraryFolderToArrangement(entry.id);
+              }}
+              className="px-2 py-1 rounded text-xs text-neutral-400 bg-neutral-900/60 hover:bg-neutral-800/60"
+              title="Add folder beats to arrangement"
+              aria-label="Add folder beats to arrangement"
+            >
+              Add
             </button>
           </div>
         </div>
@@ -14657,6 +14732,7 @@ useEffect(() => {
     selectedBeatLibraryContainerId,
     scheduleBeatLibraryFolderExpand,
     clearBeatLibraryBeatSelection,
+    addBeatLibraryFolderToArrangement,
     setEditingBeatLibraryContainerName,
     startEditingBeatLibraryContainer,
     toggleBeatLibraryContainerCollapsed,

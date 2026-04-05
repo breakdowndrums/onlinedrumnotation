@@ -78,6 +78,18 @@ const SHORTCUTS = [
     description: "Toggle looping between Off and All.",
     defaultBinding: "Shift+L",
   },
+  {
+    id: "assign_sticking_left",
+    command: "Assign sticking L",
+    description: "In sticking edit mode, assign L to the current selected active notes.",
+    defaultBinding: "L",
+  },
+  {
+    id: "assign_sticking_right",
+    command: "Assign sticking R",
+    description: "In sticking edit mode, assign R to the current selected active notes.",
+    defaultBinding: "R",
+  },
   ...Array.from({ length: 8 }, (_, index) => ({
     id: `loop_${index + 1}_toggle`,
     command: `Toggle looping ${index + 1}`,
@@ -421,6 +433,7 @@ function SortableArrangementSourceBeatRow({
   hideSourceWhileDragging,
   pendingBeatRenameExitRef,
   disableTransition = false,
+  softActiveHighlight = false,
 }) {
   const id = `beat:${String(beat.id)}`;
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id });
@@ -434,6 +447,9 @@ function SortableArrangementSourceBeatRow({
     isBeatLibraryBeatSelected ||
     isLoadedTrackedBeat ||
     (!isLoadedTrackedBeat && isSelectedArrangementSourceBeat);
+  const activeClass = softActiveHighlight
+    ? "border-sky-500/35 bg-sky-950/10 shadow-[0_0_0_1px_rgba(14,165,233,0.14)]"
+    : "border-sky-500/70 bg-sky-900/20 shadow-[0_0_0_1px_rgba(14,165,233,0.35)]";
 
   return (
     <div
@@ -462,7 +478,7 @@ function SortableArrangementSourceBeatRow({
         {...listeners}
         className={`select-none flex items-center gap-2 rounded border px-2.5 py-2 text-left text-sm outline-none focus:outline-none focus-visible:outline-none ${
           isVisuallyActive
-            ? "border-sky-500/70 bg-sky-900/20 shadow-[0_0_0_1px_rgba(14,165,233,0.35)]"
+            ? activeClass
             : isDragging
               ? "border-cyan-700/70 bg-cyan-950/20"
               : "border-neutral-800 bg-neutral-900/40 hover:bg-neutral-800/60"
@@ -688,7 +704,7 @@ const PERSONAL_LIBRARY_STATE_SHARE_LINK_KIND = "arrangement";
 const BEAT_LIBRARY_SELECTED_CONTAINER_STORAGE_KEY = "drum-grid-beat-library-selected-container-v1";
 const BEAT_LIBRARY_ROOT_COLLAPSED_STORAGE_KEY = "drum-grid-beat-library-root-collapsed-v1";
 const GRID_SETTINGS_PRESET_LIBRARY_STORAGE_KEY = "drum-grid-grid-settings-presets-v1";
-const APP_VERSION = "0.1.11";
+const APP_VERSION = "0.1.16";
 const BEAT_CATEGORY_OPTIONS = [
   "Groove",
   "Fill",
@@ -2874,6 +2890,7 @@ export default function App() {
   const [showPrefsPlaybackInfo, setShowPrefsPlaybackInfo] = useState(false);
   const [shortcutBindings, setShortcutBindings] = useState(() => shortcutsMapFromStorage());
   const [isEditingAdvancedMenuOpen, setIsEditingAdvancedMenuOpen] = useState(false);
+  const [isNotationStickingMenuOpen, setIsNotationStickingMenuOpen] = useState(false);
   const [isLoopAdvancedMenuOpen, setIsLoopAdvancedMenuOpen] = useState(false);
   const [legalTab, setLegalTab] = useState("impressum"); // impressum | privacy
   const [showLegalEmail, setShowLegalEmail] = useState(false);
@@ -3803,6 +3820,8 @@ export default function App() {
   const transportMenuButtonRef = React.useRef(null);
   const editingAdvancedMenuRef = React.useRef(null);
   const editingAdvancedMenuButtonRef = React.useRef(null);
+  const notationStickingMenuRef = React.useRef(null);
+  const notationStickingMenuButtonRef = React.useRef(null);
   const loopAdvancedMenuRef = React.useRef(null);
   const loopAdvancedMenuButtonRef = React.useRef(null);
   const midiImportInputRef = React.useRef(null);
@@ -3817,6 +3836,7 @@ export default function App() {
   const arrangementPlaybackIndexRef = React.useRef(0);
   const arrangementPlaybackEditorBeatKeyRef = React.useRef("");
   const arrangementSelectionEditorBeatKeyRef = React.useRef("");
+  const assignStickingOverrideHandToSelectionRef = React.useRef(null);
   const playheadRef = React.useRef(0);
   const shareCopiedTimerRef = React.useRef(null);
   const midiImportPreviewKeyRef = React.useRef("");
@@ -5218,6 +5238,27 @@ export default function App() {
     };
   }, [isEditingAdvancedMenuOpen]);
   React.useEffect(() => {
+    if (!isNotationStickingMenuOpen) return undefined;
+    const handlePointerDown = (event) => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      const menu = notationStickingMenuRef.current;
+      const button = notationStickingMenuButtonRef.current;
+      if (menu instanceof HTMLElement && menu.contains(target)) return;
+      if (button instanceof HTMLElement && button.contains(target)) return;
+      setIsNotationStickingMenuOpen(false);
+    };
+    const handleKeyDown = (event) => {
+      if (event.key === "Escape") setIsNotationStickingMenuOpen(false);
+    };
+    document.addEventListener("pointerdown", handlePointerDown, true);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown, true);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [isNotationStickingMenuOpen]);
+  React.useEffect(() => {
     if (!isLoopAdvancedMenuOpen) return undefined;
     const handlePointerDown = (event) => {
       const target = event.target;
@@ -5946,10 +5987,10 @@ useEffect(() => {
       if (raw === "fast") return 130;
       if (raw === "slow") return 500;
       const value = Number(raw);
-      if (!Number.isFinite(value)) return 300;
+      if (!Number.isFinite(value)) return 350;
       return Math.max(130, Math.min(800, Math.round(value)));
     } catch (_) {
-      return 300;
+      return 350;
     }
   });
   const getShortcutBinding = React.useCallback(
@@ -9211,6 +9252,12 @@ useEffect(() => {
     const source = row.source === "public" ? "public" : "local";
     return `${source}:${String(row.beatId)}`;
   }, [normalizedArrangementSelection, arrangementRows]);
+  const clearArrangementSelection = React.useCallback(() => {
+    setArrangementSelection(null);
+    setArrangementSelectionAnchor(null);
+    setArrangementBarSelection(null);
+    setArrangementBarSelectionAnchor(null);
+  }, []);
   const getArrangementRowBarRange = React.useCallback((rowIndex) => {
     if (!Number.isFinite(rowIndex) || rowIndex < 0 || rowIndex >= arrangementRows.length) return null;
     const row = arrangementRows[rowIndex];
@@ -10586,6 +10633,27 @@ useEffect(() => {
   }, []);
   const handleArrangementRowSelect = React.useCallback((rowIndex, extend = false) => {
     if (!Number.isFinite(rowIndex) || rowIndex < 0) return;
+    const normalizedCurrentSelection =
+      arrangementSelection &&
+      Number.isFinite(arrangementSelection.start) &&
+      Number.isFinite(arrangementSelection.end)
+        ? {
+            start: Math.min(arrangementSelection.start, arrangementSelection.end),
+            end: Math.max(arrangementSelection.start, arrangementSelection.end),
+          }
+        : null;
+    if (
+      !extend &&
+      normalizedCurrentSelection &&
+      normalizedCurrentSelection.start === rowIndex &&
+      normalizedCurrentSelection.end === rowIndex
+    ) {
+      setArrangementSelection(null);
+      setArrangementSelectionAnchor(null);
+      setArrangementBarSelection(null);
+      setArrangementBarSelectionAnchor(null);
+      return;
+    }
     if (!extend) {
       setArrangementSelection(null);
       setArrangementBarSelection(null);
@@ -10612,7 +10680,7 @@ useEffect(() => {
     setArrangementSelection({ start: rowIndex, end: rowIndex });
     setArrangementBarSelection(null);
     setArrangementBarSelectionAnchor(null);
-  }, [arrangementSelectionAnchor, getArrangementRowBarRange]);
+  }, [arrangementSelection, arrangementSelectionAnchor, getArrangementRowBarRange]);
   const handleArrangementNotationBarSelect = React.useCallback((barIndex, extend = false) => {
     if (!Number.isFinite(barIndex) || barIndex < 0) return;
     if (!extend) {
@@ -14192,6 +14260,29 @@ useEffect(() => {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [matchesShortcut]);
+  useEffect(() => {
+    const onKey = (e) => {
+      const el = e.target;
+      const tag = (el?.tagName || "").toLowerCase();
+      const isTyping = tag === "input" || tag === "textarea" || el?.isContentEditable;
+      if (isTyping) return;
+      if (!stickingEditModeEnabled) return;
+      if (matchesShortcut(e, "assign_sticking_left")) {
+        if (assignStickingOverrideHandToSelectionRef.current?.("L")) {
+          e.preventDefault();
+        }
+        return;
+      }
+      if (matchesShortcut(e, "assign_sticking_right")) {
+        if (assignStickingOverrideHandToSelectionRef.current?.("R")) {
+          e.preventDefault();
+        }
+      }
+    };
+
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [matchesShortcut, stickingEditModeEnabled]);
 
   useEffect(() => {
     playback.setPlayhead((prev) => Math.max(0, Math.min(columns - 1, prev)));
@@ -14354,10 +14445,57 @@ useEffect(() => {
     });
     return true;
   }, [computedGrid, autoStickingAssignmentsByStep, stickingAssignmentsByStep, instruments, selection, stickingLeadHand]);
+  const assignStickingOverrideHandToSelection = React.useCallback((hand) => {
+    const normalizedHand = hand === "L" ? "L" : hand === "R" ? "R" : null;
+    if (!normalizedHand || !stickingEditModeEnabled) return false;
+    const selectedCells = Array.isArray(wrappedSelectionCells) && wrappedSelectionCells.length > 0
+      ? wrappedSelectionCells
+      : selection
+        ? Array.from({ length: Math.max(0, selection.endExclusive - selection.start) }, (_, colOffset) =>
+            Array.from({ length: Math.max(0, selection.rowEnd - selection.rowStart + 1) }, (_, rowOffset) => ({
+              row: selection.rowStart + rowOffset,
+              col: selection.start + colOffset,
+            }))
+          ).flat()
+        : [];
+    const activeCells = selectedCells.filter((cell) => {
+      const instId = instruments[cell?.row]?.id;
+      if (!instId || FOOT_INSTRUMENTS.has(instId)) return false;
+      return (computedGrid[instId]?.[cell?.col] ?? CELL.OFF) !== CELL.OFF;
+    });
+    if (!activeCells.length) return false;
+    setStickingOverrides((prev) => {
+      const next = { ...(prev || {}) };
+      activeCells.forEach((cell) => {
+        const instId = instruments[cell.row]?.id;
+        if (!instId) return;
+        next[`${instId}:${cell.col}`] = normalizedHand;
+      });
+      return next;
+    });
+    return true;
+  }, [computedGrid, instruments, selection, stickingEditModeEnabled, wrappedSelectionCells]);
+  React.useEffect(() => {
+    assignStickingOverrideHandToSelectionRef.current = assignStickingOverrideHandToSelection;
+  }, [assignStickingOverrideHandToSelection]);
 
   const clearNotationStickingSelection = React.useCallback(() => {
     setNotationStickingSelection({});
   }, []);
+
+  const selectAllNotationSticking = React.useCallback(() => {
+    const next = {};
+    instruments.forEach((inst) => {
+      const instId = inst?.id;
+      if (!instId || FOOT_INSTRUMENTS.has(instId)) return;
+      const row = computedGrid[instId] || [];
+      row.forEach((value, idx) => {
+        if (value !== CELL.OFF) next[`${instId}:${idx}`] = true;
+      });
+    });
+    setNotationStickingSelection(next);
+    setShowNotationSticking(true);
+  }, [computedGrid, instruments]);
 
   const toggleNotationStickingSelectionAt = React.useCallback((inst, idx) => {
     if (FOOT_INSTRUMENTS.has(inst)) return false;
@@ -14460,6 +14598,7 @@ useEffect(() => {
           String(loadedLocalBeatId || "") === String(beat.id) &&
           canUpdateLoadedLocalBeat
         }
+        softActiveHighlight={Boolean(normalizedArrangementSelection)}
         updateCurrentLoadedBeatLocal={updateCurrentLoadedBeatLocal}
         onSelectBeat={handleBeatLibraryBeatSelect}
         arrangementAddBeat={arrangementAddBeat}
@@ -14486,6 +14625,7 @@ useEffect(() => {
     isLoadedLocalBeatNameChanged,
     loadedLocalBeatId,
     loadBeatIntoEditor,
+    normalizedArrangementSelection,
     setEditingBeatLibraryBeatName,
     selectedArrangementSourceBeatKey,
     selectedBeatLibraryBeatIds,
@@ -15219,6 +15359,57 @@ useEffect(() => {
                     >
                       Select sticking for notation
                     </button>
+                    <div className="relative">
+                      <button
+                        ref={notationStickingMenuButtonRef}
+                        type="button"
+                        onClick={() => setIsNotationStickingMenuOpen((v) => !v)}
+                        disabled={!stickingEditModeEnabled}
+                        className={`touch-none select-none px-3 py-[5px] rounded border text-sm ${
+                          !stickingEditModeEnabled
+                            ? "bg-neutral-900 border-neutral-800 text-neutral-600 opacity-50 cursor-not-allowed"
+                            : isNotationStickingMenuOpen
+                            ? "bg-neutral-800 border-neutral-700 text-white"
+                            : "bg-neutral-900 border-neutral-800 text-neutral-300 hover:bg-neutral-800/60"
+                        }`}
+                        title="Notation sticking selection actions"
+                        aria-label="Notation sticking selection actions"
+                      >
+                        ...
+                      </button>
+                      {isNotationStickingMenuOpen && stickingEditModeEnabled && (
+                        <div
+                          ref={notationStickingMenuRef}
+                          className="absolute left-full top-0 z-30 ml-2 min-w-[9rem] rounded-lg border border-neutral-700 bg-neutral-900 p-3 shadow-xl"
+                        >
+                          <div className="flex flex-col gap-3">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                selectAllNotationSticking();
+                                setNotationStickingSelectionModeEnabled(true);
+                                setIsNotationStickingMenuOpen(false);
+                              }}
+                              className="w-fit whitespace-nowrap touch-none select-none px-3 py-[5px] rounded border border-neutral-800 bg-neutral-900 text-neutral-300 hover:bg-neutral-800/60"
+                              title="Select all active hand hits for notation"
+                            >
+                              All
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                clearNotationStickingSelection();
+                                setIsNotationStickingMenuOpen(false);
+                              }}
+                              className="w-fit whitespace-nowrap touch-none select-none px-3 py-[5px] rounded border border-neutral-800 bg-neutral-900 text-neutral-300 hover:bg-neutral-800/60"
+                              title="Clear the current notation sticking selection"
+                            >
+                              None
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
                   </div>
                   <div className="flex items-center gap-2">
                     <button
@@ -16968,7 +17159,9 @@ useEffect(() => {
                             }}
                             className={`rounded border px-2.5 py-2 cursor-pointer outline-none focus:outline-none focus-visible:outline-none ${
                               isSelectedArrangementSourceBeat
-                                ? "border-sky-500/70 bg-sky-900/20 shadow-[0_0_0_1px_rgba(14,165,233,0.35)]"
+                                ? normalizedArrangementSelection
+                                  ? "border-sky-500/35 bg-sky-950/10 shadow-[0_0_0_1px_rgba(14,165,233,0.14)]"
+                                  : "border-sky-500/70 bg-sky-900/20 shadow-[0_0_0_1px_rgba(14,165,233,0.35)]"
                                 : "border-neutral-800 bg-neutral-900/40 hover:bg-neutral-800/60"
                             }`}
                           >
@@ -17270,7 +17463,12 @@ useEffect(() => {
                 </div>
                 {arrangementLibraryTab === "public" && (
                 <>
-                <div className="mt-3 max-h-[52vh] overflow-auto pr-1">
+                <div
+                  className="mt-3 max-h-[52vh] overflow-auto pr-1"
+                  onMouseDown={(e) => {
+                    if (e.target === e.currentTarget) clearArrangementSelection();
+                  }}
+                >
                   {selectedPublicArrangementEntry ? (
                     <div className="space-y-2">
                       {publicArrangementRows.map((row, idx) => (
@@ -17307,7 +17505,12 @@ useEffect(() => {
                     <div className="text-xs text-neutral-500">No public arrangements available.</div>
                   ) : null}
                 </div>
-                <div className="mt-3 flex flex-wrap items-center gap-3 text-[10px] text-neutral-500">
+                <div
+                  className="mt-3 flex flex-wrap items-center gap-3 text-[10px] text-neutral-500"
+                  onMouseDown={(e) => {
+                    if (e.target === e.currentTarget) clearArrangementSelection();
+                  }}
+                >
                   <span>{`Total bars: ${publicArrangementTotals.totalBars}`}</span>
                   <span>
                     {`Est. length: ${Math.floor(Math.max(0, Math.round(publicArrangementTotals.totalSeconds)) / 60)}:${String(
@@ -17385,7 +17588,13 @@ useEffect(() => {
                 </>
                 )}
                 {arrangementLibraryTab === "local" && (
-                <div ref={arrangementListRef} className="mt-3 max-h-[52vh] overflow-auto pr-1">
+                <div
+                  ref={arrangementListRef}
+                  className="mt-3 max-h-[52vh] overflow-auto pr-1"
+                  onMouseDown={(e) => {
+                    if (e.target === e.currentTarget) clearArrangementSelection();
+                  }}
+                >
                   <DndContext
                     sensors={arrangementOrderSensors}
                     collisionDetection={detectArrangementOrderDropCollision}
@@ -17498,7 +17707,12 @@ useEffect(() => {
                 )}
                 {arrangementLibraryTab === "local" && (
                 <>
-                <div className="mt-3 flex flex-wrap items-center gap-3 text-[10px] text-neutral-500">
+                <div
+                  className="mt-3 flex flex-wrap items-center gap-3 text-[10px] text-neutral-500"
+                  onMouseDown={(e) => {
+                    if (e.target === e.currentTarget) clearArrangementSelection();
+                  }}
+                >
                   {normalizedArrangementBarLoopSelection ? (
                     <span className="text-neutral-500">
                       {`Loop selection: bars ${normalizedArrangementBarLoopSelection.start + 1}-${normalizedArrangementBarLoopSelection.end + 1}`}

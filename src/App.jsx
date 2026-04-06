@@ -443,13 +443,15 @@ function SortableArrangementSourceBeatRow({
     transform: CSS.Transform.toString(verticalTransform),
     transition: disableTransition ? undefined : transition,
   };
-  const isVisuallyActive =
-    isBeatLibraryBeatSelected ||
-    isLoadedTrackedBeat ||
-    (!isLoadedTrackedBeat && isSelectedArrangementSourceBeat);
-  const activeClass = softActiveHighlight
+  const isLoadedVisual = isLoadedTrackedBeat;
+  const isSecondaryActive =
+    !isLoadedTrackedBeat && (isBeatLibraryBeatSelected || isSelectedArrangementSourceBeat);
+  const loadedActiveClass = softActiveHighlight
     ? "border-sky-500/35 bg-sky-950/10 shadow-[0_0_0_1px_rgba(14,165,233,0.14)]"
     : "border-sky-500/70 bg-sky-900/20 shadow-[0_0_0_1px_rgba(14,165,233,0.35)]";
+  const secondaryActiveClass = softActiveHighlight
+    ? "border-neutral-700 bg-neutral-900/50 shadow-[0_0_0_1px_rgba(38,38,38,0.4)]"
+    : "border-sky-500/30 bg-sky-950/10 shadow-[0_0_0_1px_rgba(14,165,233,0.12)]";
 
   return (
     <div
@@ -477,8 +479,10 @@ function SortableArrangementSourceBeatRow({
         {...attributes}
         {...listeners}
         className={`select-none flex items-center gap-2 rounded border px-2.5 py-2 text-left text-sm outline-none focus:outline-none focus-visible:outline-none ${
-          isVisuallyActive
-            ? activeClass
+          isLoadedVisual
+            ? loadedActiveClass
+            : isSecondaryActive
+              ? secondaryActiveClass
             : isDragging
               ? "border-cyan-700/70 bg-cyan-950/20"
               : "border-neutral-800 bg-neutral-900/40 hover:bg-neutral-800/60"
@@ -704,7 +708,7 @@ const PERSONAL_LIBRARY_STATE_SHARE_LINK_KIND = "arrangement";
 const BEAT_LIBRARY_SELECTED_CONTAINER_STORAGE_KEY = "drum-grid-beat-library-selected-container-v1";
 const BEAT_LIBRARY_ROOT_COLLAPSED_STORAGE_KEY = "drum-grid-beat-library-root-collapsed-v1";
 const GRID_SETTINGS_PRESET_LIBRARY_STORAGE_KEY = "drum-grid-grid-settings-presets-v1";
-const APP_VERSION = "0.1.16";
+const APP_VERSION = "0.1.40";
 const BEAT_CATEGORY_OPTIONS = [
   "Groove",
   "Fill",
@@ -3228,6 +3232,8 @@ export default function App() {
   const [arrangementNotationPos, setArrangementNotationPos] = useState({ x: 56, y: 128 });
   const [isPublicSubmitDialogOpen, setIsPublicSubmitDialogOpen] = useState(false);
   const [loadedLocalBeatId, setLoadedLocalBeatId] = useState(null);
+  const [currentEditorBeatKey, setCurrentEditorBeatKey] = useState("");
+  const [currentArrangementEditorBeatKey, setCurrentArrangementEditorBeatKey] = useState("");
   const [arrangementSourceTab, setArrangementSourceTab] = useState("local"); // presets | local | public
   const [arrangementSourcesCollapsed, setArrangementSourcesCollapsed] = useState(false);
   const [arrangementDetailsCollapsed, setArrangementDetailsCollapsed] = useState(true);
@@ -3382,6 +3388,9 @@ export default function App() {
   const [publicArrangementLibraryLoading, setPublicArrangementLibraryLoading] = useState(false);
   const [publicLibraryError, setPublicLibraryError] = useState("");
   const [personalLibraryRefreshing, setPersonalLibraryRefreshing] = useState(false);
+  const [personalLibraryLastSyncAt, setPersonalLibraryLastSyncAt] = useState("");
+  const [profileShareQrCount, setProfileShareQrCount] = useState(0);
+  const [profileStatsLoading, setProfileStatsLoading] = useState(false);
   const [libraryFiltersOpen, setLibraryFiltersOpen] = useState(false);
   const [arrangementLibraryMenuOpen, setArrangementLibraryMenuOpen] = useState(false);
   const [isBeatLibraryActionsMenuOpen, setIsBeatLibraryActionsMenuOpen] = useState(false);
@@ -3853,6 +3862,20 @@ export default function App() {
   const authUserLabel = authUserEmail || "Account";
   const adminEmail = String(import.meta.env.VITE_ADMIN_EMAIL || "").trim().toLowerCase();
   const isAdminUser = Boolean(authUser?.id && adminEmail && authUserEmail.toLowerCase() === adminEmail);
+  const authProfileLastSyncLabel = React.useMemo(() => {
+    const raw = String(personalLibraryLastSyncAt || "").trim();
+    if (!raw) return "";
+    const date = new Date(raw);
+    if (Number.isNaN(date.getTime())) return "";
+    try {
+      return new Intl.DateTimeFormat(undefined, {
+        dateStyle: "medium",
+        timeStyle: "short",
+      }).format(date);
+    } catch (_) {
+      return date.toLocaleString();
+    }
+  }, [personalLibraryLastSyncAt]);
 
   useEffect(() => {
     if (!hasSupabaseEnabled || !supabase) return undefined;
@@ -4100,6 +4123,31 @@ export default function App() {
     }
     setAuthMessage("Signed out.");
   }, []);
+  const refreshProfileCloudStats = React.useCallback(async () => {
+    if (!hasSupabaseEnabled || !supabase || !authUser?.id) {
+      setProfileShareQrCount(0);
+      setProfileStatsLoading(false);
+      return;
+    }
+    setProfileStatsLoading(true);
+    try {
+      const stateId = getPersonalLibraryStateShareId(authUser.id);
+      let query = supabase
+        .from("share_links")
+        .select("id", { count: "exact", head: true })
+        .eq("owner_user_id", authUser.id);
+      if (stateId) {
+        query = query.neq("id", stateId);
+      }
+      const { count, error } = await query;
+      if (error) throw error;
+      setProfileShareQrCount(Number.isFinite(count) ? count : 0);
+    } catch (_) {
+      setProfileShareQrCount(0);
+    } finally {
+      setProfileStatsLoading(false);
+    }
+  }, [authUser?.id]);
   const refreshPublicArrangementLibrary = React.useCallback(async () => {
     setPublicArrangementLibraryLoading(true);
     setPublicLibraryError("");
@@ -4221,6 +4269,7 @@ export default function App() {
         );
         lastSyncedBeatLibraryContainersJsonRef.current = JSON.stringify(nextBeatLibraryContainers);
       }
+      setPersonalLibraryLastSyncAt(new Date().toISOString());
       setAuthError("");
       return true;
     } catch (error) {
@@ -4249,6 +4298,9 @@ export default function App() {
       writeStoredDeviceLocalBeatLibraryContainers(nextBeatLibraryContainers);
       lastSyncedBeatLibraryContainersJsonRef.current = JSON.stringify(nextBeatLibraryContainers);
       personalLibraryCloudHydratedRef.current = false;
+      setPersonalLibraryLastSyncAt("");
+      setProfileShareQrCount(0);
+      setProfileStatsLoading(false);
       return undefined;
     }
     let cancelled = false;
@@ -4283,6 +4335,7 @@ export default function App() {
             normalizeBeatLibraryContainers(beatLibraryContainersRef.current)
           );
         }
+        setPersonalLibraryLastSyncAt(new Date().toISOString());
         const offlineSnapshot = buildOfflineLocalLibrarySnapshot();
         const hasOfflineLocalContent =
           offlineSnapshot.beats.length > 0 ||
@@ -4309,6 +4362,11 @@ export default function App() {
       cancelled = true;
     };
   }, [authUser?.id, fetchCloudBeatLibraryContainers, fetchCloudLocalBeats, fetchCloudSavedArrangements]);
+  useEffect(() => {
+    if (!isAuthDialogOpen || !authUser?.id) return undefined;
+    refreshProfileCloudStats();
+    return undefined;
+  }, [isAuthDialogOpen, authUser?.id, refreshProfileCloudStats]);
   const mergeOfflineLocalLibraryIntoCloud = React.useCallback(async (snapshot, selection = {}) => {
     if (!hasSupabaseEnabled || !supabase || !authUser?.id) return false;
     const source = snapshot && typeof snapshot === "object" ? snapshot : buildOfflineLocalLibrarySnapshot();
@@ -8947,6 +9005,11 @@ useEffect(() => {
     async (beat, extend = false) => {
       const beatId = String(beat?.id || "");
       if (!beatId) return;
+      setArrangementSelection(null);
+      setArrangementSelectionAnchor(null);
+      setArrangementBarSelection(null);
+      setArrangementBarSelectionAnchor(null);
+      setCurrentArrangementEditorBeatKey("");
       if (extend && beatLibraryBeatSelectionAnchorId) {
         const anchorIndex = visibleLocalBeatIdsInLibraryOrder.findIndex(
           (id) => id === String(beatLibraryBeatSelectionAnchorId || "")
@@ -8965,7 +9028,14 @@ useEffect(() => {
       setBeatLibraryBeatSelectionAnchorId(beatId);
       await loadBeatIntoEditorRef.current?.("local", beat);
     },
-    [beatLibraryBeatSelectionAnchorId, visibleLocalBeatIdsInLibraryOrder]
+    [
+      beatLibraryBeatSelectionAnchorId,
+      visibleLocalBeatIdsInLibraryOrder,
+      setArrangementSelection,
+      setArrangementSelectionAnchor,
+      setArrangementBarSelection,
+      setArrangementBarSelectionAnchor,
+    ]
   );
   const currentBeatLibraryBeats = React.useMemo(
     () =>
@@ -9245,6 +9315,17 @@ useEffect(() => {
       ? null
       : normalizedArrangementBarSelection;
   }, [normalizedArrangementBarSelection]);
+  const currentArrangementEditorBarRange = React.useMemo(() => {
+    const beatKey = String(currentArrangementEditorBeatKey || "");
+    if (!beatKey) return null;
+    const row = arrangementRows.find(
+      (entry) => `${String(entry?.source || "local")}:${String(entry?.beat?.id || "")}` === beatKey
+    );
+    if (!row) return null;
+    const start = Math.max(0, Number(row.startBarNumber || 1) - 1);
+    const count = Math.max(1, Number(row.sectionBars) || 1);
+    return { start, end: start + count - 1 };
+  }, [arrangementRows, currentArrangementEditorBeatKey]);
   const selectedArrangementSourceBeatKey = React.useMemo(() => {
     if (!normalizedArrangementSelection) return "";
     const row = arrangementRows[normalizedArrangementSelection.start];
@@ -9798,6 +9879,7 @@ useEffect(() => {
       await flushLoadedLocalBeatNotationSelectionRef.current?.();
     }
     const normalizedSource = source === "public" ? "public" : source === "shared" ? "shared" : "local";
+    setCurrentEditorBeatKey(`${normalizedSource}:${String(freshestBeat?.id || "")}`);
     applyImportedBeatPayloadRef.current?.(
       effectivePayload,
       `${normalizedSource}:${freshestBeat.id}:${freshestBeat.updatedAt || freshestBeat.createdAt || ""}`
@@ -11881,6 +11963,7 @@ useEffect(() => {
   useEffect(() => {
     if (!arrangementPlaybackEnabled) {
       arrangementPlaybackEditorBeatKeyRef.current = "";
+      if (!normalizedArrangementSelection) setCurrentArrangementEditorBeatKey("");
       return;
     }
     const entry = activeArrangementPlaybackEntry;
@@ -11889,12 +11972,14 @@ useEffect(() => {
     const beatKey = `${String(entry?.row?.source || "")}:${String(beat.id || "")}`;
     if (!beatKey || beatKey === arrangementPlaybackEditorBeatKeyRef.current) return;
     arrangementPlaybackEditorBeatKeyRef.current = beatKey;
+    setCurrentArrangementEditorBeatKey(beatKey);
     loadBeatIntoEditor(entry?.row?.source, beat);
-  }, [arrangementPlaybackEnabled, activeArrangementPlaybackEntry, loadBeatIntoEditor]);
+  }, [arrangementPlaybackEnabled, activeArrangementPlaybackEntry, loadBeatIntoEditor, normalizedArrangementSelection]);
   useEffect(() => {
     const rowIndex = normalizedArrangementSelection?.start;
     if (!Number.isFinite(rowIndex) || rowIndex < 0) {
       arrangementSelectionEditorBeatKeyRef.current = "";
+      if (!arrangementPlaybackEnabled) setCurrentArrangementEditorBeatKey("");
       return;
     }
     const row = arrangementRows[rowIndex];
@@ -11903,8 +11988,9 @@ useEffect(() => {
     const beatKey = `${String(row?.source || "")}:${String(beat.id || "")}`;
     if (!beatKey || beatKey === arrangementSelectionEditorBeatKeyRef.current) return;
     arrangementSelectionEditorBeatKeyRef.current = beatKey;
+    setCurrentArrangementEditorBeatKey(beatKey);
     loadBeatIntoEditor(row?.source, beat);
-  }, [normalizedArrangementSelection, arrangementRows, loadBeatIntoEditor]);
+  }, [normalizedArrangementSelection, arrangementRows, loadBeatIntoEditor, arrangementPlaybackEnabled]);
   useEffect(() => {
     if (!arrangementPlaybackEnabled) {
       setActiveArrangementGlobalBarIndex(-1);
@@ -12617,13 +12703,21 @@ useEffect(() => {
   ]);
   useEffect(() => {
     if (isArrangementOpen || isArrangementNotationOpen) return;
+    if (normalizedArrangementSelection || normalizedArrangementBarSelection) return;
     if (!arrangementPlaybackEnabled) return;
     playback.hardStop();
     setArrangementPlaybackEnabled(false);
     setArrangementPlaybackUiActive(false);
     arrangementStartedRef.current = false;
     playback.setStopAtTime(null);
-  }, [isArrangementOpen, isArrangementNotationOpen, arrangementPlaybackEnabled, playback.hardStop]);
+  }, [
+    isArrangementOpen,
+    isArrangementNotationOpen,
+    normalizedArrangementSelection,
+    normalizedArrangementBarSelection,
+    arrangementPlaybackEnabled,
+    playback.hardStop,
+  ]);
   const toggleArrangementNotationPlayback = React.useCallback(() => {
     if (arrangementPlaybackUiActive) {
       flushSync(() => {
@@ -12637,6 +12731,30 @@ useEffect(() => {
     });
     startArrangementPlayback();
   }, [arrangementPlaybackUiActive, startArrangementPlayback, stopArrangementPlayback]);
+  const arrangementHeaderUsesArrangementPlayback = Boolean(
+    arrangementPlaybackUiActive ||
+    normalizedArrangementBarSelection ||
+    normalizedArrangementSelection
+  );
+  const arrangementHeaderPlaybackActive = arrangementHeaderUsesArrangementPlayback
+    ? arrangementPlaybackUiActive
+    : playback.isPlaying;
+  const selectedArrangementHeaderRowIndex = Number.isFinite(normalizedArrangementSelection?.start)
+    ? normalizedArrangementSelection.start
+    : -1;
+  const canStepArrangementSelectionBackward = selectedArrangementHeaderRowIndex > 0;
+  const canStepArrangementSelectionForward =
+    selectedArrangementHeaderRowIndex >= 0 &&
+    selectedArrangementHeaderRowIndex < arrangementRows.length - 1;
+  const stepArrangementSelection = React.useCallback((delta) => {
+    const currentRowIndex = Number.isFinite(normalizedArrangementSelection?.start)
+      ? normalizedArrangementSelection.start
+      : -1;
+    if (currentRowIndex < 0) return;
+    const nextRowIndex = Math.max(0, Math.min(arrangementRows.length - 1, currentRowIndex + delta));
+    if (nextRowIndex === currentRowIndex) return;
+    handleArrangementRowSelect(nextRowIndex, false);
+  }, [arrangementRows.length, handleArrangementRowSelect, normalizedArrangementSelection]);
 
   
   const notationExportRef = useRef(null);
@@ -14135,6 +14253,20 @@ useEffect(() => {
                         })
                       : []
                   }
+                  editorBarIndices={
+                    currentArrangementEditorBarRange
+                      ? Array.from(
+                          { length: Math.max(1, Number(segment.notation?.bars) || 0) },
+                          (_, idx) => idx
+                        ).filter((idx) => {
+                          const globalBar = (segment.startBarOffset || 0) + idx;
+                          return (
+                            globalBar >= currentArrangementEditorBarRange.start &&
+                            globalBar <= currentArrangementEditorBarRange.end
+                          );
+                        })
+                      : []
+                  }
                   onBarClick={
                     exportMode
                       ? null
@@ -14954,7 +15086,11 @@ useEffect(() => {
 
   return (
     <div
-      className={`${isEmbedMode ? "min-h-full bg-neutral-900 text-white p-3" : `min-h-screen bg-neutral-900 text-white p-6 ${useFixedDesktopFooter ? "pb-40 sm:pb-28 md:pb-32" : "pb-28"}`}`}
+      className={`${
+        isEmbedMode
+          ? "min-h-full bg-neutral-900 text-white p-3"
+          : `flex min-h-screen flex-col bg-neutral-900 px-6 pt-6 text-white ${useFixedDesktopFooter ? "pb-40 sm:pb-28 md:pb-32" : "pb-0"}`
+      }`}
       onMouseDown={(e) => {
         if (selection) {
           const el = e.target;
@@ -15019,14 +15155,23 @@ useEffect(() => {
           </div>
           <div className="flex items-center gap-2">
             <button
-              onClick={togglePlaybackFromBeginning}
-              className={`touch-none select-none px-3 py-1.5 rounded border text-sm capitalize ${
-                playback.isPlaying
-                  ? "bg-neutral-800 border-neutral-600 text-white"
-                  : "bg-neutral-900 border-neutral-800 text-neutral-300 hover:bg-neutral-800/60"
+              onClick={() => {
+                if (arrangementHeaderUsesArrangementPlayback) {
+                  if (arrangementPlaybackUiActive) stopArrangementPlayback();
+                  else startArrangementPlayback();
+                  return;
+                }
+                togglePlaybackFromBeginning();
+              }}
+              className={`touch-none select-none px-3 py-1.5 rounded border text-sm capitalize outline-none focus:outline-none focus-visible:outline-none ${
+                arrangementHeaderUsesArrangementPlayback
+                  ? "border-sky-500/70 text-sky-100 bg-sky-900/30 shadow-[0_0_0_1px_rgba(14,165,233,0.35)] hover:bg-sky-900/40"
+                  : arrangementHeaderPlaybackActive
+                    ? "bg-neutral-800 border-neutral-600 text-white"
+                    : "bg-neutral-900 border-neutral-800 text-neutral-300 hover:bg-neutral-800/60"
               }`}
             >
-              {playback.isPlaying ? "stop" : "play"}
+              {arrangementHeaderPlaybackActive ? "stop" : "play"}
             </button>
             <div className="flex items-stretch overflow-hidden rounded-md border border-neutral-700 bg-neutral-800">
               <button
@@ -15095,14 +15240,23 @@ useEffect(() => {
           
           <div className="flex items-center gap-2 order-1" data-loopui='1'>
             <button
-              onClick={togglePlaybackFromBeginning}
-              className={`touch-none select-none px-3 py-1.5 rounded border text-sm capitalize ${
-                playback.isPlaying
-                  ? "bg-neutral-800 border-neutral-600 text-white"
-                  : "bg-neutral-900 border-neutral-800 text-neutral-300 hover:bg-neutral-800/60"
+              onClick={() => {
+                if (arrangementHeaderUsesArrangementPlayback) {
+                  if (arrangementPlaybackUiActive) stopArrangementPlayback();
+                  else startArrangementPlayback();
+                  return;
+                }
+                togglePlaybackFromBeginning();
+              }}
+              className={`touch-none select-none px-3 py-1.5 rounded border text-sm capitalize outline-none focus:outline-none focus-visible:outline-none ${
+                arrangementHeaderUsesArrangementPlayback
+                  ? "border-sky-500/70 text-sky-100 bg-sky-900/30 shadow-[0_0_0_1px_rgba(14,165,233,0.35)] hover:bg-sky-900/40"
+                  : arrangementHeaderPlaybackActive
+                    ? "bg-neutral-800 border-neutral-600 text-white"
+                    : "bg-neutral-900 border-neutral-800 text-neutral-300 hover:bg-neutral-800/60"
               }`}
             >
-              {playback.isPlaying ? "stop" : "play"}
+              {arrangementHeaderPlaybackActive ? "stop" : "play"}
             </button>
           </div>
 
@@ -15200,7 +15354,7 @@ useEffect(() => {
                     {isAdminUser ? "Admin" : "Signed in"}
                   </span>
                 ) : null}
-                {authUserEmail ? (
+                {authUserEmail && isAdminUser ? (
                   <span
                     className="hidden md:inline-block max-w-[170px] truncate text-xs text-neutral-500"
                     title={authUserEmail}
@@ -15215,19 +15369,19 @@ useEffect(() => {
         </div>
 
         <div className="relative flex flex-wrap items-center gap-2">
-          <button
-            ref={gridMenuButtonRef}
-            onClick={(e) => {
-              if (e.shiftKey) {
-                setShowAppVersion((v) => !v);
-                return;
-              }
-              setActiveTab((t) => (t === "timing" ? "none" : "timing"));
-            }}
-            className={`touch-none select-none px-3 py-1.5 rounded border text-sm capitalize ${
-              activeTab === "timing"
-                ? "bg-neutral-800 border-neutral-600 text-white"
-                : "bg-neutral-900 border-neutral-800 text-neutral-300 hover:bg-neutral-800/60"
+            <button
+              ref={gridMenuButtonRef}
+              onClick={(e) => {
+                if (e.shiftKey) {
+                  setShowAppVersion((v) => !v);
+                  return;
+                }
+                setActiveTab((t) => (t === "timing" ? "none" : "timing"));
+              }}
+              className={`touch-none select-none px-3 py-1.5 rounded border text-sm capitalize outline-none focus:outline-none focus-visible:outline-none ${
+                activeTab === "timing"
+                  ? "bg-neutral-800 border-neutral-600 text-white"
+                  : "bg-neutral-900 border-neutral-800 text-neutral-300 hover:bg-neutral-800/60"
             }`}
           >
             Settings
@@ -15245,7 +15399,7 @@ useEffect(() => {
               onClick={() => {
                 setActiveTab((t) => (t === "selection" ? "none" : "selection"));
               }}
-              className={`touch-none select-none px-3 py-1.5 rounded border text-sm capitalize ${
+              className={`touch-none select-none px-3 py-1.5 rounded border text-sm capitalize outline-none focus:outline-none focus-visible:outline-none ${
                 activeTab === "selection"
                   ? "bg-neutral-800 border-neutral-600 text-white"
                   : "bg-neutral-900 border-neutral-800 text-neutral-300 hover:bg-neutral-800/60"
@@ -15701,7 +15855,7 @@ useEffect(() => {
                 setArrangementDetailsCollapsed(false);
                 setArrangementSourceTab("local");
               }}
-              className={`touch-none select-none px-3 py-1.5 rounded border text-sm ${
+              className={`touch-none select-none px-3 py-1.5 rounded border text-sm outline-none focus:outline-none focus-visible:outline-none ${
                 !arrangementSourcesCollapsed && !arrangementDetailsCollapsed && isArrangementOpen
                   ? "bg-neutral-800 border-neutral-600 text-white"
                   : "bg-neutral-900 border-neutral-800 text-neutral-300 hover:bg-neutral-800/60"
@@ -15711,6 +15865,38 @@ useEffect(() => {
               Library
             </button>
           </div>
+          {arrangementHeaderUsesArrangementPlayback ? (
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => stepArrangementSelection(-1)}
+                disabled={!canStepArrangementSelectionBackward}
+                className={`touch-none select-none px-3 py-1.5 rounded border text-sm outline-none focus:outline-none focus-visible:outline-none ${
+                  canStepArrangementSelectionBackward
+                    ? "bg-neutral-900 border-neutral-800 text-neutral-300 hover:bg-neutral-800/60"
+                    : "bg-neutral-900 border-neutral-800 text-neutral-500 opacity-50 cursor-not-allowed"
+                }`}
+                title="Previous arrangement beat"
+                aria-label="Previous arrangement beat"
+              >
+                ←
+              </button>
+              <button
+                type="button"
+                onClick={() => stepArrangementSelection(1)}
+                disabled={!canStepArrangementSelectionForward}
+                className={`touch-none select-none px-3 py-1.5 rounded border text-sm outline-none focus:outline-none focus-visible:outline-none ${
+                  canStepArrangementSelectionForward
+                    ? "bg-neutral-900 border-neutral-800 text-neutral-300 hover:bg-neutral-800/60"
+                    : "bg-neutral-900 border-neutral-800 text-neutral-500 opacity-50 cursor-not-allowed"
+                }`}
+                title="Next arrangement beat"
+                aria-label="Next arrangement beat"
+              >
+                →
+              </button>
+            </div>
+          ) : null}
           {playabilityWarningsEnabled && playabilityWarningSteps.length > 0 && (
             <span className="text-[11px] text-red-500 whitespace-nowrap">
               {playabilityWarningSteps.length} playability warning{playabilityWarningSteps.length === 1 ? "" : "s"}
@@ -15911,7 +16097,7 @@ useEffect(() => {
         className={`select-none ${
           isEmbedMode
             ? "mt-0"
-            : `mt-6 ${
+            : `mt-6 flex-1 ${
                 layout === "grid-right"
                   ? `grid grid-cols-1 xl:grid-cols-[auto_1fr] gap-6 ${useFixedDesktopFooter ? "pb-20 sm:pb-12 md:pb-16" : "pb-8"}`
                   : layout === "notation-right"
@@ -16091,77 +16277,129 @@ useEffect(() => {
         )}
       </main>
 
-      <footer className={`${isEmbedMode ? "hidden" : "mt-6 pt-1"}`} data-loopui='1'>
+      <footer className={`${isEmbedMode ? "hidden" : "mt-auto pt-1"}`} data-loopui='1'>
         <div className="flex justify-end" />
         {!isEmbedMode && !useFixedDesktopFooter && (
-          <div className="mt-6 flex flex-wrap items-center justify-center gap-2 text-xs text-neutral-500">
-            <button
-              type="button"
-              onClick={() => {
-                setLegalTab("impressum");
-                setIsLegalDialogOpen(true);
-              }}
-              className="text-xs text-neutral-500 hover:text-neutral-300 underline underline-offset-2"
-              title="Legal information"
-            >
-              Legal
-            </button>
-            <span className="text-neutral-700">·</span>
-            <button
-              type="button"
-              onClick={() => setIsPreferencesDialogOpen(true)}
-              className="text-xs text-neutral-500 hover:text-neutral-300 underline underline-offset-2"
-              title="Preferences"
-            >
-              Preferences
-            </button>
-            <span className="text-neutral-700">·</span>
-            <a
-              href="https://buymeacoffee.com/onlinedrumnotation"
-              target="_blank"
-              rel="noreferrer"
-              className="hover:text-neutral-300 underline underline-offset-2"
-              title="Buy me a coffee"
-            >
-              Buy me a coffee
-            </a>
+          <>
+          <div className="mt-6">
+            <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3 text-xs text-neutral-500">
+              <div />
+              <div className="flex flex-wrap items-center justify-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setLegalTab("impressum");
+                    setIsLegalDialogOpen(true);
+                  }}
+                  className="text-xs text-neutral-500 hover:text-neutral-300 underline underline-offset-2"
+                  title="Legal information"
+                >
+                  Legal
+                </button>
+                <span className="text-neutral-700">·</span>
+                <button
+                  type="button"
+                  onClick={() => setIsPreferencesDialogOpen(true)}
+                  className="text-xs text-neutral-500 hover:text-neutral-300 underline underline-offset-2"
+                  title="Preferences"
+                >
+                  Preferences
+                </button>
+                <span className="text-neutral-700">·</span>
+                <a
+                  href="https://buymeacoffee.com/onlinedrumnotation"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="hover:text-neutral-300 underline underline-offset-2"
+                  title="Buy me a coffee"
+                >
+                  Buy me a coffee
+                </a>
+              </div>
+              <div className="flex justify-end">
+                <button
+                  ref={transportMenuButtonRef}
+                  type="button"
+                  onClick={() => setIsTransportMenuOpen((v) => !v)}
+                  className="rounded border border-neutral-800 bg-neutral-900 px-3 py-1.5 text-sm text-neutral-300 shadow-2xl hover:bg-neutral-800/60"
+                  title="Transport controls"
+                >
+                  Tempo
+                </button>
+              </div>
+            </div>
           </div>
+          <div className="relative left-1/2 mt-4 w-screen -translate-x-1/2 bg-black/90 py-4">
+            <div className="flex items-center justify-center px-4">
+              <img
+                src="/arnehertstein-logo-text-white.png"
+                alt="Arne Hertstein"
+                className="pointer-events-none h-12 w-auto opacity-20"
+                loading="lazy"
+              />
+            </div>
+          </div>
+          </>
         )}
       </footer>
       {useFixedDesktopFooter &&
         createPortal(
-          <div className="fixed bottom-4 left-1/2 z-[83] -translate-x-1/2">
-            <div className="flex flex-wrap items-center justify-center gap-2 text-xs text-neutral-500">
-              <button
-                type="button"
-                onClick={() => {
-                  setLegalTab("impressum");
-                  setIsLegalDialogOpen(true);
-                }}
-                className="text-xs text-neutral-500 hover:text-neutral-300 underline underline-offset-2"
-                title="Legal information"
-              >
-                Legal
-              </button>
-              <span className="text-neutral-700">·</span>
-              <button
-                type="button"
-                onClick={() => setIsPreferencesDialogOpen(true)}
-                className="text-xs text-neutral-500 hover:text-neutral-300 underline underline-offset-2"
-                title="Preferences"
-              >
-                Preferences
-              </button>
-              <span className="text-neutral-700">·</span>
-              <a
-                href="https://buymeacoffee.com/onlinedrumnotation"
-                target="_blank"
-                rel="noreferrer"
-                className="hover:text-neutral-300 underline underline-offset-2"
-                title="Buy me a coffee"
-              >
-                Buy me a coffee
-              </a>
+          <div className="fixed inset-x-0 bottom-0 z-[83] flex flex-col items-center">
+            <div className="mb-4 w-full px-6">
+              <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3 text-xs text-neutral-500">
+                <div />
+                <div className="flex flex-wrap items-center justify-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setLegalTab("impressum");
+                      setIsLegalDialogOpen(true);
+                    }}
+                    className="text-xs text-neutral-500 hover:text-neutral-300 underline underline-offset-2"
+                    title="Legal information"
+                  >
+                    Legal
+                  </button>
+                  <span className="text-neutral-700">·</span>
+                  <button
+                    type="button"
+                    onClick={() => setIsPreferencesDialogOpen(true)}
+                    className="text-xs text-neutral-500 hover:text-neutral-300 underline underline-offset-2"
+                    title="Preferences"
+                  >
+                    Preferences
+                  </button>
+                  <span className="text-neutral-700">·</span>
+                  <a
+                    href="https://buymeacoffee.com/onlinedrumnotation"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="hover:text-neutral-300 underline underline-offset-2"
+                    title="Buy me a coffee"
+                  >
+                    Buy me a coffee
+                  </a>
+                </div>
+                <div className="flex justify-end">
+                  <button
+                    ref={transportMenuButtonRef}
+                    type="button"
+                    onClick={() => setIsTransportMenuOpen((v) => !v)}
+                    className="rounded border border-neutral-800 bg-neutral-900 px-3 py-1.5 text-sm text-neutral-300 shadow-2xl hover:bg-neutral-800/60"
+                    title="Transport controls"
+                  >
+                    Tempo
+                  </button>
+                </div>
+              </div>
+            </div>
+            <div className="flex w-full items-center justify-center bg-black/90 px-6 py-3">
+              <img
+                src="/arnehertstein-logo-text-white.png"
+                alt="Arne Hertstein"
+                className="pointer-events-none h-12 w-auto opacity-20"
+                loading="lazy"
+              />
             </div>
           </div>,
           document.body
@@ -16169,15 +16407,6 @@ useEffect(() => {
       {!isEmbedMode &&
         createPortal(
           <>
-            <button
-              ref={transportMenuButtonRef}
-              type="button"
-              onClick={() => setIsTransportMenuOpen((v) => !v)}
-              className="fixed bottom-4 right-4 z-[140] rounded border border-neutral-800 bg-neutral-900 px-3 py-1.5 text-sm text-neutral-300 shadow-2xl hover:bg-neutral-800/60"
-              title="Transport controls"
-            >
-              Tempo
-            </button>
             {isTransportMenuOpen && (
               <div
                 ref={transportMenuRef}
@@ -17280,19 +17509,20 @@ useEffect(() => {
                       ref={arrangementPlayButtonRef}
                       type="button"
                       onClick={() => {
-                        if (arrangementPlaybackUiActive) stopArrangementPlayback();
-                        else startArrangementPlayback();
+                        if (arrangementHeaderUsesArrangementPlayback) {
+                          if (arrangementPlaybackUiActive) stopArrangementPlayback();
+                          else startArrangementPlayback();
+                          return;
+                        }
+                        togglePlaybackFromBeginning();
                       }}
-                      disabled={arrangementPlayableEntries.length < 1}
                       className={`px-2 py-1 rounded border text-xs ${
-                        arrangementPlayableEntries.length > 0
-                          ? (normalizedArrangementBarLoopSelection || normalizedArrangementLoopSelection)
-                            ? "border-sky-500/70 text-sky-100 bg-sky-900/20 hover:bg-sky-900/30"
-                            : "border-sky-700 text-sky-100 bg-sky-900/30 hover:bg-sky-900/40"
-                          : "border-neutral-800 text-neutral-500 bg-neutral-900/60 cursor-not-allowed"
+                        arrangementHeaderUsesArrangementPlayback
+                          ? "border-sky-500/70 text-sky-100 bg-sky-900/30 shadow-[0_0_0_1px_rgba(14,165,233,0.35)] hover:bg-sky-900/40"
+                          : "border-neutral-800 text-neutral-400 bg-neutral-900/60 hover:bg-neutral-800/60"
                       }`}
                     >
-                      {arrangementPlaybackUiActive
+                      {arrangementHeaderPlaybackActive
                         ? "Stop"
                         : "Play"}
                     </button>
@@ -17476,6 +17706,7 @@ useEffect(() => {
                           key={`public-arr-row-${selectedPublicArrangementEntry.id}-${row.id || idx}`}
                           row={row}
                           index={idx}
+                          isEditorBeat={currentArrangementEditorBeatKey === `${String(row?.source || "shared")}:${String(row?.beat?.id || "")}`}
                           isSelected={Boolean(
                             normalizedArrangementSelection &&
                               idx >= normalizedArrangementSelection.start &&
@@ -17658,6 +17889,7 @@ useEffect(() => {
                             globalNotationBarsPerRow={arrangementNotationBarsPerRow}
                             globalNotationDynamicSpacing={arrangementNotationDynamicSpacing}
                             isPlaying={arrangementPlaybackEnabled && idx === activeArrangementPlayingRowIndex}
+                            isEditorBeat={currentArrangementEditorBeatKey === `${String(row?.source || "local")}:${String(row?.beat?.id || "")}`}
                             isSelected={Boolean(
                               normalizedArrangementSelection &&
                                 idx >= normalizedArrangementSelection.start &&
@@ -20025,6 +20257,7 @@ useEffect(() => {
         mode={authMode}
         onModeChange={setAuthMode}
         signedInEmail={authUserEmail}
+        roleLabel={isAdminUser ? "Admin" : authUser ? "Signed in" : ""}
         emailInputRef={authEmailInputRef}
         email={authEmailInput}
         onEmailChange={setAuthEmailInput}
@@ -20045,6 +20278,12 @@ useEffect(() => {
         pending={authPending}
         error={authError}
         message={authMessage}
+        beatsCount={localBeats.length}
+        arrangementsCount={savedArrangements.length}
+        foldersCount={beatLibraryContainers.length}
+        shareQrCount={profileShareQrCount}
+        lastSyncAt={authProfileLastSyncLabel}
+        statsPending={profileStatsLoading || personalLibraryRefreshing}
       />
       {pendingPersonalCloudImport ? (
         (() => {
@@ -20915,6 +21154,7 @@ function SortableArrangementRow({
   row,
   index,
   isPlaying,
+  isEditorBeat,
   isSelected,
   onSelect,
   dropPosition,
@@ -20960,11 +21200,13 @@ function SortableArrangementRow({
       }}
       onDragOver={onExternalDragOver}
       onDrop={onExternalDrop}
-      className={`select-none rounded border px-2.5 py-2 ${
+      className={`select-none rounded border px-2.5 py-2 outline-none focus:outline-none focus-visible:outline-none ${
         isPlaying
-          ? "border-cyan-500/80 bg-cyan-900/20 shadow-[0_0_0_1px_rgba(6,182,212,0.35)]"
-          : isSelected
+          ? "border-sky-500/70 bg-sky-900/20 shadow-[0_0_0_1px_rgba(14,165,233,0.35)]"
+          : isEditorBeat
             ? "border-sky-500/70 bg-sky-900/20 shadow-[0_0_0_1px_rgba(14,165,233,0.35)]"
+          : isSelected
+            ? "border-sky-500/30 bg-sky-950/10 shadow-[0_0_0_1px_rgba(14,165,233,0.12)]"
             : isDragging
               ? "border-cyan-700/70 bg-cyan-950/20"
               : "border-neutral-800 bg-neutral-900/40"
@@ -21022,7 +21264,7 @@ function SortableArrangementRow({
   );
 }
 
-function ReadonlyArrangementRow({ row, index, isSelected, isPlaying, onSelect, onRepeatDown, onRepeatUp }) {
+function ReadonlyArrangementRow({ row, index, isSelected, isPlaying, isEditorBeat, onSelect, onRepeatDown, onRepeatUp }) {
   return (
     <div
       role="button"
@@ -21034,11 +21276,13 @@ function ReadonlyArrangementRow({ row, index, isSelected, isPlaying, onSelect, o
           onSelect?.(e);
         }
       }}
-      className={`select-none rounded border px-2.5 py-2 ${
+      className={`select-none rounded border px-2.5 py-2 outline-none focus:outline-none focus-visible:outline-none ${
         isPlaying
-          ? "border-cyan-500/80 bg-cyan-900/20 shadow-[0_0_0_1px_rgba(6,182,212,0.35)]"
-          : isSelected
           ? "border-sky-500/70 bg-sky-900/20 shadow-[0_0_0_1px_rgba(14,165,233,0.35)]"
+          : isEditorBeat
+          ? "border-sky-500/70 bg-sky-900/20 shadow-[0_0_0_1px_rgba(14,165,233,0.35)]"
+          : isSelected
+          ? "border-sky-500/30 bg-sky-950/10 shadow-[0_0_0_1px_rgba(14,165,233,0.12)]"
           : "border-neutral-800 bg-neutral-900/40"
       }`}
     >
@@ -22336,6 +22580,7 @@ function Notation({
   justifySystems = false,
   targetContentWidth = null,
   activeBarIndices = [],
+  editorBarIndices = [],
   selectedBarIndices = [],
   onBarClick = null,
   onBarMenuOpen = null,
@@ -24124,6 +24369,33 @@ for (let i = 0; i < notes.length; i++) {
   useEffect(() => {
     const svg = highlightSvgRef.current;
     if (!(svg instanceof SVGElement)) return;
+    svg.querySelectorAll(".dg-editor-bar").forEach((el) => el.remove());
+    const editorBarSet = new Set(
+      (Array.isArray(editorBarIndices) ? editorBarIndices : [])
+        .map((v) => Number(v))
+        .filter((v) => Number.isFinite(v) && v >= 0)
+    );
+    if (!editorBarSet.size) return;
+    const rects = Array.isArray(highlightRectsRef.current) ? highlightRectsRef.current : [];
+    rects.forEach((rectSpec, barIndex) => {
+      if (!editorBarSet.has(barIndex) || !rectSpec) return;
+      const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+      rect.setAttribute("x", String(rectSpec.x));
+      rect.setAttribute("y", String(rectSpec.y));
+      rect.setAttribute("width", String(rectSpec.width));
+      rect.setAttribute("height", String(rectSpec.height));
+      rect.setAttribute("rx", "6");
+      rect.setAttribute("ry", "6");
+      rect.setAttribute("fill", "rgba(14,165,233,0.08)");
+      rect.setAttribute("stroke", "rgba(14,165,233,0.9)");
+      rect.setAttribute("stroke-width", "2");
+      rect.setAttribute("class", "dg-editor-bar");
+      svg.insertBefore(rect, svg.firstChild);
+    });
+  }, [editorBarIndices]);
+  useEffect(() => {
+    const svg = highlightSvgRef.current;
+    if (!(svg instanceof SVGElement)) return;
     svg.querySelectorAll(".dg-selected-bar, .dg-click-bar").forEach((el) => el.remove());
     const rects = Array.isArray(highlightRectsRef.current) ? highlightRectsRef.current : [];
     const selectedBarSet = new Set(
@@ -24141,9 +24413,9 @@ for (let i = 0; i < notes.length; i++) {
         selected.setAttribute("height", String(rectSpec.height));
         selected.setAttribute("rx", "6");
         selected.setAttribute("ry", "6");
-        selected.setAttribute("fill", "rgba(14,165,233,0.08)");
-        selected.setAttribute("stroke", "rgba(14,165,233,0.9)");
-        selected.setAttribute("stroke-width", "2");
+        selected.setAttribute("fill", "rgba(14,165,233,0.04)");
+        selected.setAttribute("stroke", "rgba(14,165,233,0.45)");
+        selected.setAttribute("stroke-width", "1.5");
         selected.setAttribute("class", "dg-selected-bar");
         selected.style.pointerEvents = "none";
         svg.insertBefore(selected, svg.firstChild);

@@ -179,13 +179,13 @@ function readGridSelectionHoldDelayMs() {
     const raw = String(
       window.localStorage.getItem("drum-grid-selection-hold-speed-v1") || ""
     ).toLowerCase();
-    if (raw === "fast") return 130;
+    if (raw === "fast") return 300;
     if (raw === "slow") return 500;
     const value = Number(raw);
-    if (!Number.isFinite(value)) return 130;
-    return Math.max(130, Math.min(800, Math.round(value)));
+    if (!Number.isFinite(value)) return 300;
+    return Math.max(300, Math.min(800, Math.round(value)));
   } catch (_) {
-    return 130;
+    return 300;
   }
 }
 
@@ -708,7 +708,7 @@ const PERSONAL_LIBRARY_STATE_SHARE_LINK_KIND = "arrangement";
 const BEAT_LIBRARY_SELECTED_CONTAINER_STORAGE_KEY = "drum-grid-beat-library-selected-container-v1";
 const BEAT_LIBRARY_ROOT_COLLAPSED_STORAGE_KEY = "drum-grid-beat-library-root-collapsed-v1";
 const GRID_SETTINGS_PRESET_LIBRARY_STORAGE_KEY = "drum-grid-grid-settings-presets-v1";
-const APP_VERSION = "0.1.40";
+const APP_VERSION = "0.1.53";
 const BEAT_CATEGORY_OPTIONS = [
   "Groove",
   "Fill",
@@ -2824,6 +2824,7 @@ export default function App() {
     height: window.innerHeight || document.documentElement.clientHeight || 0,
   }));
   const isMobileFloatingPanels = viewportSize.width > 0 && viewportSize.width < 768;
+  const showDesktopSettingsSidebar = !isEmbedMode && viewportSize.width >= 1100;
   const useFixedDesktopFooter =
     !isEmbedMode && viewportSize.width >= 768 && viewportSize.height >= 820;
   const requestedExample = React.useMemo(() => {
@@ -3701,6 +3702,7 @@ export default function App() {
       return 0.5;
     }
   });
+  const [drumVolume, setDrumVolume] = useState(1);
   const [metronomeCountInEnabled, setMetronomeCountInEnabled] = useState(() => {
     try {
       return window.localStorage.getItem(METRONOME_COUNT_IN_ENABLED_STORAGE_KEY) === "true";
@@ -6042,11 +6044,11 @@ useEffect(() => {
   const [gridSelectionHoldDelayMs, setGridSelectionHoldDelayMs] = useState(() => {
     try {
       const raw = String(window.localStorage.getItem(GRID_SELECTION_HOLD_SPEED_STORAGE_KEY) || "").toLowerCase();
-      if (raw === "fast") return 130;
+      if (raw === "fast") return 300;
       if (raw === "slow") return 500;
       const value = Number(raw);
       if (!Number.isFinite(value)) return 350;
-      return Math.max(130, Math.min(800, Math.round(value)));
+      return Math.max(300, Math.min(800, Math.round(value)));
     } catch (_) {
       return 350;
     }
@@ -11925,6 +11927,7 @@ useEffect(() => {
     timeSig,
     metronomeEnabled,
     metronomeVolume,
+    drumVolume,
   });
   useEffect(() => {
     playheadRef.current = playback.playhead;
@@ -15083,6 +15086,569 @@ useEffect(() => {
     [activeBeatLibraryDragBeat, getBeatBpm]
   );
 
+  const desktopSettingsSidebar = showDesktopSettingsSidebar ? (
+    <aside
+      className="sticky top-6 z-20 self-start w-[18rem] shrink-0 overflow-visible rounded-xl border border-neutral-800 bg-neutral-900 p-3"
+      data-loopui="1"
+    >
+      <div className="space-y-5">
+        <div>
+          <div className="flex flex-col gap-3">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-sm text-neutral-300 whitespace-nowrap">Resolution</span>
+              <div className="flex items-stretch overflow-hidden rounded-md border border-neutral-800 bg-neutral-900/60">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const order = [4, 8, 16, 32];
+                    const idx = order.indexOf(resolution);
+                    const next = order[(idx - 1 + order.length) % order.length];
+                    handleResolutionChange(next);
+                  }}
+                  className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                >
+                  −
+                </button>
+                <div className="min-w-[60px] px-3 py-1 flex items-center justify-center text-sm text-white bg-neutral-900/60 border-l border-r border-neutral-800">
+                  {resolution === 4 ? "4th" : resolution === 8 ? "8th" : resolution === 16 ? "16th" : "32th"}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const order = [4, 8, 16, 32];
+                    const idx = order.indexOf(resolution);
+                    const next = order[(idx + 1) % order.length];
+                    handleResolutionChange(next);
+                  }}
+                  className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                >
+                  +
+                </button>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-sm text-neutral-300">Bars</span>
+              <div className="flex items-stretch overflow-hidden rounded-md border border-neutral-800 bg-neutral-900/60">
+                <button
+                  type="button"
+                  onClick={() => setBars((b) => Math.max(1, b - 1))}
+                  className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                  aria-label="Decrease bars"
+                >
+                  −
+                </button>
+                <div className="min-w-[44px] px-3 py-1 flex items-center justify-center text-sm text-white bg-neutral-900/60 border-l border-r border-neutral-800">
+                  {bars}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setBars((b) => Math.min(8, b + 1))}
+                  className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                  aria-label="Increase bars"
+                >
+                  +
+                </button>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-sm text-neutral-300 whitespace-nowrap">Time</span>
+              <div className="flex items-center gap-1.5">
+                <div className="flex items-stretch overflow-hidden rounded-md border border-neutral-800 bg-neutral-900/60">
+                  <button
+                    type="button"
+                    onClick={() => stepTimeSigNumerator(-1)}
+                    className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                  >
+                    −
+                  </button>
+                  <div className="min-w-[36px] px-2.5 py-1 flex items-center justify-center text-sm text-white bg-neutral-900/60 border-l border-r border-neutral-800 tabular-nums">
+                    {Math.max(2, Math.min(15, Number(timeSig.n) || 4))}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => stepTimeSigNumerator(1)}
+                    className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                  >
+                    +
+                  </button>
+                </div>
+                <div className="text-sm text-neutral-400 select-none">/</div>
+                <div className="flex items-stretch overflow-hidden rounded-md border border-neutral-800 bg-neutral-900/60">
+                  <button
+                    type="button"
+                    onClick={() => stepTimeSigDenominator(-1)}
+                    className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                  >
+                    −
+                  </button>
+                  <div className="min-w-[36px] px-2.5 py-1 flex items-center justify-center text-sm text-white bg-neutral-900/60 border-l border-r border-neutral-800 tabular-nums">
+                    {timeSig.d === 8 ? 8 : 4}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => stepTimeSigDenominator(1)}
+                    className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                  >
+                    +
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-sm text-neutral-300 whitespace-nowrap">Tuplets</span>
+              <div className="flex items-stretch overflow-hidden rounded-md border border-neutral-800 bg-neutral-900/60">
+                <button
+                  type="button"
+                  onClick={() => stepGlobalTupletValue(-1)}
+                  className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                >
+                  −
+                </button>
+                <button
+                  type="button"
+                  onClick={toggleGlobalTupletOffLast}
+                  className="min-w-[64px] px-3 py-1 flex items-center justify-center text-sm text-white bg-neutral-900/60 border-l border-r border-neutral-800 hover:bg-neutral-800/50"
+                  title="Toggle off / last tuplet"
+                >
+                  {globalTupletValue === "mixed"
+                    ? "Mixed"
+                    : globalTupletValue == null
+                      ? "Off"
+                      : String(globalTupletValue)}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => stepGlobalTupletValue(1)}
+                  className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                >
+                  +
+                </button>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-sm text-neutral-300">Drumkit</span>
+              <div className="flex items-stretch overflow-hidden rounded-md border border-neutral-800 bg-neutral-900/60">
+                <button
+                  type="button"
+                  onClick={() => stepPreset(-1)}
+                  className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                  aria-label="Previous preset"
+                >
+                  −
+                </button>
+                <div
+                  onClick={() => setIsKitEditorOpen(true)}
+                  className="min-w-[88px] px-3 py-1 flex items-center justify-center text-sm text-white bg-neutral-900/60 border-l border-r border-neutral-800 cursor-pointer hover:bg-neutral-800/60"
+                  title="Open drumkit editor"
+                >
+                  {selectedPresetLabel}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => stepPreset(1)}
+                  className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                  aria-label="Next preset"
+                >
+                  +
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="border-t border-neutral-800 pt-4">
+          <div className="flex flex-col gap-3">
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() =>
+                  setStickingEditModeEnabled((v) => {
+                    const next = !v;
+                    if (next) {
+                      setStickingGuideEnabled(true);
+                    } else {
+                      setNotationStickingSelectionModeEnabled(false);
+                    }
+                    return next;
+                  })
+                }
+                className={`w-fit touch-none select-none px-3 py-[5px] rounded border text-sm ${
+                  stickingEditModeEnabled
+                    ? "bg-neutral-800 border-neutral-700 text-white"
+                    : "bg-neutral-900 border-neutral-800 text-neutral-600"
+                }`}
+                title="When enabled, clicking active hand-hit cells edits R/L sticking instead of toggling notes"
+              >
+                Sticking edit mode
+              </button>
+              <div className="relative">
+                <button
+                  ref={editingAdvancedMenuButtonRef}
+                  type="button"
+                  onClick={() => setIsEditingAdvancedMenuOpen((v) => !v)}
+                  className={`touch-none select-none px-3 py-[5px] rounded border text-sm ${
+                    isEditingAdvancedMenuOpen
+                      ? "bg-neutral-800 border-neutral-700 text-white"
+                      : "bg-neutral-900 border-neutral-800 text-neutral-300 hover:bg-neutral-800/60"
+                  }`}
+                  title="Sticking display options"
+                  aria-label="Sticking display options"
+                >
+                  ...
+                </button>
+                {isEditingAdvancedMenuOpen && (
+                  <div
+                    ref={editingAdvancedMenuRef}
+                    className="absolute left-full top-0 z-[140] ml-2 min-w-[10.5rem] rounded-lg border border-neutral-700 bg-neutral-900 p-3 shadow-xl"
+                  >
+                    <div className="flex flex-col gap-3">
+                      <div className="space-y-1">
+                        <span className="text-sm text-neutral-300">Sticking display</span>
+                        <div className="flex w-fit items-stretch overflow-hidden rounded-md border border-neutral-800 bg-neutral-900/60">
+                          <button
+                            type="button"
+                            onClick={() => setNotationStickingView("above")}
+                            className={`whitespace-nowrap px-3 py-1 text-sm ${
+                              notationStickingView === "above"
+                                ? "bg-neutral-800 text-white"
+                                : "bg-neutral-900 text-neutral-600"
+                            }`}
+                            title="Show sticking above notation"
+                          >
+                            Above
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setNotationStickingView("split-rows")}
+                            className={`whitespace-nowrap border-l border-neutral-800 px-3 py-1 text-sm ${
+                              notationStickingView === "split-rows"
+                                ? "bg-neutral-800 text-white"
+                                : "bg-neutral-900 text-neutral-600"
+                            }`}
+                            title="Change sticking display"
+                          >
+                            Split rows
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() =>
+                  setNotationStickingSelectionModeEnabled((v) => {
+                    const next = !v;
+                    if (next) {
+                      setStickingGuideEnabled(true);
+                      setShowNotationSticking(true);
+                    }
+                    return next;
+                  })
+                }
+                disabled={!stickingEditModeEnabled}
+                className={`w-fit touch-none select-none px-3 py-[5px] rounded border text-sm ${
+                  !stickingEditModeEnabled
+                    ? "bg-neutral-900 border-neutral-800 text-neutral-600 opacity-50 cursor-not-allowed"
+                    : notationStickingSelectionModeEnabled
+                      ? "bg-neutral-800 border-neutral-700 text-white"
+                      : "bg-neutral-900 border-neutral-800 text-neutral-600"
+                }`}
+                title="When enabled, clicking or selecting active hand-hit cells toggles whether their sticking prints in notation"
+              >
+                Select sticking for notation
+              </button>
+              <div className="relative">
+                <button
+                  ref={notationStickingMenuButtonRef}
+                  type="button"
+                  onClick={() => setIsNotationStickingMenuOpen((v) => !v)}
+                  disabled={!stickingEditModeEnabled}
+                  className={`touch-none select-none px-3 py-[5px] rounded border text-sm ${
+                    !stickingEditModeEnabled
+                      ? "bg-neutral-900 border-neutral-800 text-neutral-600 opacity-50 cursor-not-allowed"
+                      : isNotationStickingMenuOpen
+                        ? "bg-neutral-800 border-neutral-700 text-white"
+                        : "bg-neutral-900 border-neutral-800 text-neutral-300 hover:bg-neutral-800/60"
+                  }`}
+                  title="Notation sticking selection actions"
+                  aria-label="Notation sticking selection actions"
+                >
+                  ...
+                </button>
+                {isNotationStickingMenuOpen && stickingEditModeEnabled && (
+                  <div
+                    ref={notationStickingMenuRef}
+                    className="absolute left-full top-0 z-30 ml-2 min-w-[9rem] rounded-lg border border-neutral-700 bg-neutral-900 p-3 shadow-xl"
+                  >
+                    <div className="flex flex-col gap-3">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          selectAllNotationSticking();
+                          setNotationStickingSelectionModeEnabled(true);
+                          setIsNotationStickingMenuOpen(false);
+                        }}
+                        className="w-fit whitespace-nowrap touch-none select-none px-3 py-[5px] rounded border border-neutral-800 bg-neutral-900 text-neutral-300 hover:bg-neutral-800/60"
+                        title="Select all active hand hits for notation"
+                      >
+                        All
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          clearNotationStickingSelection();
+                          setIsNotationStickingMenuOpen(false);
+                        }}
+                        className="w-fit whitespace-nowrap touch-none select-none px-3 py-[5px] rounded border border-neutral-800 bg-neutral-900 text-neutral-300 hover:bg-neutral-800/60"
+                        title="Clear the current notation sticking selection"
+                      >
+                        None
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setBeatAutoUpdateEnabled((v) => !v)}
+                className={`w-fit touch-none select-none px-3 py-[5px] rounded border text-sm ${
+                  beatAutoUpdateEnabled
+                    ? "bg-neutral-800 border-neutral-700 text-white"
+                    : "bg-neutral-900 border-neutral-800 text-neutral-600"
+                }`}
+                title="Automatically update the loaded local beat after beat changes. Notation sticking selection always auto-updates."
+              >
+                Auto update
+              </button>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-neutral-300">Looping</span>
+              <div
+                className={`flex items-stretch overflow-hidden rounded-md border ${
+                  loopRepeats === "off"
+                    ? "border-neutral-800 bg-neutral-900/60"
+                    : "border-neutral-800 bg-neutral-900/60"
+                }`}
+              >
+                <button
+                  type="button"
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    const order = ["all", "off", "1", "2", "3", "4", "5", "6", "7", "8"];
+                    const stepOnce = () => {
+                      setLoopRepeats((prev) => {
+                        const i = Math.max(0, order.indexOf(String(prev)));
+                        return order[(i - 1 + order.length) % order.length];
+                      });
+                    };
+                    stepOnce();
+                    let interval = null;
+                    let timeout = window.setTimeout(() => {
+                      interval = window.setInterval(stepOnce, 160);
+                    }, 130);
+                    const stop = () => {
+                      if (timeout) window.clearTimeout(timeout);
+                      timeout = null;
+                      if (interval) window.clearInterval(interval);
+                      interval = null;
+                      window.removeEventListener("mouseup", stop);
+                      window.removeEventListener("touchend", stop);
+                      window.removeEventListener("touchcancel", stop);
+                    };
+                    window.addEventListener("mouseup", stop);
+                    window.addEventListener("touchend", stop, { passive: true });
+                    window.addEventListener("touchcancel", stop, { passive: true });
+                  }}
+                  className={`px-2 text-base leading-none ${
+                    loopRepeats === "off"
+                      ? "text-neutral-500 hover:bg-neutral-800/50 active:bg-neutral-800"
+                      : "text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                  }`}
+                  title="Decrease loop repeats"
+                >
+                  –
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setLoopRepeats((prev) => {
+                      if (prev === "all") {
+                        return lastNonAllLoopRepeats.current || "1";
+                      }
+                      return "all";
+                    });
+                  }}
+                  className={`min-w-[44px] px-3 py-1 flex items-center justify-center text-sm border-l border-r capitalize ${
+                    loopRepeats === "off"
+                      ? "text-neutral-500 bg-neutral-900/60 hover:bg-neutral-800/50 border-neutral-800"
+                      : "text-white bg-neutral-900/60 hover:bg-neutral-800/50 border-neutral-800"
+                  }`}
+                  title="How many times the selection repeats"
+                >
+                  {loopRepeats}
+                </button>
+                <button
+                  type="button"
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    const order = ["all", "off", "1", "2", "3", "4", "5", "6", "7", "8"];
+                    const stepOnce = () => {
+                      setLoopRepeats((prev) => {
+                        const i = Math.max(0, order.indexOf(String(prev)));
+                        return order[(i + 1) % order.length];
+                      });
+                    };
+                    stepOnce();
+                    let interval = null;
+                    let timeout = window.setTimeout(() => {
+                      interval = window.setInterval(stepOnce, 160);
+                    }, 130);
+                    const stop = () => {
+                      if (timeout) window.clearTimeout(timeout);
+                      timeout = null;
+                      if (interval) window.clearInterval(interval);
+                      interval = null;
+                      window.removeEventListener("mouseup", stop);
+                      window.removeEventListener("touchend", stop);
+                      window.removeEventListener("touchcancel", stop);
+                    };
+                    window.addEventListener("mouseup", stop);
+                    window.addEventListener("touchend", stop, { passive: true });
+                    window.addEventListener("touchcancel", stop, { passive: true });
+                  }}
+                  className={`px-2 text-base leading-none ${
+                    loopRepeats === "off"
+                      ? "text-neutral-500 hover:bg-neutral-800/50 active:bg-neutral-800"
+                      : "text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                  }`}
+                  title="Increase loop repeats"
+                >
+                  +
+                </button>
+              </div>
+              <div className="relative">
+                <button
+                  ref={loopAdvancedMenuButtonRef}
+                  type="button"
+                  onClick={() => setIsLoopAdvancedMenuOpen((v) => !v)}
+                  className={`touch-none select-none px-3 py-[5px] rounded border text-sm ${
+                    isLoopAdvancedMenuOpen
+                      ? "bg-neutral-800 border-neutral-700 text-white"
+                      : "bg-neutral-900 border-neutral-800 text-neutral-300 hover:bg-neutral-800/60"
+                  }`}
+                  title="Loop overlap options"
+                  aria-label="Loop overlap options"
+                >
+                  ...
+                </button>
+                {isLoopAdvancedMenuOpen && (
+                  <div
+                    ref={loopAdvancedMenuRef}
+                    className="absolute left-full top-0 z-30 ml-2 w-fit rounded-lg border border-neutral-700 bg-neutral-900 p-3 shadow-xl"
+                  >
+                    <div className="flex flex-col gap-3">
+                      <div className="space-y-1">
+                        <span className="text-sm text-neutral-300">Loop overlap</span>
+                        <div className="flex w-fit max-w-full items-stretch overflow-hidden rounded-md border border-neutral-800 bg-neutral-900/60">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setLoopOverlapMode((prev) => {
+                                const idx = Math.max(0, MOVE_OVERLAP_MODES.findIndex((m) => m.id === prev));
+                                return MOVE_OVERLAP_MODES[(idx - 1 + MOVE_OVERLAP_MODES.length) % MOVE_OVERLAP_MODES.length].id;
+                              })
+                            }
+                            className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                          >
+                            −
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setLoopOverlapMode((prev) => (prev === "all-to-all" ? "active-to-empty" : "all-to-all"))
+                            }
+                            className="min-w-[126px] px-3 py-1 flex items-center justify-center text-sm text-white bg-neutral-900/60 border-l border-r border-neutral-800 hover:bg-neutral-800/50"
+                            title={getOverlapModeDescription(loopOverlapMode)}
+                          >
+                            {MOVE_OVERLAP_MODES.find((m) => m.id === loopOverlapMode)?.label || "Fill in gaps"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setLoopOverlapMode((prev) => {
+                                const idx = Math.max(0, MOVE_OVERLAP_MODES.findIndex((m) => m.id === prev));
+                                return MOVE_OVERLAP_MODES[(idx + 1) % MOVE_OVERLAP_MODES.length].id;
+                              })
+                            }
+                            className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                          >
+                            +
+                          </button>
+                        </div>
+                      </div>
+                      <div className="space-y-1">
+                        <span className="text-sm text-neutral-300">Move overlap</span>
+                        <div className="flex w-fit max-w-full items-stretch overflow-hidden rounded-md border border-neutral-800 bg-neutral-900/60">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setMoveOverlapMode((prev) => {
+                                const idx = Math.max(0, MOVE_OVERLAP_MODES.findIndex((m) => m.id === prev));
+                                return MOVE_OVERLAP_MODES[(idx - 1 + MOVE_OVERLAP_MODES.length) % MOVE_OVERLAP_MODES.length].id;
+                              })
+                            }
+                            className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                          >
+                            −
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setMoveOverlapMode((prev) => (prev === "all-to-all" ? "active-to-empty" : "all-to-all"))
+                            }
+                            className="min-w-[126px] px-3 py-1 flex items-center justify-center text-sm text-white bg-neutral-900/60 border-l border-r border-neutral-800 hover:bg-neutral-800/50"
+                            title={getOverlapModeDescription(moveOverlapMode)}
+                          >
+                            {MOVE_OVERLAP_MODES.find((m) => m.id === moveOverlapMode)?.label || "All overrides all"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setMoveOverlapMode((prev) => {
+                                const idx = Math.max(0, MOVE_OVERLAP_MODES.findIndex((m) => m.id === prev));
+                                return MOVE_OVERLAP_MODES[(idx + 1) % MOVE_OVERLAP_MODES.length].id;
+                              })
+                            }
+                            className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                          >
+                            +
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </aside>
+  ) : null;
+
 
   return (
     <div
@@ -15378,7 +15944,7 @@ useEffect(() => {
                 }
                 setActiveTab((t) => (t === "timing" ? "none" : "timing"));
               }}
-              className={`touch-none select-none px-3 py-1.5 rounded border text-sm capitalize outline-none focus:outline-none focus-visible:outline-none ${
+              className={`${showDesktopSettingsSidebar ? "hidden" : "touch-none select-none inline-flex"} px-3 py-1.5 rounded border text-sm capitalize outline-none focus:outline-none focus-visible:outline-none ${
                 activeTab === "timing"
                   ? "bg-neutral-800 border-neutral-600 text-white"
                   : "bg-neutral-900 border-neutral-800 text-neutral-300 hover:bg-neutral-800/60"
@@ -15399,7 +15965,7 @@ useEffect(() => {
               onClick={() => {
                 setActiveTab((t) => (t === "selection" ? "none" : "selection"));
               }}
-              className={`touch-none select-none px-3 py-1.5 rounded border text-sm capitalize outline-none focus:outline-none focus-visible:outline-none ${
+              className={`${showDesktopSettingsSidebar ? "hidden" : "touch-none select-none inline-flex"} px-3 py-1.5 rounded border text-sm capitalize outline-none focus:outline-none focus-visible:outline-none ${
                 activeTab === "selection"
                   ? "bg-neutral-800 border-neutral-600 text-white"
                   : "bg-neutral-900 border-neutral-800 text-neutral-300 hover:bg-neutral-800/60"
@@ -15454,35 +16020,38 @@ useEffect(() => {
                       {isEditingAdvancedMenuOpen && (
                         <div
                           ref={editingAdvancedMenuRef}
-                          className="absolute left-full top-0 z-30 ml-2 min-w-[10.5rem] rounded-lg border border-neutral-700 bg-neutral-900 p-3 shadow-xl"
+                          className="absolute left-full top-0 z-[140] ml-2 min-w-[10.5rem] rounded-lg border border-neutral-700 bg-neutral-900 p-3 shadow-xl"
                         >
                           <div className="flex flex-col gap-3">
-                            <button
-                              type="button"
-                              onClick={() => setShowNotationSticking((v) => !v)}
-                              className={`w-fit whitespace-nowrap touch-none select-none px-3 py-[5px] rounded border text-sm ${
-                                showNotationSticking
-                                  ? "bg-neutral-800 border-neutral-700 text-white"
-                                  : "bg-neutral-900 border-neutral-800 text-neutral-600"
-                              }`}
-                              title="Show inferred sticking (R/L) beneath notes in notation"
-                            >
-                              Show sticking
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setNotationStickingView((v) => (v === "stacked" ? "split-rows" : "stacked"))
-                              }
-                              className={`w-fit whitespace-nowrap touch-none select-none px-3 py-[5px] rounded border text-sm ${
-                                notationStickingView === "split-rows"
-                                  ? "bg-neutral-800 border-neutral-700 text-white"
-                                  : "bg-neutral-900 border-neutral-800 text-neutral-600"
-                              }`}
-                              title="Change sticking display"
-                            >
-                              Split rows
-                            </button>
+                            <div className="space-y-1">
+                              <span className="text-sm text-neutral-300">Sticking display</span>
+                              <div className="flex w-fit items-stretch overflow-hidden rounded-md border border-neutral-800 bg-neutral-900/60">
+                                <button
+                                  type="button"
+                                  onClick={() => setNotationStickingView("above")}
+                                  className={`whitespace-nowrap px-3 py-1 text-sm ${
+                                    notationStickingView === "above"
+                                      ? "bg-neutral-800 text-white"
+                                      : "bg-neutral-900 text-neutral-600"
+                                  }`}
+                                  title="Show sticking above notation"
+                                >
+                                  Above
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setNotationStickingView("split-rows")}
+                                  className={`whitespace-nowrap border-l border-neutral-800 px-3 py-1 text-sm ${
+                                    notationStickingView === "split-rows"
+                                      ? "bg-neutral-800 text-white"
+                                      : "bg-neutral-900 text-neutral-600"
+                                  }`}
+                                  title="Change sticking display"
+                                >
+                                  Split rows
+                                </button>
+                              </div>
+                            </div>
                           </div>
                         </div>
                       )}
@@ -16097,7 +16666,11 @@ useEffect(() => {
         className={`select-none ${
           isEmbedMode
             ? "mt-0"
-            : `mt-6 flex-1 ${
+            : showDesktopSettingsSidebar
+              ? `mt-6 flex-1 grid grid-cols-[18rem_minmax(0,1fr)] items-start gap-6 ${
+                  useFixedDesktopFooter ? "pb-20 sm:pb-12 md:pb-16" : "pb-8"
+                }`
+              : `mt-6 flex-1 ${
                 layout === "grid-right"
                   ? `grid grid-cols-1 xl:grid-cols-[auto_1fr] gap-6 ${useFixedDesktopFooter ? "pb-20 sm:pb-12 md:pb-16" : "pb-8"}`
                   : layout === "notation-right"
@@ -16106,6 +16679,8 @@ useEffect(() => {
               }`
         }`}
       >
+        {showDesktopSettingsSidebar ? desktopSettingsSidebar : null}
+        <div className={showDesktopSettingsSidebar ? "min-w-0" : undefined}>
         {isEmbedMode ? (
           <div className="w-full" ref={setNotationExportEl}>
             <Notation
@@ -16275,6 +16850,7 @@ useEffect(() => {
             </div>
           </>
         )}
+        </div>
       </main>
 
       <footer className={`${isEmbedMode ? "hidden" : "mt-auto pt-1"}`} data-loopui='1'>
@@ -16575,6 +17151,28 @@ useEffect(() => {
                       {metronomeCountInEnabled ? "On" : "Off"}
                     </button>
                   </div>
+
+                  <label className="block">
+                    <div className="mb-1 flex items-center justify-between gap-3">
+                      <span className="text-sm text-neutral-300">Drum volume</span>
+                      <span className="text-[11px] text-neutral-500 tabular-nums">
+                        {`${Math.round(drumVolume * 100)}%`}
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0}
+                      max={100}
+                      step={1}
+                      value={Math.round(drumVolume * 100)}
+                      onChange={(e) =>
+                        setDrumVolume(
+                          Math.max(0, Math.min(1, (Number(e.target.value) || 0) / 100))
+                        )
+                      }
+                      className="w-full accent-neutral-300"
+                    />
+                  </label>
 
                   <label className="block">
                     <div className="mb-1 flex items-center justify-between gap-3">
@@ -20667,13 +21265,13 @@ useEffect(() => {
                       <div className="flex min-w-[180px] items-center gap-2 px-0 py-0">
                         <input
                           type="range"
-                          min={130}
+                          min={300}
                           max={800}
                           step={10}
                           value={gridSelectionHoldDelayMs}
                           onChange={(e) =>
                             setGridSelectionHoldDelayMs(
-                              Math.max(130, Math.min(800, Math.round(Number(e.target.value) || 130)))
+                              Math.max(300, Math.min(800, Math.round(Number(e.target.value) || 300)))
                             )
                           }
                           className="w-28 accent-neutral-700 opacity-80"
@@ -20685,7 +21283,7 @@ useEffect(() => {
                       </div>
                     </div>
                     <div className="mt-2 text-xs text-neutral-500">
-                      Controls how long you need to hold before grid selection mode arms. Range: 130ms to 800ms.
+                      Controls how long you need to hold before grid selection mode arms. Range: 300ms to 800ms.
                     </div>
                     <div className="my-3 border-t border-neutral-800" />
                     <div className="flex items-center justify-between gap-2">

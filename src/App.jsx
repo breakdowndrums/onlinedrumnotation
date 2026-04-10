@@ -670,6 +670,7 @@ const MIDI_IMPORT_SNARE_GHOST_MAX_STORAGE_KEY = "drum-grid-midi-import-snare-gho
 const MIDI_IMPORT_TOM_GHOST_MAX_STORAGE_KEY = "drum-grid-midi-import-tom-ghost-max-v1";
 const MIDI_IMPORT_HIHAT_GHOST_MAX_STORAGE_KEY = "drum-grid-midi-import-hihat-ghost-max-v1";
 const GRID_SELECTION_HOLD_SPEED_STORAGE_KEY = "drum-grid-selection-hold-speed-v1";
+const SETTINGS_SIDEBAR_COLLAPSED_STORAGE_KEY = "drum-grid-settings-sidebar-collapsed-v1";
 const STICKING_GUIDE_ENABLED_STORAGE_KEY = "drum-grid-sticking-guide-enabled-v1";
 const STICKING_HANDEDNESS_STORAGE_KEY = "drum-grid-sticking-handedness-v1";
 const STICKING_LEAD_HAND_STORAGE_KEY = "drum-grid-sticking-lead-hand-v1";
@@ -708,7 +709,7 @@ const PERSONAL_LIBRARY_STATE_SHARE_LINK_KIND = "arrangement";
 const BEAT_LIBRARY_SELECTED_CONTAINER_STORAGE_KEY = "drum-grid-beat-library-selected-container-v1";
 const BEAT_LIBRARY_ROOT_COLLAPSED_STORAGE_KEY = "drum-grid-beat-library-root-collapsed-v1";
 const GRID_SETTINGS_PRESET_LIBRARY_STORAGE_KEY = "drum-grid-grid-settings-presets-v1";
-const APP_VERSION = "0.1.53";
+const APP_VERSION = "0.1.82";
 const BEAT_CATEGORY_OPTIONS = [
   "Groove",
   "Fill",
@@ -2825,6 +2826,13 @@ export default function App() {
   }));
   const isMobileFloatingPanels = viewportSize.width > 0 && viewportSize.width < 768;
   const showDesktopSettingsSidebar = !isEmbedMode && viewportSize.width >= 1100;
+  const [settingsSidebarCollapsed, setSettingsSidebarCollapsed] = useState(() => {
+    try {
+      return window.localStorage.getItem(SETTINGS_SIDEBAR_COLLAPSED_STORAGE_KEY) === "true";
+    } catch {
+      return false;
+    }
+  });
   const useFixedDesktopFooter =
     !isEmbedMode && viewportSize.width >= 768 && viewportSize.height >= 820;
   const requestedExample = React.useMemo(() => {
@@ -2909,6 +2917,14 @@ export default function App() {
     window.addEventListener("resize", onViewportChange);
     return () => window.removeEventListener("resize", onViewportChange);
   }, []);
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        SETTINGS_SIDEBAR_COLLAPSED_STORAGE_KEY,
+        settingsSidebarCollapsed ? "true" : "false"
+      );
+    } catch (_) {}
+  }, [settingsSidebarCollapsed]);
   const [arrangementBoundaryCompScale, setArrangementBoundaryCompScale] = useState(() => {
     try {
       const raw = Number(window.localStorage.getItem(ARRANGEMENT_BOUNDARY_COMP_SCALE_STORAGE_KEY));
@@ -3408,6 +3424,7 @@ export default function App() {
   const [arrangementLibraryMenuStyle, setArrangementLibraryMenuStyle] = useState(null);
   const [beatLibraryActionsMenuStyle, setBeatLibraryActionsMenuStyle] = useState(null);
   const [arrangementActionsMenuStyle, setArrangementActionsMenuStyle] = useState(null);
+  const [transportMenuPosition, setTransportMenuPosition] = useState(null);
   const [savedPresets, setSavedPresets] = useState(() => {
     try {
       const raw = window.localStorage.getItem(USER_PRESETS_STORAGE_KEY);
@@ -5257,6 +5274,24 @@ export default function App() {
   }, [isShareActionsDialogOpen]);
   React.useEffect(() => {
     if (!isTransportMenuOpen) return undefined;
+    const updateMenuPosition = () => {
+      const button = transportMenuButtonRef.current;
+      if (!(button instanceof HTMLElement)) return;
+      const menu = transportMenuRef.current;
+      const rect = button.getBoundingClientRect();
+      const menuWidth = 224;
+      const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
+      const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+      const menuHeight = menu instanceof HTMLElement ? menu.offsetHeight : 360;
+      const left = Math.max(8, Math.min(rect.left, viewportWidth - menuWidth - 8));
+      const preferredTop = rect.bottom + 8;
+      const maxTop = Math.max(8, viewportHeight - menuHeight - 8);
+      const top =
+        preferredTop <= maxTop
+          ? preferredTop
+          : Math.max(8, Math.min(rect.top - menuHeight - 8, maxTop));
+      setTransportMenuPosition({ top, left, width: menuWidth });
+    };
     const handlePointerDown = (event) => {
       const target = event.target;
       if (!(target instanceof Node)) return;
@@ -5269,11 +5304,16 @@ export default function App() {
     const handleKeyDown = (event) => {
       if (event.key === "Escape") setIsTransportMenuOpen(false);
     };
+    updateMenuPosition();
     document.addEventListener("pointerdown", handlePointerDown, true);
     document.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("resize", updateMenuPosition);
+    window.addEventListener("scroll", updateMenuPosition, true);
     return () => {
       document.removeEventListener("pointerdown", handlePointerDown, true);
       document.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("resize", updateMenuPosition);
+      window.removeEventListener("scroll", updateMenuPosition, true);
     };
   }, [isTransportMenuOpen]);
   React.useEffect(() => {
@@ -15086,11 +15126,23 @@ useEffect(() => {
     [activeBeatLibraryDragBeat, getBeatBpm]
   );
 
-  const desktopSettingsSidebar = showDesktopSettingsSidebar ? (
+  const desktopSettingsSidebar = showDesktopSettingsSidebar && !settingsSidebarCollapsed ? (
     <aside
-      className="sticky top-6 z-20 self-start w-[18rem] shrink-0 overflow-visible rounded-xl border border-neutral-800 bg-neutral-900 p-3"
+      className="sticky top-6 z-20 self-start w-[15.5rem] shrink-0 overflow-visible rounded-xl border border-neutral-700 bg-neutral-900 p-4"
       data-loopui="1"
     >
+      <div className="mb-4 flex items-center justify-between gap-2">
+        <div className="text-sm text-neutral-200">Settings</div>
+        <button
+          type="button"
+          onClick={() => setSettingsSidebarCollapsed(true)}
+          className="inline-flex h-[1.625rem] w-[1.625rem] items-center justify-center rounded border border-neutral-800 bg-neutral-900/60 text-xs leading-none text-neutral-400 hover:bg-neutral-800/60"
+          title="Collapse sidebar"
+          aria-label="Collapse sidebar"
+        >
+          ×
+        </button>
+      </div>
       <div className="space-y-5">
         <div>
           <div className="flex flex-col gap-3">
@@ -15154,44 +15206,46 @@ useEffect(() => {
 
             <div className="flex items-center justify-between gap-2">
               <span className="text-sm text-neutral-300 whitespace-nowrap">Time</span>
-              <div className="flex items-center gap-1.5">
-                <div className="flex items-stretch overflow-hidden rounded-md border border-neutral-800 bg-neutral-900/60">
-                  <button
-                    type="button"
-                    onClick={() => stepTimeSigNumerator(-1)}
-                    className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
-                  >
-                    −
-                  </button>
-                  <div className="min-w-[36px] px-2.5 py-1 flex items-center justify-center text-sm text-white bg-neutral-900/60 border-l border-r border-neutral-800 tabular-nums">
-                    {Math.max(2, Math.min(15, Number(timeSig.n) || 4))}
-                  </div>
+              <div className="grid h-10 grid-cols-[1.5rem_3.5rem_1.5rem] grid-rows-2 overflow-hidden rounded-md border border-neutral-800 bg-neutral-900/60">
+                <div className="row-span-2 grid grid-rows-2 border-r border-neutral-800">
                   <button
                     type="button"
                     onClick={() => stepTimeSigNumerator(1)}
-                    className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                    className="flex items-center justify-center text-xs leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                    aria-label="Increase time signature numerator"
                   >
                     +
                   </button>
-                </div>
-                <div className="text-sm text-neutral-400 select-none">/</div>
-                <div className="flex items-stretch overflow-hidden rounded-md border border-neutral-800 bg-neutral-900/60">
                   <button
                     type="button"
-                    onClick={() => stepTimeSigDenominator(-1)}
-                    className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                    onClick={() => stepTimeSigNumerator(-1)}
+                    className="flex items-center justify-center border-t border-neutral-800 text-xs leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                    aria-label="Decrease time signature numerator"
                   >
                     −
                   </button>
-                  <div className="min-w-[36px] px-2.5 py-1 flex items-center justify-center text-sm text-white bg-neutral-900/60 border-l border-r border-neutral-800 tabular-nums">
-                    {timeSig.d === 8 ? 8 : 4}
-                  </div>
+                </div>
+                <div className="row-span-2 flex items-center justify-center px-2 text-sm text-white tabular-nums">
+                  {Math.max(2, Math.min(15, Number(timeSig.n) || 4))}
+                  <span className="mx-1 text-neutral-500">/</span>
+                  {timeSig.d === 8 ? 8 : 4}
+                </div>
+                <div className="row-span-2 grid grid-rows-2 border-l border-neutral-800">
                   <button
                     type="button"
                     onClick={() => stepTimeSigDenominator(1)}
-                    className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                    className="flex items-center justify-center text-xs leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                    aria-label="Next time signature denominator"
                   >
                     +
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => stepTimeSigDenominator(-1)}
+                    className="flex items-center justify-center border-t border-neutral-800 text-xs leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                    aria-label="Previous time signature denominator"
+                  >
+                    −
                   </button>
                 </div>
               </div>
@@ -15364,7 +15418,7 @@ useEffect(() => {
                 }`}
                 title="When enabled, clicking or selecting active hand-hit cells toggles whether their sticking prints in notation"
               >
-                Select sticking for notation
+                Print sticking
               </button>
               <div className="relative">
                 <button
@@ -16080,7 +16134,7 @@ useEffect(() => {
                       }`}
                       title="When enabled, clicking or selecting active hand-hit cells toggles whether their sticking prints in notation"
                     >
-                      Select sticking for notation
+                      Print sticking
                     </button>
                     <div className="relative">
                       <button
@@ -16434,6 +16488,25 @@ useEffect(() => {
               Library
             </button>
           </div>
+          <button
+            ref={transportMenuButtonRef}
+            type="button"
+            onClick={() => setIsTransportMenuOpen((v) => !v)}
+            className="touch-none select-none px-3 py-1.5 rounded border border-neutral-800 bg-neutral-900 text-sm text-neutral-300 outline-none hover:bg-neutral-800/60 focus:outline-none focus-visible:outline-none"
+            title="Transport controls"
+          >
+            Tempo
+          </button>
+          {showDesktopSettingsSidebar ? (
+            <button
+              type="button"
+              onClick={() => setSettingsSidebarCollapsed((v) => !v)}
+              className="touch-none select-none px-3 py-1.5 rounded border border-neutral-800 bg-neutral-900 text-sm text-neutral-300 outline-none hover:bg-neutral-800/60 focus:outline-none focus-visible:outline-none"
+              title={settingsSidebarCollapsed ? "Show settings" : "Hide settings"}
+            >
+              Settings
+            </button>
+          ) : null}
           {arrangementHeaderUsesArrangementPlayback ? (
             <div className="flex items-center gap-2">
               <button
@@ -16666,8 +16739,8 @@ useEffect(() => {
         className={`select-none ${
           isEmbedMode
             ? "mt-0"
-            : showDesktopSettingsSidebar
-              ? `mt-6 flex-1 grid grid-cols-[18rem_minmax(0,1fr)] items-start gap-6 ${
+            : showDesktopSettingsSidebar && !settingsSidebarCollapsed
+              ? `mt-6 flex-1 grid grid-cols-[15.5rem_minmax(0,1fr)] items-start gap-6 ${
                   useFixedDesktopFooter ? "pb-20 sm:pb-12 md:pb-16" : "pb-8"
                 }`
               : `mt-6 flex-1 ${
@@ -16679,8 +16752,8 @@ useEffect(() => {
               }`
         }`}
       >
-        {showDesktopSettingsSidebar ? desktopSettingsSidebar : null}
-        <div className={showDesktopSettingsSidebar ? "min-w-0" : undefined}>
+        {showDesktopSettingsSidebar && !settingsSidebarCollapsed ? desktopSettingsSidebar : null}
+        <div className={showDesktopSettingsSidebar && !settingsSidebarCollapsed ? "min-w-0" : undefined}>
         {isEmbedMode ? (
           <div className="w-full" ref={setNotationExportEl}>
             <Notation
@@ -16892,17 +16965,7 @@ useEffect(() => {
                   Buy me a coffee
                 </a>
               </div>
-              <div className="flex justify-end">
-                <button
-                  ref={transportMenuButtonRef}
-                  type="button"
-                  onClick={() => setIsTransportMenuOpen((v) => !v)}
-                  className="rounded border border-neutral-800 bg-neutral-900 px-3 py-1.5 text-sm text-neutral-300 shadow-2xl hover:bg-neutral-800/60"
-                  title="Transport controls"
-                >
-                  Tempo
-                </button>
-              </div>
+              <div />
             </div>
           </div>
           <div className="relative left-1/2 mt-4 w-screen -translate-x-1/2 bg-black/90 py-4">
@@ -16956,17 +17019,7 @@ useEffect(() => {
                     Buy me a coffee
                   </a>
                 </div>
-                <div className="flex justify-end">
-                  <button
-                    ref={transportMenuButtonRef}
-                    type="button"
-                    onClick={() => setIsTransportMenuOpen((v) => !v)}
-                    className="rounded border border-neutral-800 bg-neutral-900 px-3 py-1.5 text-sm text-neutral-300 shadow-2xl hover:bg-neutral-800/60"
-                    title="Transport controls"
-                  >
-                    Tempo
-                  </button>
-                </div>
+                <div />
               </div>
             </div>
             <div className="flex w-full items-center justify-center bg-black/90 px-6 py-3">
@@ -16983,10 +17036,11 @@ useEffect(() => {
       {!isEmbedMode &&
         createPortal(
           <>
-            {isTransportMenuOpen && (
+            {isTransportMenuOpen && transportMenuPosition && (
               <div
                 ref={transportMenuRef}
-                className="fixed bottom-16 right-4 z-[140] w-[18rem] rounded-xl border border-neutral-700 bg-neutral-900 p-3 shadow-2xl"
+                style={transportMenuPosition}
+                className="fixed z-[140] rounded-xl border border-neutral-700 bg-neutral-900 p-3 shadow-2xl"
                 onMouseDown={(e) => e.stopPropagation()}
               >
                 <div className="space-y-3">

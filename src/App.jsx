@@ -228,6 +228,25 @@ function UserIcon() {
   );
 }
 
+function SaveStateIcon() {
+  return (
+    <span
+      className="block h-[0.95rem] w-[0.95rem] bg-current"
+      style={{
+        WebkitMaskImage: "url('/save-check-streamline.png')",
+        maskImage: "url('/save-check-streamline.png')",
+        WebkitMaskRepeat: "no-repeat",
+        maskRepeat: "no-repeat",
+        WebkitMaskPosition: "center",
+        maskPosition: "center",
+        WebkitMaskSize: "contain",
+        maskSize: "contain",
+      }}
+      aria-hidden="true"
+    />
+  );
+}
+
 function PlayIcon() {
   return (
     <svg
@@ -761,7 +780,7 @@ const PERSONAL_LIBRARY_STATE_SHARE_LINK_KIND = "arrangement";
 const BEAT_LIBRARY_SELECTED_CONTAINER_STORAGE_KEY = "drum-grid-beat-library-selected-container-v1";
 const BEAT_LIBRARY_ROOT_COLLAPSED_STORAGE_KEY = "drum-grid-beat-library-root-collapsed-v1";
 const GRID_SETTINGS_PRESET_LIBRARY_STORAGE_KEY = "drum-grid-grid-settings-presets-v1";
-const APP_VERSION = "0.1.179";
+const APP_VERSION = "0.1.219";
 const BEAT_CATEGORY_OPTIONS = [
   "Groove",
   "Fill",
@@ -2923,6 +2942,13 @@ export default function App() {
     () => kitInstrumentIds.map((id) => INSTRUMENT_BY_ID[id]).filter(Boolean),
     [kitInstrumentIds]
   );
+  const currentGridLabelGutterWidth = React.useMemo(() => {
+    const longestInstrumentLabelLength = Math.max(
+      0,
+      ...instruments.map((inst) => String(inst?.label || "").length)
+    );
+    return `calc(${longestInstrumentLabelLength}ch + 0.75rem)`;
+  }, [instruments]);
   const [isKitEditorOpen, setIsKitEditorOpen] = useState(false);
   const [pendingRemoval, setPendingRemoval] = useState(null); // { instId, moveTargetId }
   const [pendingPresetChange, setPendingPresetChange] = useState(null); // { presetName, targetIds, removedWithNotes }
@@ -13837,6 +13863,20 @@ useEffect(() => {
   const hasDesktopSidebarColumn =
     showDesktopSettingsSidebar &&
     (beatLibraryDockedInSidebar || !settingsSidebarCollapsed);
+  const currentBeatEditorStripOffset = React.useMemo(
+    () => `calc((${currentGridLabelGutterWidth}) * 0.6667)`,
+    [currentGridLabelGutterWidth]
+  );
+  const currentBeatEditorStripPaddingLeft = React.useMemo(() => {
+    if (hasDesktopSidebarColumn) {
+      return `calc(15.5rem + 1.5rem + (${currentBeatEditorStripOffset}))`;
+    }
+    return currentBeatEditorStripOffset;
+  }, [currentBeatEditorStripOffset, hasDesktopSidebarColumn]);
+  const currentBeatEditorStripMainPaddingLeft = React.useMemo(
+    () => `calc((${currentBeatEditorStripPaddingLeft}) - 4.5rem)`,
+    [currentBeatEditorStripPaddingLeft]
+  );
   const isBeatLibraryPanelActive =
     isArrangementOpen && !arrangementSourcesCollapsed && arrangementDetailsCollapsed;
   const canRenameCurrentBeat = Boolean(loadedLocalBeatId);
@@ -14582,8 +14622,8 @@ useEffect(() => {
             )}
           </div>
   );
-  const currentBeatEditorStrip = (
-    <div className="inline-flex max-w-full items-center gap-1.5 bg-transparent px-0 py-0.5 align-top">
+  const currentBeatEditorStripLeadingControls = (
+    <div className="inline-flex shrink-0 items-center gap-1.5 bg-transparent px-0 py-0.5 align-top">
       {settingsToolbarButton}
       <button
         type="button"
@@ -14598,6 +14638,10 @@ useEffect(() => {
       >
         <LibraryIcon />
       </button>
+    </div>
+  );
+  const currentBeatEditorStripMainControls = (
+    <div className="inline-flex max-w-full items-center gap-1.5 bg-transparent px-0 py-0.5 align-top">
       <div className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap">
         <button
           type="button"
@@ -14629,64 +14673,109 @@ useEffect(() => {
         </button>
       </div>
       <div className="min-w-0 flex items-center text-sm">
-        <div
-          className="min-w-0 max-w-[16rem]"
-          style={isCurrentBeatStripRenaming && currentBeatStripRenameWidth
-            ? { width: `${currentBeatStripRenameWidth}px` }
-            : undefined}
-        >
-          {isCurrentBeatStripRenaming && canRenameCurrentBeat ? (
-            <input
-              ref={currentBeatStripNameInputRef}
-              type="text"
-              value={beatNameDraft}
-              onChange={(e) => setBeatNameDraft(e.target.value)}
-              onBlur={() => commitCurrentBeatStripRename()}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  commitCurrentBeatStripRename();
-                } else if (e.key === "Escape") {
-                  e.preventDefault();
-                  cancelCurrentBeatStripRename();
-                }
-              }}
-              className="block w-full min-w-0 border-0 bg-transparent p-0 text-base font-medium text-white outline-none ring-0 focus:outline-none focus:ring-0"
-              aria-label="Current beat name"
-            />
-          ) : (
-            <button
-              ref={currentBeatStripNameButtonRef}
-              type="button"
-              onClick={() => {
-                if (canRenameCurrentBeat) {
-                  beginCurrentBeatStripRename();
-                  return;
-                }
-                if (canSaveCurrentBeatFromStrip) {
-                  saveCurrentBeatLocal();
-                }
-              }}
-              disabled={!canRenameCurrentBeat && !canSaveCurrentBeatFromStrip}
-              className={`block w-full min-w-0 truncate bg-transparent p-0 text-left text-base font-medium transition-colors ${
-                canRenameCurrentBeat
-                  ? "text-neutral-100 hover:text-white"
-                  : canSaveCurrentBeatFromStrip
-                    ? "text-neutral-500 hover:text-neutral-300"
-                  : "text-neutral-400 cursor-default"
-              }`}
-              title={
-                canRenameCurrentBeat
-                  ? "Rename current beat"
-                  : canSaveCurrentBeatFromStrip
-                    ? "Save as new beat"
-                    : currentBeatStripName
-              }
+        {isCurrentBeatStripRenaming ? (
+          <div className="flex min-w-0 items-center gap-2">
+            <div
+              className="min-w-0 max-w-[16rem]"
+              style={currentBeatStripRenameWidth ? { width: `${currentBeatStripRenameWidth}px` } : undefined}
             >
-              {currentBeatStripName}
+              <input
+                ref={currentBeatStripNameInputRef}
+                type="text"
+                value={beatNameDraft}
+                onChange={(e) => setBeatNameDraft(e.target.value)}
+                onBlur={() => commitCurrentBeatStripRename()}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    commitCurrentBeatStripRename();
+                  } else if (e.key === "Escape") {
+                    e.preventDefault();
+                    cancelCurrentBeatStripRename();
+                  }
+                }}
+                className="block w-full min-w-0 border-0 bg-transparent p-0 text-base font-medium text-white outline-none ring-0 focus:outline-none focus:ring-0"
+                aria-label="Current beat name"
+              />
+            </div>
+            <button
+              type="button"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => setBeatAutoUpdateEnabled((prev) => !prev)}
+              className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded transition-colors ${
+                beatAutoUpdateEnabled
+                  ? "text-[#00b3ba] hover:text-[#14c8d0]"
+                  : "text-neutral-500 hover:text-neutral-300"
+              }`}
+              title={beatAutoUpdateEnabled ? "Auto update is on" : "Auto update is off"}
+              aria-label={beatAutoUpdateEnabled ? "Auto update is on" : "Auto update is off"}
+            >
+              <SaveStateIcon />
             </button>
-          )}
-        </div>
+            <button
+              type="button"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => {
+                saveCurrentBeatLocal();
+              }}
+              className="shrink-0 rounded bg-neutral-900/60 px-2 py-1 text-xs text-neutral-300 hover:bg-neutral-800/60"
+              title="Save as new beat"
+            >
+              Save as
+            </button>
+          </div>
+        ) : (
+          <div className="flex min-w-0 items-center gap-2">
+            <div
+              className="min-w-0 max-w-[16rem]"
+              style={currentBeatStripRenameWidth ? { width: `${currentBeatStripRenameWidth}px` } : undefined}
+            >
+              <button
+                ref={currentBeatStripNameButtonRef}
+                type="button"
+                onClick={() => {
+                  if (canRenameCurrentBeat) {
+                    beginCurrentBeatStripRename();
+                    return;
+                  }
+                  if (canSaveCurrentBeatFromStrip) {
+                    saveCurrentBeatLocal();
+                  }
+                }}
+                disabled={!canRenameCurrentBeat && !canSaveCurrentBeatFromStrip}
+                className={`block w-full min-w-0 truncate bg-transparent p-0 text-left text-base font-medium transition-colors ${
+                  canRenameCurrentBeat
+                    ? "text-neutral-100 hover:text-white"
+                    : canSaveCurrentBeatFromStrip
+                      ? "text-neutral-500 hover:text-neutral-300"
+                    : "text-neutral-400 cursor-default"
+                }`}
+                title={
+                  canRenameCurrentBeat
+                    ? "Rename current beat"
+                    : canSaveCurrentBeatFromStrip
+                      ? "Save as new beat"
+                      : currentBeatStripName
+                }
+              >
+                {currentBeatStripName}
+              </button>
+            </div>
+            <button
+              type="button"
+              onClick={() => setBeatAutoUpdateEnabled((prev) => !prev)}
+              className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded transition-colors ${
+                beatAutoUpdateEnabled
+                  ? "text-[#00b3ba] hover:text-[#14c8d0]"
+                  : "text-neutral-500 hover:text-neutral-300"
+              }`}
+              title={beatAutoUpdateEnabled ? "Auto update is on" : "Auto update is off"}
+              aria-label={beatAutoUpdateEnabled ? "Auto update is on" : "Auto update is off"}
+            >
+              <SaveStateIcon />
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -16364,7 +16453,7 @@ useEffect(() => {
   );
   const dockedBeatLibrarySidebar = beatLibraryDockedInSidebar ? (
     <aside
-      className="sticky top-6 z-20 self-start w-[15.5rem] shrink-0 overflow-visible rounded-xl border border-neutral-800 bg-neutral-900 p-4"
+      className="sticky top-0 mt-6 z-20 self-start w-[15.5rem] shrink-0 overflow-visible rounded-xl border border-neutral-800 bg-neutral-900 p-4 shadow-xl shadow-black/20"
       data-loopui="1"
     >
       <div className="flex h-full flex-col">
@@ -17126,13 +17215,11 @@ useEffect(() => {
 
   const desktopSettingsSidebar = showDesktopSettingsSidebar && !settingsSidebarCollapsed ? (
     <aside
-      className="sticky top-6 z-20 self-start w-[15.5rem] shrink-0 overflow-visible rounded-xl border border-neutral-800 bg-neutral-900 p-4"
+      className="sticky top-0 mt-6 z-20 self-start w-[15.5rem] shrink-0 overflow-visible rounded-xl border border-neutral-800 bg-neutral-900 p-4 shadow-xl shadow-black/20"
       data-loopui="1"
     >
       <div className="mb-4 flex items-center justify-between gap-2">
-        <div className="text-neutral-300">
-          <SettingsIcon />
-        </div>
+        <div className="text-sm font-medium text-neutral-300">Settings</div>
         <button
           type="button"
           onClick={() => setSettingsSidebarCollapsed(true)}
@@ -17317,200 +17404,6 @@ useEffect(() => {
         <div className="border-t border-neutral-800 pt-4">
           <div className="flex flex-col gap-3">
             <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() =>
-                  setStickingEditModeEnabled((v) => {
-                    const next = !v;
-                    if (next) {
-                      setStickingGuideEnabled(true);
-                    } else {
-                      setNotationStickingSelectionModeEnabled(false);
-                    }
-                    return next;
-                  })
-                }
-                className={`w-fit touch-none select-none px-3 py-[5px] rounded border text-sm ${
-                  stickingEditModeEnabled
-                    ? "bg-neutral-800 border-neutral-700 text-white"
-                    : "bg-neutral-900 border-neutral-800 text-neutral-600"
-                }`}
-                title="When enabled, clicking active hand-hit cells edits R/L sticking instead of toggling notes"
-              >
-                Sticking edit mode
-              </button>
-              <div className="relative">
-                <button
-                  ref={editingAdvancedMenuButtonRef}
-                  type="button"
-                  onClick={() => setIsEditingAdvancedMenuOpen((v) => !v)}
-                  className={`touch-none select-none px-3 py-[5px] rounded border text-sm ${
-                    isEditingAdvancedMenuOpen
-                      ? "bg-neutral-800 border-neutral-700 text-white"
-                      : "bg-neutral-900 border-neutral-800 text-neutral-300 hover:bg-neutral-800/60"
-                  }`}
-                  title="Sticking display options"
-                  aria-label="Sticking display options"
-                >
-                  ...
-                </button>
-                {isEditingAdvancedMenuOpen && (
-                  <div
-                    ref={editingAdvancedMenuRef}
-                    className="absolute left-full top-0 z-[140] ml-2 min-w-[10.5rem] rounded-lg border border-neutral-700 bg-neutral-900 p-3 shadow-xl"
-                  >
-                    <div className="flex flex-col gap-3">
-                      <div className="space-y-1">
-                        <span className="text-sm text-neutral-300">Sticking display</span>
-                        <div className="flex w-fit items-stretch overflow-hidden rounded-md border border-neutral-800 bg-neutral-900/60">
-                          <button
-                            type="button"
-                            onClick={() => setNotationStickingView("above")}
-                            className={`whitespace-nowrap px-3 py-1 text-sm ${
-                              notationStickingView === "above"
-                                ? "bg-neutral-800 text-white"
-                                : "bg-neutral-900 text-neutral-600"
-                            }`}
-                            title="Show sticking above notation"
-                          >
-                            Above
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setNotationStickingView("split-rows")}
-                            className={`whitespace-nowrap border-l border-neutral-800 px-3 py-1 text-sm ${
-                              notationStickingView === "split-rows"
-                                ? "bg-neutral-800 text-white"
-                                : "bg-neutral-900 text-neutral-600"
-                            }`}
-                            title="Change sticking display"
-                          >
-                            Split rows
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() =>
-                  setNotationStickingSelectionModeEnabled((v) => {
-                    const next = !v;
-                    if (next) {
-                      setStickingGuideEnabled(true);
-                      setShowNotationSticking(true);
-                    }
-                    return next;
-                  })
-                }
-                disabled={!stickingEditModeEnabled}
-                className={`w-fit touch-none select-none px-3 py-[5px] rounded border text-sm ${
-                  !stickingEditModeEnabled
-                    ? "bg-neutral-900 border-neutral-800 text-neutral-600 opacity-50 cursor-not-allowed"
-                    : notationStickingSelectionModeEnabled
-                      ? "bg-neutral-800 border-neutral-700 text-white"
-                      : "bg-neutral-900 border-neutral-800 text-neutral-600"
-                }`}
-                title="When enabled, clicking or selecting active hand-hit cells toggles whether their sticking prints in notation"
-              >
-                Print sticking
-              </button>
-              <div className="relative">
-                <button
-                  ref={notationStickingMenuButtonRef}
-                  type="button"
-                  onClick={() => setIsNotationStickingMenuOpen((v) => !v)}
-                  disabled={!stickingEditModeEnabled}
-                  className={`touch-none select-none px-3 py-[5px] rounded border text-sm ${
-                    !stickingEditModeEnabled
-                      ? "bg-neutral-900 border-neutral-800 text-neutral-600 opacity-50 cursor-not-allowed"
-                      : isNotationStickingMenuOpen
-                        ? "bg-neutral-800 border-neutral-700 text-white"
-                        : "bg-neutral-900 border-neutral-800 text-neutral-300 hover:bg-neutral-800/60"
-                  }`}
-                  title="Notation sticking selection actions"
-                  aria-label="Notation sticking selection actions"
-                >
-                  ...
-                </button>
-                {isNotationStickingMenuOpen && stickingEditModeEnabled && (
-                  <div
-                    ref={notationStickingMenuRef}
-                    className="absolute left-full top-0 z-30 ml-2 min-w-[9rem] rounded-lg border border-neutral-700 bg-neutral-900 p-3 shadow-xl"
-                  >
-                    <div className="flex flex-col gap-3">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          selectAllNotationSticking();
-                          setNotationStickingSelectionModeEnabled(true);
-                          setIsNotationStickingMenuOpen(false);
-                        }}
-                        className="w-fit whitespace-nowrap touch-none select-none px-3 py-[5px] rounded border border-neutral-800 bg-neutral-900 text-neutral-300 hover:bg-neutral-800/60"
-                        title="Select all active hand hits for notation"
-                      >
-                        All
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          clearNotationStickingSelection();
-                          setIsNotationStickingMenuOpen(false);
-                        }}
-                        className="w-fit whitespace-nowrap touch-none select-none px-3 py-[5px] rounded border border-neutral-800 bg-neutral-900 text-neutral-300 hover:bg-neutral-800/60"
-                        title="Clear the current notation sticking selection"
-                      >
-                        None
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => setBeatAutoUpdateEnabled((v) => !v)}
-                className={`w-fit touch-none select-none px-3 py-[5px] rounded border text-sm ${
-                  beatAutoUpdateEnabled
-                    ? "bg-neutral-800 border-neutral-700 text-white"
-                    : "bg-neutral-900 border-neutral-800 text-neutral-600"
-                }`}
-                title="Automatically update the loaded local beat after beat changes. Notation sticking selection always auto-updates."
-              >
-                Auto update
-              </button>
-              <button
-                type="button"
-                onClick={handleMainTrashClick}
-                className={`touch-none select-none inline-flex h-8 w-8 items-center justify-center rounded border ${
-                  canClearSelection
-                    ? "bg-neutral-800 border-neutral-700 text-white"
-                    : "bg-neutral-900 border-neutral-800 text-neutral-500 hover:bg-neutral-800/40"
-                }`}
-                title={canClearSelection ? "Clear selection (Cmd/Ctrl+click: reset defaults + delete library)" : "Clear all notes (Cmd/Ctrl+click: reset defaults + delete library)"}
-                aria-label={canClearSelection ? "Clear selection" : "Clear all notes"}
-              >
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  viewBox="0 0 16 16"
-                  className="-translate-y-px h-[0.95rem] w-[0.95rem]"
-                  fill="currentColor"
-                  aria-hidden="true"
-                >
-                  <path d="M5.5 5.5A.5.5 0 0 1 6 6v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5m2.5 0a.5.5 0 0 1 .5.5v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5m3 .5a.5.5 0 0 0-1 0v6a.5.5 0 0 0 1 0z" />
-                  <path d="M14.5 3a1 1 0 0 1-1 1H13v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V4h-.5a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1H6a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1h3.5a1 1 0 0 1 1 1zM4.118 4 4 4.059V13a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V4.059L11.882 4zM2.5 3h11V2h-11z" />
-                </svg>
-              </button>
-            </div>
-
-            <div className="flex items-center gap-2">
               <span className="text-sm text-neutral-300">Looping</span>
               <div
                 className={`flex items-stretch overflow-hidden rounded-md border ${
@@ -17615,15 +17508,15 @@ useEffect(() => {
                   +
                 </button>
               </div>
-              <div className="relative">
+              <div className="relative shrink-0">
                 <button
                   ref={loopAdvancedMenuButtonRef}
                   type="button"
                   onClick={() => setIsLoopAdvancedMenuOpen((v) => !v)}
-                  className={`touch-none select-none px-3 py-[5px] rounded border text-sm ${
+                  className={`inline-flex h-[1.625rem] w-[1.625rem] items-center justify-center rounded border text-xs leading-none ${
                     isLoopAdvancedMenuOpen
                       ? "bg-neutral-800 border-neutral-700 text-white"
-                      : "bg-neutral-900 border-neutral-800 text-neutral-300 hover:bg-neutral-800/60"
+                      : "bg-neutral-900/60 border-neutral-800 text-neutral-400 hover:bg-neutral-800/60"
                   }`}
                   title="Loop overlap options"
                   aria-label="Loop overlap options"
@@ -17714,6 +17607,200 @@ useEffect(() => {
                           </button>
                         </div>
                       </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setBeatAutoUpdateEnabled((v) => !v)}
+                className={`w-fit touch-none select-none px-3 py-[5px] rounded border text-sm ${
+                  beatAutoUpdateEnabled
+                    ? "bg-neutral-800 border-neutral-700 text-white"
+                    : "bg-neutral-900 border-neutral-800 text-neutral-600"
+                }`}
+                title="Automatically update the loaded local beat after beat changes. Notation sticking selection always auto-updates."
+              >
+                Auto update
+              </button>
+              <button
+                type="button"
+                onClick={handleMainTrashClick}
+                className={`touch-none select-none inline-flex h-8 w-8 items-center justify-center rounded border ${
+                  canClearSelection
+                    ? "bg-neutral-800 border-neutral-700 text-white"
+                    : "bg-neutral-900 border-neutral-800 text-neutral-500 hover:bg-neutral-800/40"
+                }`}
+                title={canClearSelection ? "Clear selection (Cmd/Ctrl+click: reset defaults + delete library)" : "Clear all notes (Cmd/Ctrl+click: reset defaults + delete library)"}
+                aria-label={canClearSelection ? "Clear selection" : "Clear all notes"}
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  viewBox="0 0 16 16"
+                  className="-translate-y-px h-[0.95rem] w-[0.95rem]"
+                  fill="currentColor"
+                  aria-hidden="true"
+                >
+                  <path d="M5.5 5.5A.5.5 0 0 1 6 6v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5m2.5 0a.5.5 0 0 1 .5.5v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5m3 .5a.5.5 0 0 0-1 0v6a.5.5 0 0 0 1 0z" />
+                  <path d="M14.5 3a1 1 0 0 1-1 1H13v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V4h-.5a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1H6a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1h3.5a1 1 0 0 1 1 1zM4.118 4 4 4.059V13a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V4.059L11.882 4zM2.5 3h11V2h-11z" />
+                </svg>
+              </button>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() =>
+                  setStickingEditModeEnabled((v) => {
+                    const next = !v;
+                    if (next) {
+                      setStickingGuideEnabled(true);
+                    } else {
+                      setNotationStickingSelectionModeEnabled(false);
+                    }
+                    return next;
+                  })
+                }
+                className={`w-fit touch-none select-none px-3 py-[5px] rounded border text-sm ${
+                  stickingEditModeEnabled
+                    ? "bg-neutral-800 border-neutral-700 text-white"
+                    : "bg-neutral-900 border-neutral-800 text-neutral-600"
+                }`}
+                title="When enabled, clicking active hand-hit cells edits R/L sticking instead of toggling notes"
+              >
+                Sticking edit mode
+              </button>
+              <div className="relative shrink-0">
+                <button
+                  ref={editingAdvancedMenuButtonRef}
+                  type="button"
+                  onClick={() => setIsEditingAdvancedMenuOpen((v) => !v)}
+                  className={`inline-flex h-[1.625rem] w-[1.625rem] items-center justify-center rounded border text-xs leading-none ${
+                    isEditingAdvancedMenuOpen
+                      ? "bg-neutral-800 border-neutral-700 text-white"
+                      : "bg-neutral-900/60 border-neutral-800 text-neutral-400 hover:bg-neutral-800/60"
+                  }`}
+                  title="Sticking display options"
+                  aria-label="Sticking display options"
+                >
+                  ...
+                </button>
+                {isEditingAdvancedMenuOpen && (
+                  <div
+                    ref={editingAdvancedMenuRef}
+                    className="absolute left-full top-0 z-[140] ml-2 min-w-[10.5rem] rounded-lg border border-neutral-700 bg-neutral-900 p-3 shadow-xl"
+                  >
+                    <div className="flex flex-col gap-3">
+                      <div className="space-y-1">
+                        <span className="text-sm text-neutral-300">Sticking display</span>
+                        <div className="flex w-fit items-stretch overflow-hidden rounded-md border border-neutral-800 bg-neutral-900/60">
+                          <button
+                            type="button"
+                            onClick={() => setNotationStickingView("above")}
+                            className={`whitespace-nowrap px-3 py-1 text-sm ${
+                              notationStickingView === "above"
+                                ? "bg-neutral-800 text-white"
+                                : "bg-neutral-900 text-neutral-600"
+                            }`}
+                            title="Show sticking above notation"
+                          >
+                            Above
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setNotationStickingView("split-rows")}
+                            className={`whitespace-nowrap border-l border-neutral-800 px-3 py-1 text-sm ${
+                              notationStickingView === "split-rows"
+                                ? "bg-neutral-800 text-white"
+                                : "bg-neutral-900 text-neutral-600"
+                            }`}
+                            title="Change sticking display"
+                          >
+                            Split rows
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() =>
+                  setNotationStickingSelectionModeEnabled((v) => {
+                    const next = !v;
+                    if (next) {
+                      setStickingGuideEnabled(true);
+                      setShowNotationSticking(true);
+                    }
+                    return next;
+                  })
+                }
+                disabled={!stickingEditModeEnabled}
+                className={`w-fit touch-none select-none px-3 py-[5px] rounded border text-sm ${
+                  !stickingEditModeEnabled
+                    ? "bg-neutral-900 border-neutral-800 text-neutral-600 opacity-50 cursor-not-allowed"
+                    : notationStickingSelectionModeEnabled
+                      ? "bg-neutral-800 border-neutral-700 text-white"
+                      : "bg-neutral-900 border-neutral-800 text-neutral-600"
+                }`}
+                title="When enabled, clicking or selecting active hand-hit cells toggles whether their sticking prints in notation"
+              >
+                Print sticking
+              </button>
+              <div className="relative shrink-0">
+                <button
+                  ref={notationStickingMenuButtonRef}
+                  type="button"
+                  onClick={() => setIsNotationStickingMenuOpen((v) => !v)}
+                  disabled={!stickingEditModeEnabled}
+                  className={`inline-flex h-[1.625rem] w-[1.625rem] items-center justify-center rounded border text-xs leading-none ${
+                    !stickingEditModeEnabled
+                      ? "bg-neutral-900/60 border-neutral-800 text-neutral-600 opacity-50 cursor-not-allowed"
+                      : isNotationStickingMenuOpen
+                        ? "bg-neutral-800 border-neutral-700 text-white"
+                        : "bg-neutral-900/60 border-neutral-800 text-neutral-400 hover:bg-neutral-800/60"
+                  }`}
+                  title="Notation sticking selection actions"
+                  aria-label="Notation sticking selection actions"
+                >
+                  ...
+                </button>
+                {isNotationStickingMenuOpen && stickingEditModeEnabled && (
+                  <div
+                    ref={notationStickingMenuRef}
+                    className="absolute left-full top-0 z-30 ml-2 min-w-[9rem] rounded-lg border border-neutral-700 bg-neutral-900 p-3 shadow-xl"
+                  >
+                    <div className="flex flex-col gap-3">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          selectAllNotationSticking();
+                          setNotationStickingSelectionModeEnabled(true);
+                          setIsNotationStickingMenuOpen(false);
+                        }}
+                        className="w-fit whitespace-nowrap touch-none select-none px-3 py-[5px] rounded border border-neutral-800 bg-neutral-900 text-neutral-300 hover:bg-neutral-800/60"
+                        title="Select all active hand hits for notation"
+                      >
+                        All
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          clearNotationStickingSelection();
+                          setIsNotationStickingMenuOpen(false);
+                        }}
+                        className="w-fit whitespace-nowrap touch-none select-none px-3 py-[5px] rounded border border-neutral-800 bg-neutral-900 text-neutral-300 hover:bg-neutral-800/60"
+                        title="Clear the current notation sticking selection"
+                      >
+                        None
+                      </button>
                     </div>
                   </div>
                 )}
@@ -18074,8 +18161,13 @@ useEffect(() => {
           )}
         </div>
 
-        <div className="min-w-0 max-w-full">
-          {currentBeatEditorStrip}
+        <div className="flex max-w-full items-center gap-4">
+          <div className="-ml-2 shrink-0">
+            {currentBeatEditorStripLeadingControls}
+          </div>
+          <div className="min-w-0 max-w-full" style={{ paddingLeft: currentBeatEditorStripMainPaddingLeft }}>
+            {currentBeatEditorStripMainControls}
+          </div>
         </div>
 
       </header>

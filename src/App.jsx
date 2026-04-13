@@ -792,7 +792,7 @@ const PERSONAL_LIBRARY_STATE_SHARE_LINK_KIND = "arrangement";
 const BEAT_LIBRARY_SELECTED_CONTAINER_STORAGE_KEY = "drum-grid-beat-library-selected-container-v1";
 const BEAT_LIBRARY_ROOT_COLLAPSED_STORAGE_KEY = "drum-grid-beat-library-root-collapsed-v1";
 const GRID_SETTINGS_PRESET_LIBRARY_STORAGE_KEY = "drum-grid-grid-settings-presets-v1";
-const APP_VERSION = "0.1.244";
+const APP_VERSION = "0.1.253";
 const BEAT_CATEGORY_OPTIONS = [
   "Groove",
   "Fill",
@@ -3536,6 +3536,7 @@ export default function App() {
   const libraryFiltersRef = useRef(null);
   const floatingLibraryFiltersButtonRef = useRef(null);
   const dockedLibraryFiltersButtonRef = useRef(null);
+  const dockedBeatLibrarySidebarRef = useRef(null);
   const arrangementLibraryMenuRef = useRef(null);
   const arrangementLibraryMenuButtonRef = useRef(null);
   const beatLibraryActionsMenuRef = useRef(null);
@@ -3714,7 +3715,16 @@ export default function App() {
         bottom: shouldOpenUp ? Math.max(8, window.innerHeight - rect.top + gap) : "auto",
       };
       if (libraryFiltersAnchor === "docked") {
-        nextStyle.left = Math.max(8, Math.min(rect.right - 228, window.innerWidth - 256 - 8));
+        const sidebarRect =
+          dockedBeatLibrarySidebarRef.current instanceof HTMLElement
+            ? dockedBeatLibrarySidebarRef.current.getBoundingClientRect()
+            : null;
+        const width = Math.min(sidebarRect?.width || 248, window.innerWidth - 16);
+        nextStyle.left = Math.max(
+          8,
+          Math.min(sidebarRect?.left || rect.left, window.innerWidth - width - 8)
+        );
+        nextStyle.width = width;
       } else {
         nextStyle.right = Math.max(8, window.innerWidth - rect.right);
       }
@@ -5412,7 +5422,7 @@ export default function App() {
       const rect = button.getBoundingClientRect();
       const menuWidth = 248;
       const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
-      const left = Math.max(8, Math.min(rect.left, viewportWidth - menuWidth - 8));
+      const left = Math.max(8, Math.min(rect.right - menuWidth, viewportWidth - menuWidth - 8));
       const top = Math.max(8, rect.bottom + 8);
       setFileMenuPosition({ top, left });
     };
@@ -13067,6 +13077,9 @@ useEffect(() => {
   const [shouldInlineFooterForViewport, setShouldInlineFooterForViewport] = useState(false);
   const [measuredFixedFooterHeight, setMeasuredFixedFooterHeight] = useState(112);
   const effectiveUseFixedDesktopFooter = useFixedDesktopFooter && !shouldInlineFooterForViewport;
+  const fixedFooterContentPadding = effectiveUseFixedDesktopFooter
+    ? Math.max(96, Math.ceil(measuredFixedFooterHeight + 24))
+    : 0;
 
   const setNotationExportEl = React.useCallback((el) => {
     if (el) notationExportRef.current = el;
@@ -16534,6 +16547,7 @@ useEffect(() => {
   );
   const dockedBeatLibrarySidebar = beatLibraryDockedInSidebar ? (
     <aside
+      ref={dockedBeatLibrarySidebarRef}
       className="sticky top-0 mt-6 z-20 self-start w-[15.5rem] shrink-0 overflow-visible rounded-xl border border-neutral-800 bg-neutral-900 p-4 shadow-xl shadow-black/20"
       data-loopui="1"
     >
@@ -16664,7 +16678,11 @@ useEffect(() => {
                     <div
                       ref={libraryFiltersRef}
                       style={libraryFiltersMenuStyle}
-                      className="min-w-[16rem] rounded-lg border border-neutral-700 bg-neutral-900 p-2.5 shadow-xl"
+                      className={`bg-neutral-900 p-2.5 ${
+                        libraryFiltersAnchor === "docked"
+                          ? "rounded-xl border border-neutral-800 shadow-xl shadow-black/20"
+                          : "rounded-lg border border-neutral-700 shadow-xl"
+                      }`}
                     >
                       <div className="flex flex-col gap-2">
                         <div className="grid grid-cols-2 gap-2">
@@ -17899,8 +17917,9 @@ useEffect(() => {
       className={`${
         isEmbedMode
           ? "min-h-full bg-neutral-900 text-white p-3"
-          : `flex min-h-screen flex-col overflow-x-hidden bg-neutral-900 px-6 pt-6 text-white ${effectiveUseFixedDesktopFooter ? "pb-40 sm:pb-28 md:pb-32" : "pb-0"}`
+          : "flex min-h-screen flex-col overflow-x-hidden bg-neutral-900 px-6 pt-6 text-white"
       }`}
+      style={!isEmbedMode && effectiveUseFixedDesktopFooter ? { paddingBottom: `${fixedFooterContentPadding}px` } : undefined}
       onMouseDown={(e) => {
         if (selection) {
           const el = e.target;
@@ -18267,14 +18286,14 @@ useEffect(() => {
             ? "mt-0"
             : hasDesktopSidebarColumn
               ? `mt-6 flex-1 grid min-w-max grid-cols-[15.5rem_minmax(0,1fr)] items-start gap-6 ${
-                  effectiveUseFixedDesktopFooter ? "pb-20 sm:pb-12 md:pb-16" : "pb-8"
+                  effectiveUseFixedDesktopFooter ? "pb-0" : "pb-8"
                 }`
               : `mt-6 flex-1 min-w-max ${
                 layout === "grid-right"
-                  ? `grid grid-cols-1 xl:grid-cols-[auto_1fr] gap-6 ${effectiveUseFixedDesktopFooter ? "pb-20 sm:pb-12 md:pb-16" : "pb-8"}`
+                  ? `grid grid-cols-1 xl:grid-cols-[auto_1fr] gap-6 ${effectiveUseFixedDesktopFooter ? "pb-0" : "pb-8"}`
                   : layout === "notation-right"
-                    ? `grid grid-cols-1 xl:grid-cols-[1fr_auto] gap-6 ${effectiveUseFixedDesktopFooter ? "pb-20 sm:pb-12 md:pb-16" : "pb-8"}`
-                    : `flex flex-col gap-6 items-start ${effectiveUseFixedDesktopFooter ? "pb-20 sm:pb-12 md:pb-16" : "pb-8"}`
+                    ? `grid grid-cols-1 xl:grid-cols-[1fr_auto] gap-6 ${effectiveUseFixedDesktopFooter ? "pb-0" : "pb-8"}`
+                    : `flex flex-col gap-6 items-start ${effectiveUseFixedDesktopFooter ? "pb-0" : "pb-8"}`
               }`
         }`}
       >
@@ -23259,8 +23278,6 @@ useEffect(() => {
                         >
                           <option value="grid-top">Grid top / Notation bottom</option>
                           <option value="notation-top">Notation top / Grid bottom</option>
-                          <option value="grid-right">Grid left / Notation right</option>
-                          <option value="notation-right">Notation left / Grid right</option>
                         </select>
                       </label>
                     </div>

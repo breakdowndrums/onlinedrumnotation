@@ -76,7 +76,7 @@ const SHORTCUTS = [
     id: "loop_all_toggle",
     command: "Toggle looping all",
     description: "Toggle looping between Off and All.",
-    defaultBinding: "Shift+L",
+    defaultBinding: "L",
   },
   {
     id: "assign_sticking_left",
@@ -92,9 +92,9 @@ const SHORTCUTS = [
   },
   ...Array.from({ length: 8 }, (_, index) => ({
     id: `loop_${index + 1}_toggle`,
-    command: `Toggle looping ${index + 1}`,
-    description: `Toggle looping between Off and ${index + 1}.`,
-    defaultBinding: `Shift+${index + 1}`,
+    command: `Set looping ${index + 1}`,
+    description: `Set loop repeat to ${index + 1}.`,
+    defaultBinding: `L+${index + 1}`,
   })),
 ];
 
@@ -172,6 +172,18 @@ function displayShortcutBinding(binding) {
   return String(binding || "")
     .replace(/\bMod\b/g, "Cmd/Ctrl")
     .replace(/\+/g, " + ");
+}
+
+function matchesChordShortcut(event, binding, heldKeys) {
+  const normalized = String(binding || "").trim().toUpperCase();
+  const match = normalized.match(/^([A-Z])\+([0-9])$/);
+  if (!match) return false;
+  const [, heldLetter, triggerDigit] = match;
+  const eventCode = String(event.code || "");
+  const eventDigit =
+    eventCode.startsWith("Digit") ? eventCode.slice(5) : String(event.key || "").trim();
+  if (eventDigit !== triggerDigit) return false;
+  return heldKeys?.has?.(heldLetter) === true;
 }
 
 function readGridSelectionHoldDelayMs() {
@@ -780,7 +792,7 @@ const PERSONAL_LIBRARY_STATE_SHARE_LINK_KIND = "arrangement";
 const BEAT_LIBRARY_SELECTED_CONTAINER_STORAGE_KEY = "drum-grid-beat-library-selected-container-v1";
 const BEAT_LIBRARY_ROOT_COLLAPSED_STORAGE_KEY = "drum-grid-beat-library-root-collapsed-v1";
 const GRID_SETTINGS_PRESET_LIBRARY_STORAGE_KEY = "drum-grid-grid-settings-presets-v1";
-const APP_VERSION = "0.1.219";
+const APP_VERSION = "0.1.244";
 const BEAT_CATEGORY_OPTIONS = [
   "Groove",
   "Fill",
@@ -2985,7 +2997,7 @@ export default function App() {
   const [preferencesCategory, setPreferencesCategory] = useState(() => {
     try {
       const raw = (window.localStorage.getItem(PREFERENCES_CATEGORY_STORAGE_KEY) || "").toLowerCase();
-      const allowed = new Set(["timing", "notation", "editor", "playback", "appearance"]);
+      const allowed = new Set(["defaults", "timing", "notation", "editor", "playback", "appearance"]);
       return allowed.has(raw) ? raw : "timing";
     } catch (_) {
       return "timing";
@@ -3536,6 +3548,7 @@ export default function App() {
   const [arrangementLibraryMenuStyle, setArrangementLibraryMenuStyle] = useState(null);
   const [beatLibraryActionsMenuStyle, setBeatLibraryActionsMenuStyle] = useState(null);
   const [arrangementActionsMenuStyle, setArrangementActionsMenuStyle] = useState(null);
+  const [mobileArrangementPanelStyle, setMobileArrangementPanelStyle] = useState(null);
   const [transportMenuPosition, setTransportMenuPosition] = useState(null);
   const [savedPresets, setSavedPresets] = useState(() => {
     try {
@@ -3814,6 +3827,38 @@ export default function App() {
       window.removeEventListener("scroll", updatePosition, true);
     };
   }, [isArrangementActionsMenuOpen]);
+  useEffect(() => {
+    if (!isMobileFloatingPanels || !isArrangementOpen) {
+      setMobileArrangementPanelStyle(null);
+      return undefined;
+    }
+    const updatePosition = () => {
+      const button = gridMenuButtonRef.current;
+      if (!(button instanceof HTMLElement)) {
+        setMobileArrangementPanelStyle({
+          left: 8,
+          top: 8,
+          maxHeight: "calc(100vh - 16px)",
+        });
+        return;
+      }
+      const rect = button.getBoundingClientRect();
+      const gap = 8;
+      const top = Math.max(8, rect.bottom + gap);
+      setMobileArrangementPanelStyle({
+        left: 8,
+        top,
+        maxHeight: `calc(100vh - ${Math.round(top + 8)}px)`,
+      });
+    };
+    updatePosition();
+    window.addEventListener("resize", updatePosition);
+    window.addEventListener("scroll", updatePosition, true);
+    return () => {
+      window.removeEventListener("resize", updatePosition);
+      window.removeEventListener("scroll", updatePosition, true);
+    };
+  }, [isArrangementOpen, isMobileFloatingPanels]);
   const [playbackRate, setPlaybackRate] = useState(() => {
     try {
       const raw = window.localStorage.getItem(PLAYBACK_RATE_STORAGE_KEY);
@@ -6231,6 +6276,31 @@ useEffect(() => {
       return 350;
     }
   });
+  const activeShortcutKeysRef = React.useRef(new Set());
+  useEffect(() => {
+    const activeKeys = activeShortcutKeysRef.current;
+    const rememberKey = (event) => {
+      const code = String(event.code || "");
+      if (code.startsWith("Key")) {
+        activeKeys.add(code.slice(3).toUpperCase());
+      }
+    };
+    const forgetKey = (event) => {
+      const code = String(event.code || "");
+      if (code.startsWith("Key")) {
+        activeKeys.delete(code.slice(3).toUpperCase());
+      }
+    };
+    const clearKeys = () => activeKeys.clear();
+    window.addEventListener("keydown", rememberKey, true);
+    window.addEventListener("keyup", forgetKey, true);
+    window.addEventListener("blur", clearKeys);
+    return () => {
+      window.removeEventListener("keydown", rememberKey, true);
+      window.removeEventListener("keyup", forgetKey, true);
+      window.removeEventListener("blur", clearKeys);
+    };
+  }, []);
   const getShortcutBinding = React.useCallback(
     (actionId) =>
       String(
@@ -6241,7 +6311,13 @@ useEffect(() => {
     [shortcutBindings]
   );
   const matchesShortcut = React.useCallback(
-    (event, actionId) => bindingFromKeyboardEvent(event) === getShortcutBinding(actionId),
+    (event, actionId) => {
+      const binding = getShortcutBinding(actionId);
+      return (
+        bindingFromKeyboardEvent(event) === binding ||
+        matchesChordShortcut(event, binding, activeShortcutKeysRef.current)
+      );
+    },
     [getShortcutBinding]
   );
   // Whether new selections should auto-generate a loop.
@@ -13997,18 +14073,24 @@ useEffect(() => {
                   setShowAppVersion((v) => !v);
                   return;
                 }
-                if (showDesktopSettingsSidebar) {
-                  if (beatLibraryDockedInSidebar) {
-                    setKeepBeatLibrarySidebarOpen(false);
-                    setIsArrangementOpen(false);
-                    setSettingsSidebarCollapsed(false);
-                    return;
-                  }
-                  setSettingsSidebarCollapsed((v) => !v);
-                  return;
-                }
-                setActiveTab((t) => (t === "timing" ? "none" : "timing"));
-              }}
+	                if (showDesktopSettingsSidebar) {
+	                  if (beatLibraryDockedInSidebar) {
+	                    setKeepBeatLibrarySidebarOpen(false);
+	                    setIsArrangementOpen(false);
+	                    setSettingsSidebarCollapsed(false);
+	                    return;
+	                  }
+	                  setSettingsSidebarCollapsed((v) => !v);
+	                  return;
+	                }
+	                if (isBeatLibraryPanelActive) {
+	                  setKeepBeatLibrarySidebarOpen(false);
+	                  setIsArrangementOpen(false);
+	                  setActiveTab("timing");
+	                  return;
+	                }
+	                setActiveTab((t) => (t === "timing" ? "none" : "timing"));
+	              }}
               className={`touch-none select-none inline-flex h-7 w-7 items-center justify-center rounded text-sm transition-colors outline-none focus:outline-none focus-visible:outline-none ${
                 (!showDesktopSettingsSidebar && activeTab === "timing") ||
                 (showDesktopSettingsSidebar && !settingsSidebarCollapsed && !beatLibraryDockedInSidebar)
@@ -14039,7 +14121,7 @@ useEffect(() => {
                 className="absolute left-0 top-full z-20 mt-2 w-fit max-w-[min(100vw-2rem,980px)] rounded-lg border border-neutral-700 bg-neutral-900 p-3 shadow-xl"
               >
               <div className="flex flex-col gap-3">
-                <div className="flex items-center gap-2">
+                <div className="flex items-center justify-between gap-2">
                     <span className="text-sm text-neutral-300 whitespace-nowrap">Resolution</span>
                     <div className="flex items-stretch overflow-hidden rounded-md border border-neutral-700 bg-neutral-800">
                       <button
@@ -14072,7 +14154,7 @@ useEffect(() => {
                     </div>
                 </div>
 
-                <div className="flex items-center gap-2">
+                <div className="flex items-center justify-between gap-2">
                     <span className="text-sm text-neutral-300">Bars</span>
                     <div className="flex items-stretch overflow-hidden rounded-md border border-neutral-700 bg-neutral-800">
                       <button
@@ -14097,56 +14179,54 @@ useEffect(() => {
                     </div>
                 </div>
 
-                <div className="flex items-center gap-2">
+                <div className="flex items-center justify-between gap-2">
                     <span className="text-sm text-neutral-300 whitespace-nowrap">Time</span>
-                    <div className="flex items-center gap-1.5">
-                      <div className="flex items-stretch overflow-hidden rounded-md border border-neutral-700 bg-neutral-800">
-                        <button
-                          type="button"
-                          onClick={() => stepTimeSigNumerator(-1)}
-                          className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
-                          aria-label="Decrease time signature numerator"
-                        >
-                          −
-                        </button>
-                        <div className="min-w-[36px] px-2.5 py-1 flex items-center justify-center text-sm text-white bg-neutral-800 border-l border-r border-neutral-700 tabular-nums">
-                          {Math.max(2, Math.min(15, Number(timeSig.n) || 4))}
-                        </div>
+                    <div className="grid h-10 grid-cols-[1.5rem_3.5rem_1.5rem] grid-rows-2 overflow-hidden rounded-md border border-neutral-700 bg-neutral-800">
+                      <div className="row-span-2 grid grid-rows-2 border-r border-neutral-700">
                         <button
                           type="button"
                           onClick={() => stepTimeSigNumerator(1)}
-                          className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                          className="flex items-center justify-center text-xs leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
                           aria-label="Increase time signature numerator"
                         >
                           +
                         </button>
-                      </div>
-                      <div className="text-sm text-neutral-400 select-none">/</div>
-                      <div className="flex items-stretch overflow-hidden rounded-md border border-neutral-700 bg-neutral-800">
                         <button
                           type="button"
-                          onClick={() => stepTimeSigDenominator(-1)}
-                          className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
-                          aria-label="Previous time signature denominator"
+                          onClick={() => stepTimeSigNumerator(-1)}
+                          className="flex items-center justify-center border-t border-neutral-700 text-xs leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                          aria-label="Decrease time signature numerator"
                         >
                           −
                         </button>
-                        <div className="min-w-[36px] px-2.5 py-1 flex items-center justify-center text-sm text-white bg-neutral-800 border-l border-r border-neutral-700 tabular-nums">
-                          {timeSig.d === 8 ? 8 : 4}
-                        </div>
+                      </div>
+                      <div className="row-span-2 flex items-center justify-center px-2 text-sm text-white tabular-nums">
+                        {Math.max(2, Math.min(15, Number(timeSig.n) || 4))}
+                        <span className="mx-1 text-neutral-400">/</span>
+                        {timeSig.d === 8 ? 8 : 4}
+                      </div>
+                      <div className="row-span-2 grid grid-rows-2 border-l border-neutral-700">
                         <button
                           type="button"
                           onClick={() => stepTimeSigDenominator(1)}
-                          className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                          className="flex items-center justify-center text-xs leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
                           aria-label="Next time signature denominator"
                         >
                           +
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => stepTimeSigDenominator(-1)}
+                          className="flex items-center justify-center border-t border-neutral-700 text-xs leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                          aria-label="Previous time signature denominator"
+                        >
+                          −
                         </button>
                       </div>
                     </div>
                 </div>
 
-                <div className="flex items-center gap-2">
+                <div className="flex items-center justify-between gap-2">
                     <span className="text-sm text-neutral-300 whitespace-nowrap">Tuplets</span>
                     <div className="flex items-stretch overflow-hidden rounded-md border border-neutral-700 bg-neutral-800">
                       <button
@@ -14180,7 +14260,7 @@ useEffect(() => {
                     </div>
                 </div>
 
-                <div className="flex items-center gap-2">
+                <div className="flex items-center justify-between gap-2">
                     <span className="text-sm text-neutral-300">Drumkit</span>
                     <div className="flex items-stretch overflow-hidden rounded-md border border-neutral-700 bg-neutral-800">
                       <button
@@ -14209,202 +14289,8 @@ useEffect(() => {
                     </div>
                 </div>
 
-                <div className="border-t border-neutral-700 pt-4">
+                <div className="border-t border-neutral-800 pt-4">
                   <div className="flex flex-col gap-3">
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setStickingEditModeEnabled((v) => {
-                            const next = !v;
-                            if (next) {
-                              setStickingGuideEnabled(true);
-                            } else {
-                              setNotationStickingSelectionModeEnabled(false);
-                            }
-                            return next;
-                          })
-                        }
-                        className={`w-fit touch-none select-none px-3 py-[5px] rounded border text-sm ${
-                          stickingEditModeEnabled
-                            ? "bg-neutral-800 border-neutral-700 text-white"
-                            : "bg-neutral-900 border-neutral-800 text-neutral-600"
-                        }`}
-                        title="When enabled, clicking active hand-hit cells edits R/L sticking instead of toggling notes"
-                      >
-                        Sticking edit mode
-                      </button>
-                      <div className="relative">
-                        <button
-                          ref={editingAdvancedMenuButtonRef}
-                          type="button"
-                          onClick={() => setIsEditingAdvancedMenuOpen((v) => !v)}
-                          className={`touch-none select-none px-3 py-[5px] rounded border text-sm ${
-                            isEditingAdvancedMenuOpen
-                              ? "bg-neutral-800 border-neutral-700 text-white"
-                              : "bg-neutral-900 border-neutral-800 text-neutral-300 hover:bg-neutral-800/60"
-                          }`}
-                          title="Sticking display options"
-                          aria-label="Sticking display options"
-                        >
-                          ...
-                        </button>
-                        {isEditingAdvancedMenuOpen && (
-                          <div
-                            ref={editingAdvancedMenuRef}
-                            className="absolute left-full top-0 z-[140] ml-2 min-w-[10.5rem] rounded-lg border border-neutral-700 bg-neutral-900 p-3 shadow-xl"
-                          >
-                            <div className="flex flex-col gap-3">
-                              <div className="space-y-1">
-                                <span className="text-sm text-neutral-300">Sticking display</span>
-                                <div className="flex w-fit items-stretch overflow-hidden rounded-md border border-neutral-800 bg-neutral-900/60">
-                                  <button
-                                    type="button"
-                                    onClick={() => setNotationStickingView("above")}
-                                    className={`whitespace-nowrap px-3 py-1 text-sm ${
-                                      notationStickingView === "above"
-                                        ? "bg-neutral-800 text-white"
-                                        : "bg-neutral-900 text-neutral-600"
-                                    }`}
-                                    title="Show sticking above notation"
-                                  >
-                                    Above
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => setNotationStickingView("split-rows")}
-                                    className={`whitespace-nowrap border-l border-neutral-800 px-3 py-1 text-sm ${
-                                      notationStickingView === "split-rows"
-                                        ? "bg-neutral-800 text-white"
-                                        : "bg-neutral-900 text-neutral-600"
-                                    }`}
-                                    title="Change sticking display"
-                                  >
-                                    Split rows
-                                  </button>
-                                </div>
-                              </div>
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setNotationStickingSelectionModeEnabled((v) => {
-                            const next = !v;
-                            if (next) {
-                              setStickingGuideEnabled(true);
-                              setShowNotationSticking(true);
-                            }
-                            return next;
-                          })
-                        }
-                        disabled={!stickingEditModeEnabled}
-                        className={`w-fit touch-none select-none px-3 py-[5px] rounded border text-sm ${
-                          !stickingEditModeEnabled
-                            ? "bg-neutral-900 border-neutral-800 text-neutral-600 opacity-50 cursor-not-allowed"
-                            : notationStickingSelectionModeEnabled
-                              ? "bg-neutral-800 border-neutral-700 text-white"
-                              : "bg-neutral-900 border-neutral-800 text-neutral-600"
-                        }`}
-                        title="When enabled, clicking or selecting active hand-hit cells toggles whether their sticking prints in notation"
-                      >
-                        Print sticking
-                      </button>
-                      <div className="relative">
-                        <button
-                          ref={notationStickingMenuButtonRef}
-                          type="button"
-                          onClick={() => setIsNotationStickingMenuOpen((v) => !v)}
-                          disabled={!stickingEditModeEnabled}
-                          className={`touch-none select-none px-3 py-[5px] rounded border text-sm ${
-                            !stickingEditModeEnabled
-                              ? "bg-neutral-900 border-neutral-800 text-neutral-600 opacity-50 cursor-not-allowed"
-                              : isNotationStickingMenuOpen
-                                ? "bg-neutral-800 border-neutral-700 text-white"
-                                : "bg-neutral-900 border-neutral-800 text-neutral-300 hover:bg-neutral-800/60"
-                          }`}
-                          title="Notation sticking selection actions"
-                          aria-label="Notation sticking selection actions"
-                        >
-                          ...
-                        </button>
-                        {isNotationStickingMenuOpen && stickingEditModeEnabled && (
-                          <div
-                            ref={notationStickingMenuRef}
-                            className="absolute left-full top-0 z-30 ml-2 min-w-[9rem] rounded-lg border border-neutral-700 bg-neutral-900 p-3 shadow-xl"
-                          >
-                            <div className="flex flex-col gap-3">
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  selectAllNotationSticking();
-                                  setNotationStickingSelectionModeEnabled(true);
-                                  setIsNotationStickingMenuOpen(false);
-                                }}
-                                className="w-fit whitespace-nowrap touch-none select-none px-3 py-[5px] rounded border border-neutral-800 bg-neutral-900 text-neutral-300 hover:bg-neutral-800/60"
-                                title="Select all active hand hits for notation"
-                              >
-                                All
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  clearNotationStickingSelection();
-                                  setIsNotationStickingMenuOpen(false);
-                                }}
-                                className="w-fit whitespace-nowrap touch-none select-none px-3 py-[5px] rounded border border-neutral-800 bg-neutral-900 text-neutral-300 hover:bg-neutral-800/60"
-                                title="Clear the current notation sticking selection"
-                              >
-                                None
-                              </button>
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => setBeatAutoUpdateEnabled((v) => !v)}
-                        className={`w-fit touch-none select-none px-3 py-[5px] rounded border text-sm ${
-                          beatAutoUpdateEnabled
-                            ? "bg-neutral-800 border-neutral-700 text-white"
-                            : "bg-neutral-900 border-neutral-800 text-neutral-600"
-                        }`}
-                        title="Automatically update the loaded local beat after beat changes. Notation sticking selection always auto-updates."
-                      >
-                        Auto update
-                      </button>
-                      <button
-                        type="button"
-                        onClick={handleMainTrashClick}
-                        className={`touch-none select-none inline-flex h-8 w-8 items-center justify-center rounded border ${
-                          canClearSelection
-                            ? "bg-neutral-800 border-neutral-700 text-white"
-                            : "bg-neutral-900 border-neutral-800 text-neutral-500 hover:bg-neutral-800/40"
-                        }`}
-                        title={canClearSelection ? "Clear selection (Cmd/Ctrl+click: reset defaults + delete library)" : "Clear all notes (Cmd/Ctrl+click: reset defaults + delete library)"}
-                        aria-label={canClearSelection ? "Clear selection" : "Clear all notes"}
-                      >
-                        <svg
-                          xmlns="http://www.w3.org/2000/svg"
-                          viewBox="0 0 16 16"
-                          className="-translate-y-px h-[0.95rem] w-[0.95rem]"
-                          fill="currentColor"
-                          aria-hidden="true"
-                        >
-                          <path d="M5.5 5.5A.5.5 0 0 1 6 6v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5m2.5 0a.5.5 0 0 1 .5.5v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5m3 .5a.5.5 0 0 0-1 0v6a.5.5 0 0 0 1 0z" />
-                          <path d="M14.5 3a1 1 0 0 1-1 1H13v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V4h-.5a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1H6a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1h3.5a1 1 0 0 1 1 1zM4.118 4 4 4.059V13a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V4.059L11.882 4zM2.5 3h11V2h-11z" />
-                        </svg>
-                      </button>
-                    </div>
-
                     <div className="flex items-center gap-2">
                       <span className="text-sm text-neutral-300">Looping</span>
                       <div
@@ -14510,15 +14396,15 @@ useEffect(() => {
                           +
                         </button>
                       </div>
-                      <div className="relative">
+                      <div className="relative shrink-0">
                         <button
                           ref={loopAdvancedMenuButtonRef}
                           type="button"
                           onClick={() => setIsLoopAdvancedMenuOpen((v) => !v)}
-                          className={`touch-none select-none px-3 py-[5px] rounded border text-sm ${
+                          className={`inline-flex h-[1.625rem] w-[1.625rem] items-center justify-center rounded border text-xs leading-none ${
                             isLoopAdvancedMenuOpen
                               ? "bg-neutral-800 border-neutral-700 text-white"
-                              : "bg-neutral-900 border-neutral-800 text-neutral-300 hover:bg-neutral-800/60"
+                              : "bg-neutral-900/60 border-neutral-800 text-neutral-400 hover:bg-neutral-800/60"
                           }`}
                           title="Loop overlap options"
                           aria-label="Loop overlap options"
@@ -14614,6 +14500,201 @@ useEffect(() => {
                         )}
                       </div>
                     </div>
+
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setBeatAutoUpdateEnabled((v) => !v)}
+                        className={`w-fit touch-none select-none px-3 py-[5px] rounded border text-sm ${
+                          beatAutoUpdateEnabled
+                            ? "bg-neutral-800 border-neutral-700 text-white"
+                            : "bg-neutral-900 border-neutral-800 text-neutral-600"
+                        }`}
+                        title="Automatically update the loaded local beat after beat changes. Notation sticking selection always auto-updates."
+                      >
+                        Auto update
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleMainTrashClick}
+                        className={`touch-none select-none inline-flex h-8 w-8 items-center justify-center rounded border ${
+                          canClearSelection
+                            ? "bg-neutral-800 border-neutral-700 text-white"
+                            : "bg-neutral-900 border-neutral-800 text-neutral-500 hover:bg-neutral-800/40"
+                        }`}
+                        title={canClearSelection ? "Clear selection (Cmd/Ctrl+click: reset defaults + delete library)" : "Clear all notes (Cmd/Ctrl+click: reset defaults + delete library)"}
+                        aria-label={canClearSelection ? "Clear selection" : "Clear all notes"}
+                      >
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          viewBox="0 0 16 16"
+                          className="-translate-y-px h-[0.95rem] w-[0.95rem]"
+                          fill="currentColor"
+                          aria-hidden="true"
+                        >
+                          <path d="M5.5 5.5A.5.5 0 0 1 6 6v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5m2.5 0a.5.5 0 0 1 .5.5v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5m3 .5a.5.5 0 0 0-1 0v6a.5.5 0 0 0 1 0z" />
+                          <path d="M14.5 3a1 1 0 0 1-1 1H13v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V4h-.5a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1H6a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1h3.5a1 1 0 0 1 1 1zM4.118 4 4 4.059V13a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V4.059L11.882 4zM2.5 3h11V2h-11z" />
+                        </svg>
+                      </button>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setStickingEditModeEnabled((v) => {
+                            const next = !v;
+                            if (next) {
+                              setStickingGuideEnabled(true);
+                            } else {
+                              setNotationStickingSelectionModeEnabled(false);
+                            }
+                            return next;
+                          })
+                        }
+                        className={`w-fit touch-none select-none px-3 py-[5px] rounded border text-sm ${
+                          stickingEditModeEnabled
+                            ? "bg-neutral-800 border-neutral-700 text-white"
+                            : "bg-neutral-900 border-neutral-800 text-neutral-600"
+                        }`}
+                        title="When enabled, clicking active hand-hit cells edits R/L sticking instead of toggling notes"
+                      >
+                        Sticking edit mode
+                      </button>
+                      <div className="relative shrink-0">
+                        <button
+                          ref={editingAdvancedMenuButtonRef}
+                          type="button"
+                          onClick={() => setIsEditingAdvancedMenuOpen((v) => !v)}
+                          className={`inline-flex h-[1.625rem] w-[1.625rem] items-center justify-center rounded border text-xs leading-none ${
+                            isEditingAdvancedMenuOpen
+                              ? "bg-neutral-800 border-neutral-700 text-white"
+                              : "bg-neutral-900/60 border-neutral-800 text-neutral-400 hover:bg-neutral-800/60"
+                          }`}
+                          title="Sticking display options"
+                          aria-label="Sticking display options"
+                        >
+                          ...
+                        </button>
+                        {isEditingAdvancedMenuOpen && (
+                          <div
+                            ref={editingAdvancedMenuRef}
+                            className="absolute left-full top-0 z-[140] ml-2 min-w-[10.5rem] rounded-lg border border-neutral-700 bg-neutral-900 p-3 shadow-xl"
+                          >
+                            <div className="flex flex-col gap-3">
+                              <div className="space-y-1">
+                                <span className="text-sm text-neutral-300">Sticking display</span>
+                                <div className="flex w-fit items-stretch overflow-hidden rounded-md border border-neutral-800 bg-neutral-900/60">
+                                  <button
+                                    type="button"
+                                    onClick={() => setNotationStickingView("above")}
+                                    className={`whitespace-nowrap px-3 py-1 text-sm ${
+                                      notationStickingView === "above"
+                                        ? "bg-neutral-800 text-white"
+                                        : "bg-neutral-900 text-neutral-600"
+                                    }`}
+                                    title="Show sticking above notation"
+                                  >
+                                    Above
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => setNotationStickingView("split-rows")}
+                                    className={`whitespace-nowrap border-l border-neutral-800 px-3 py-1 text-sm ${
+                                      notationStickingView === "split-rows"
+                                        ? "bg-neutral-800 text-white"
+                                        : "bg-neutral-900 text-neutral-600"
+                                    }`}
+                                    title="Change sticking display"
+                                  >
+                                    Split rows
+                                  </button>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setNotationStickingSelectionModeEnabled((v) => {
+                            const next = !v;
+                            if (next) {
+                              setStickingGuideEnabled(true);
+                              setShowNotationSticking(true);
+                            }
+                            return next;
+                          })
+                        }
+                        disabled={!stickingEditModeEnabled}
+                        className={`w-fit touch-none select-none px-3 py-[5px] rounded border text-sm ${
+                          !stickingEditModeEnabled
+                            ? "bg-neutral-900 border-neutral-800 text-neutral-600 opacity-50 cursor-not-allowed"
+                            : notationStickingSelectionModeEnabled
+                              ? "bg-neutral-800 border-neutral-700 text-white"
+                              : "bg-neutral-900 border-neutral-800 text-neutral-600"
+                        }`}
+                        title="When enabled, clicking or selecting active hand-hit cells toggles whether their sticking prints in notation"
+                      >
+                        Print sticking
+                      </button>
+                      <div className="relative shrink-0">
+                        <button
+                          ref={notationStickingMenuButtonRef}
+                          type="button"
+                          onClick={() => setIsNotationStickingMenuOpen((v) => !v)}
+                          disabled={!stickingEditModeEnabled}
+                          className={`inline-flex h-[1.625rem] w-[1.625rem] items-center justify-center rounded border text-xs leading-none ${
+                            !stickingEditModeEnabled
+                              ? "bg-neutral-900/60 border-neutral-800 text-neutral-600 opacity-50 cursor-not-allowed"
+                              : isNotationStickingMenuOpen
+                                ? "bg-neutral-800 border-neutral-700 text-white"
+                                : "bg-neutral-900/60 border-neutral-800 text-neutral-400 hover:bg-neutral-800/60"
+                          }`}
+                          title="Notation sticking selection actions"
+                          aria-label="Notation sticking selection actions"
+                        >
+                          ...
+                        </button>
+                        {isNotationStickingMenuOpen && stickingEditModeEnabled && (
+                          <div
+                            ref={notationStickingMenuRef}
+                            className="absolute left-full top-0 z-30 ml-2 min-w-[9rem] rounded-lg border border-neutral-700 bg-neutral-900 p-3 shadow-xl"
+                          >
+                            <div className="flex flex-col gap-3">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  selectAllNotationSticking();
+                                  setNotationStickingSelectionModeEnabled(true);
+                                  setIsNotationStickingMenuOpen(false);
+                                }}
+                                className="w-fit whitespace-nowrap touch-none select-none px-3 py-[5px] rounded border border-neutral-800 bg-neutral-900 text-neutral-300 hover:bg-neutral-800/60"
+                                title="Select all active hand hits for notation"
+                              >
+                                All
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  clearNotationStickingSelection();
+                                  setIsNotationStickingMenuOpen(false);
+                                }}
+                                className="w-fit whitespace-nowrap touch-none select-none px-3 py-[5px] rounded border border-neutral-800 bg-neutral-900 text-neutral-300 hover:bg-neutral-800/60"
+                                title="Clear the current notation sticking selection"
+                              >
+                                None
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
                   </div>
                 </div>
 
@@ -15742,6 +15823,7 @@ useEffect(() => {
       const tag = (el?.tagName || "").toLowerCase();
       const isTyping = tag === "input" || tag === "textarea" || el?.isContentEditable;
       if (isTyping) return;
+      if (stickingEditModeEnabled || notationStickingSelectionModeEnabled) return;
 
       if (matchesShortcut(e, "loop_all_toggle")) {
         e.preventDefault();
@@ -15752,15 +15834,14 @@ useEffect(() => {
       for (let number = 1; number <= 8; number++) {
         if (!matchesShortcut(e, `loop_${number}_toggle`)) continue;
         e.preventDefault();
-        const target = String(number);
-        setLoopRepeats((prev) => (prev === target ? "off" : target));
+        setLoopRepeats(String(number));
         return;
       }
     };
 
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [matchesShortcut]);
+  }, [matchesShortcut, notationStickingSelectionModeEnabled, stickingEditModeEnabled]);
   useEffect(() => {
     const onKey = (e) => {
       const el = e.target;
@@ -17818,7 +17899,7 @@ useEffect(() => {
       className={`${
         isEmbedMode
           ? "min-h-full bg-neutral-900 text-white p-3"
-          : `flex min-h-screen flex-col bg-neutral-900 px-6 pt-6 text-white ${effectiveUseFixedDesktopFooter ? "pb-40 sm:pb-28 md:pb-32" : "pb-0"}`
+          : `flex min-h-screen flex-col overflow-x-hidden bg-neutral-900 px-6 pt-6 text-white ${effectiveUseFixedDesktopFooter ? "pb-40 sm:pb-28 md:pb-32" : "pb-0"}`
       }`}
       onMouseDown={(e) => {
         if (selection) {
@@ -17967,41 +18048,43 @@ useEffect(() => {
         )}
         <div className="-mx-6 -mt-6 flex flex-wrap items-center gap-2 bg-black px-6 py-3">
           <h1 className="mr-4 text-lg font-semibold text-neutral-300">Drum Grid → Notation</h1>
-          <button
-            onClick={() => {
-              if (arrangementHeaderUsesArrangementPlayback) {
-                if (arrangementPlaybackUiActive) stopArrangementPlayback();
-                else startArrangementPlayback();
-                return;
-              }
-              togglePlaybackFromBeginning();
-            }}
-            className={`touch-none select-none inline-flex h-[2.125rem] w-[2.125rem] items-center justify-center rounded border text-sm capitalize outline-none focus:outline-none focus-visible:outline-none ${
-              arrangementHeaderUsesArrangementPlayback
-                ? "border-sky-500/70 text-sky-100 bg-sky-900/30 shadow-[0_0_0_1px_rgba(14,165,233,0.35)] hover:bg-sky-900/40"
-                : arrangementHeaderPlaybackActive
-                  ? "bg-neutral-950 border-neutral-800 text-white"
-                  : "bg-black border-neutral-900 text-neutral-400 hover:bg-neutral-950/80 hover:text-neutral-300"
-            }`}
-            title={arrangementHeaderPlaybackActive ? "Stop playback" : "Start playback"}
-            aria-label={arrangementHeaderPlaybackActive ? "Stop playback" : "Start playback"}
-          >
-            {arrangementHeaderPlaybackActive ? <StopIcon /> : <PlayIcon />}
-          </button>
-          <button
-            ref={transportMenuButtonRef}
-            type="button"
-            onPointerDown={handleBpmScrubPointerDown}
-            onClick={() => {
-              if (performance.now() < bpmButtonScrubSuppressUntilRef.current) return;
-              setIsTransportMenuOpen((v) => !v);
-            }}
-            className="touch-none select-none whitespace-nowrap rounded border border-neutral-900 bg-black px-3 py-1.5 text-sm text-neutral-400 outline-none hover:bg-neutral-950/80 hover:text-neutral-300 focus:outline-none focus-visible:outline-none cursor-ns-resize"
-            title="Open tempo controls or drag up/down to change BPM"
-            aria-label={`Open tempo controls or drag to change BPM (${bpm} BPM)`}
-          >
-            {`${bpm} BPM`}
-          </button>
+	          <div className="inline-flex shrink-0 items-center gap-2 whitespace-nowrap">
+	            <button
+	              onClick={() => {
+	                if (arrangementHeaderUsesArrangementPlayback) {
+	                  if (arrangementPlaybackUiActive) stopArrangementPlayback();
+	                  else startArrangementPlayback();
+	                  return;
+	                }
+	                togglePlaybackFromBeginning();
+	              }}
+	              className={`touch-none select-none inline-flex h-[2.125rem] w-[2.125rem] items-center justify-center rounded border text-sm capitalize outline-none focus:outline-none focus-visible:outline-none ${
+	                arrangementHeaderUsesArrangementPlayback
+	                  ? "border-sky-500/70 text-sky-100 bg-sky-900/30 shadow-[0_0_0_1px_rgba(14,165,233,0.35)] hover:bg-sky-900/40"
+	                  : arrangementHeaderPlaybackActive
+	                    ? "bg-neutral-950 border-neutral-800 text-white"
+	                    : "bg-black border-neutral-900 text-neutral-400 hover:bg-neutral-950/80 hover:text-neutral-300"
+	              }`}
+	              title={arrangementHeaderPlaybackActive ? "Stop playback" : "Start playback"}
+	              aria-label={arrangementHeaderPlaybackActive ? "Stop playback" : "Start playback"}
+	            >
+	              {arrangementHeaderPlaybackActive ? <StopIcon /> : <PlayIcon />}
+	            </button>
+	            <button
+	              ref={transportMenuButtonRef}
+	              type="button"
+	              onPointerDown={handleBpmScrubPointerDown}
+	              onClick={() => {
+	                if (performance.now() < bpmButtonScrubSuppressUntilRef.current) return;
+	                setIsTransportMenuOpen((v) => !v);
+	              }}
+	              className="touch-none select-none whitespace-nowrap rounded border border-neutral-900 bg-black px-3 py-1.5 text-sm text-neutral-400 outline-none hover:bg-neutral-950/80 hover:text-neutral-300 focus:outline-none focus-visible:outline-none cursor-ns-resize"
+	              title="Open tempo controls or drag up/down to change BPM"
+	              aria-label={`Open tempo controls or drag to change BPM (${bpm} BPM)`}
+	            >
+	              {`${bpm} BPM`}
+	            </button>
+	          </div>
           <div className="min-w-4 flex-1" />
           <div className="inline-flex shrink-0 items-center gap-2 whitespace-nowrap">
             <button
@@ -18100,65 +18183,67 @@ useEffect(() => {
               <LibraryIcon />
             </button>
           ) : null}
-          <button
-            ref={fileMenuButtonRef}
-            type="button"
-            onClick={() => setIsShareActionsDialogOpen((v) => !v)}
-              className={`touch-none select-none inline-flex h-[2.125rem] w-[2.125rem] items-center justify-center rounded border text-sm ${
-                shareCopied
-                  ? "bg-neutral-800 border-neutral-600 text-white"
-                  : "bg-black border-neutral-900 text-neutral-400 hover:bg-neutral-950/80 hover:text-neutral-300"
-              }`}
-            title="File actions"
-            aria-label="File actions"
-          >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              viewBox="0 0 24 24"
-              className="h-4 w-4"
-              fill="currentColor"
-              aria-hidden="true"
-            >
-              <path d="M18 2A3 3 0 0 0 15 5A3 3 0 0 0 15.054688 5.560547L7.939453 9.710938A3 3 0 0 0 6 9A3 3 0 0 0 3 12A3 3 0 0 0 6 15A3 3 0 0 0 7.935547 14.287109L15.054688 18.439453A3 3 0 0 0 15 19A3 3 0 0 0 18 22A3 3 0 0 0 21 19A3 3 0 0 0 18 16A3 3 0 0 0 16.0625 16.712891L8.945312 12.560547A3 3 0 0 0 9 12A3 3 0 0 0 8.945312 11.439453L16.060547 7.289062A3 3 0 0 0 18 8A3 3 0 0 0 21 5A3 3 0 0 0 18 2Z" />
-            </svg>
-          </button>
-          {authUser ? (
-            <>
-              <span
-                className={`hidden md:inline-block rounded border px-2 py-1 text-[11px] ${
-                  isAdminUser
-                    ? "border-amber-700/60 bg-amber-950/30 text-amber-200"
-                    : "border-sky-700/50 bg-sky-950/20 text-sky-200"
-                }`}
-              >
-                {isAdminUser ? "Admin" : "Signed in"}
-              </span>
-              {authUserEmail && isAdminUser ? (
-                <span
-                  className="hidden md:inline-block max-w-[170px] truncate text-xs text-neutral-500"
-                  title={authUserEmail}
-                >
-                  {authUserEmail}
-                </span>
-              ) : null}
-            </>
-          ) : null}
-          {hasSupabaseEnabled && (
-            <button
-              type="button"
-              onClick={openAuthDialog}
-              disabled={authPending}
-              className={`touch-none select-none inline-flex h-[2.125rem] w-[2.125rem] items-center justify-center rounded border ${
-                authPending
-                  ? "bg-black border-neutral-900 text-neutral-500 cursor-not-allowed"
-                  : "bg-black border-neutral-900 text-neutral-400 hover:bg-neutral-950/80 hover:text-neutral-300"
-              }`}
-              title={authPending ? "Authentication pending" : authUser ? `Open account for ${authUserLabel}` : "Sign in with email"}
-              aria-label={authPending ? "Authentication pending" : authUser ? `Open account for ${authUserLabel}` : "Sign in with email"}
-            >
-              {authPending ? "…" : <UserIcon />}
-            </button>
-          )}
+	          <div className="inline-flex shrink-0 items-center gap-2 whitespace-nowrap">
+	            <button
+	              ref={fileMenuButtonRef}
+	              type="button"
+	              onClick={() => setIsShareActionsDialogOpen((v) => !v)}
+	                className={`touch-none select-none inline-flex h-[2.125rem] w-[2.125rem] items-center justify-center rounded border text-sm ${
+	                  shareCopied
+	                    ? "bg-neutral-800 border-neutral-600 text-white"
+	                    : "bg-black border-neutral-900 text-neutral-400 hover:bg-neutral-950/80 hover:text-neutral-300"
+	                }`}
+	              title="File actions"
+	              aria-label="File actions"
+	            >
+	              <svg
+	                xmlns="http://www.w3.org/2000/svg"
+	                viewBox="0 0 24 24"
+	                className="h-4 w-4"
+	                fill="currentColor"
+	                aria-hidden="true"
+	              >
+	                <path d="M18 2A3 3 0 0 0 15 5A3 3 0 0 0 15.054688 5.560547L7.939453 9.710938A3 3 0 0 0 6 9A3 3 0 0 0 3 12A3 3 0 0 0 6 15A3 3 0 0 0 7.935547 14.287109L15.054688 18.439453A3 3 0 0 0 15 19A3 3 0 0 0 18 22A3 3 0 0 0 21 19A3 3 0 0 0 18 16A3 3 0 0 0 16.0625 16.712891L8.945312 12.560547A3 3 0 0 0 9 12A3 3 0 0 0 8.945312 11.439453L16.060547 7.289062A3 3 0 0 0 18 8A3 3 0 0 0 21 5A3 3 0 0 0 18 2Z" />
+	              </svg>
+	            </button>
+	            {authUser ? (
+	              <>
+	                <span
+	                  className={`hidden md:inline-block rounded border px-2 py-1 text-[11px] ${
+	                    isAdminUser
+	                      ? "border-amber-700/60 bg-amber-950/30 text-amber-200"
+	                      : "border-sky-700/50 bg-sky-950/20 text-sky-200"
+	                  }`}
+	                >
+	                  {isAdminUser ? "Admin" : "Signed in"}
+	                </span>
+	                {authUserEmail && isAdminUser ? (
+	                  <span
+	                    className="hidden md:inline-block max-w-[170px] truncate text-xs text-neutral-500"
+	                    title={authUserEmail}
+	                  >
+	                    {authUserEmail}
+	                  </span>
+	                ) : null}
+	              </>
+	            ) : null}
+	            {hasSupabaseEnabled && (
+	              <button
+	                type="button"
+	                onClick={openAuthDialog}
+	                disabled={authPending}
+	                className={`touch-none select-none inline-flex h-[2.125rem] w-[2.125rem] items-center justify-center rounded border ${
+	                  authPending
+	                    ? "bg-black border-neutral-900 text-neutral-500 cursor-not-allowed"
+	                    : "bg-black border-neutral-900 text-neutral-400 hover:bg-neutral-950/80 hover:text-neutral-300"
+	                }`}
+	                title={authPending ? "Authentication pending" : authUser ? `Open account for ${authUserLabel}` : "Sign in with email"}
+	                aria-label={authPending ? "Authentication pending" : authUser ? `Open account for ${authUserLabel}` : "Sign in with email"}
+	              >
+	                {authPending ? "…" : <UserIcon />}
+	              </button>
+	            )}
+	          </div>
         </div>
 
         <div className="flex max-w-full items-center gap-4">
@@ -18175,15 +18260,16 @@ useEffect(() => {
 
       
       
+      <div className="-mx-6 w-[calc(100%+3rem)] overflow-x-auto overflow-y-visible px-6">
       <main
         className={`select-none ${
           isEmbedMode
             ? "mt-0"
             : hasDesktopSidebarColumn
-              ? `mt-6 flex-1 grid grid-cols-[15.5rem_minmax(0,1fr)] items-start gap-6 ${
+              ? `mt-6 flex-1 grid min-w-max grid-cols-[15.5rem_minmax(0,1fr)] items-start gap-6 ${
                   effectiveUseFixedDesktopFooter ? "pb-20 sm:pb-12 md:pb-16" : "pb-8"
                 }`
-              : `mt-6 flex-1 ${
+              : `mt-6 flex-1 min-w-max ${
                 layout === "grid-right"
                   ? `grid grid-cols-1 xl:grid-cols-[auto_1fr] gap-6 ${effectiveUseFixedDesktopFooter ? "pb-20 sm:pb-12 md:pb-16" : "pb-8"}`
                   : layout === "notation-right"
@@ -18246,8 +18332,8 @@ useEffect(() => {
               </div>
             </div>
 
-            <div className="w-full overflow-visible">
-              <div className="inline-block align-top pr-4">
+	            <div className="w-full overflow-visible">
+	              <div className="inline-block align-top pr-4">
                 <Grid
                 instruments={instruments}
                 grid={computedGrid}
@@ -18295,8 +18381,8 @@ useEffect(() => {
           </>
         ) : (
           <>
-            <div className="w-full overflow-visible">
-              <div className="inline-block align-top pr-4">
+	            <div className="w-full overflow-visible">
+	              <div className="inline-block align-top pr-4">
                 <Grid
                 instruments={instruments}
                 grid={computedGrid}
@@ -18369,6 +18455,7 @@ useEffect(() => {
         )}
         </div>
       </main>
+      </div>
 
       <footer
         className={`${isEmbedMode ? "hidden" : "mt-auto pt-1"}`}
@@ -18383,6 +18470,15 @@ useEffect(() => {
               <div className="flex flex-wrap items-center justify-center gap-2">
                 <button
                   type="button"
+                  onClick={() => setIsPreferencesDialogOpen(true)}
+                  className="text-xs text-neutral-500 hover:text-neutral-300 underline underline-offset-2"
+                  title="Preferences"
+                >
+                  Preferences
+                </button>
+                <span className="text-neutral-700">·</span>
+                <button
+                  type="button"
                   onClick={() => {
                     setLegalTab("impressum");
                     setIsLegalDialogOpen(true);
@@ -18391,15 +18487,6 @@ useEffect(() => {
                   title="Legal information"
                 >
                   Legal
-                </button>
-                <span className="text-neutral-700">·</span>
-                <button
-                  type="button"
-                  onClick={() => setIsPreferencesDialogOpen(true)}
-                  className="text-xs text-neutral-500 hover:text-neutral-300 underline underline-offset-2"
-                  title="Preferences"
-                >
-                  Preferences
                 </button>
                 <span className="text-neutral-700">·</span>
                 <a
@@ -18437,6 +18524,15 @@ useEffect(() => {
                 <div className="flex flex-wrap items-center justify-center gap-2">
                   <button
                     type="button"
+                    onClick={() => setIsPreferencesDialogOpen(true)}
+                    className="text-xs text-neutral-500 hover:text-neutral-300 underline underline-offset-2"
+                    title="Preferences"
+                  >
+                    Preferences
+                  </button>
+                  <span className="text-neutral-700">·</span>
+                  <button
+                    type="button"
                     onClick={() => {
                       setLegalTab("impressum");
                       setIsLegalDialogOpen(true);
@@ -18445,15 +18541,6 @@ useEffect(() => {
                     title="Legal information"
                   >
                     Legal
-                  </button>
-                  <span className="text-neutral-700">·</span>
-                  <button
-                    type="button"
-                    onClick={() => setIsPreferencesDialogOpen(true)}
-                    className="text-xs text-neutral-500 hover:text-neutral-300 underline underline-offset-2"
-                    title="Preferences"
-                  >
-                    Preferences
                   </button>
                   <span className="text-neutral-700">·</span>
                   <a
@@ -18722,9 +18809,11 @@ useEffect(() => {
             }`}
             style={{
               position: "absolute",
-              left: isMobileFloatingPanels ? 8 : arrangementPos.x,
-              top: isMobileFloatingPanels ? 8 : arrangementPos.y,
-              maxHeight: isMobileFloatingPanels ? "calc(100vh - 16px)" : undefined,
+              left: isMobileFloatingPanels ? (mobileArrangementPanelStyle?.left ?? 8) : arrangementPos.x,
+              top: isMobileFloatingPanels ? (mobileArrangementPanelStyle?.top ?? 8) : arrangementPos.y,
+              maxHeight: isMobileFloatingPanels
+                ? (mobileArrangementPanelStyle?.maxHeight ?? "calc(100vh - 16px)")
+                : undefined,
               width:
                 !isMobileFloatingPanels && !arrangementSourcesCollapsed && !arrangementDetailsCollapsed
                   ? `${sharedArrangementPanelWidthRem}rem`
@@ -21053,89 +21142,89 @@ useEffect(() => {
       />
       {isShareActionsDialogOpen && (
         <>
-          {createPortal(
-            <div
-              ref={fileMenuRef}
-              className="fixed z-[140] w-64 rounded border border-neutral-700 bg-neutral-900 p-2 shadow-2xl"
-              style={{
-                top: `${fileMenuPosition.top}px`,
-                left: `${fileMenuPosition.left}px`,
-              }}
-              onClick={(e) => e.stopPropagation()}
-              onMouseDown={(e) => e.stopPropagation()}
-            >
-              <div className="px-2 pb-1 text-[11px] uppercase tracking-wide text-neutral-500">Beat</div>
-              <div className="grid grid-cols-1 gap-1">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsShareActionsDialogOpen(false);
-                    handleShareLink("beat");
-                  }}
-                  className={`rounded border px-3 py-2 text-left text-sm ${
-                    shareCopied && shareLinkType?.startsWith("Beat")
-                      ? "border-neutral-600 text-white bg-neutral-800"
-                      : "border-neutral-700 text-neutral-200 hover:bg-neutral-800/60"
-                  }`}
-                  title="Copy shareable beat link"
-                >
+	          {createPortal(
+	            <div
+	              ref={fileMenuRef}
+	              className="fixed z-[140] w-72 rounded-xl border border-neutral-700 bg-neutral-900 p-3 shadow-2xl"
+	              style={{
+	                top: `${fileMenuPosition.top}px`,
+	                left: `${fileMenuPosition.left}px`,
+	              }}
+	              onClick={(e) => e.stopPropagation()}
+	              onMouseDown={(e) => e.stopPropagation()}
+	            >
+	              <div className="px-1 pb-2 text-sm text-neutral-300">Beat</div>
+	              <div className="grid grid-cols-1 gap-1.5">
+	                <button
+	                  type="button"
+	                  onClick={() => {
+	                    setIsShareActionsDialogOpen(false);
+	                    handleShareLink("beat");
+	                  }}
+	                  className={`rounded-lg border px-3 py-2 text-left text-sm ${
+	                    shareCopied && shareLinkType?.startsWith("Beat")
+	                      ? "border-neutral-600 bg-neutral-800 text-white"
+	                      : "border-neutral-800 bg-neutral-900/60 text-neutral-200 hover:bg-neutral-800/60"
+	                  }`}
+	                  title="Copy shareable beat link"
+	                >
                   {shareCopied && shareLinkType?.startsWith("Beat")
                     ? `Link copied (${shareLinkType})`
                     : "Link"}
                 </button>
                 <button
                   type="button"
-                  onClick={() => {
-                    setIsShareActionsDialogOpen(false);
-                    setIsPrintDialogOpen(true);
-                  }}
-                  className="rounded border border-neutral-700 px-3 py-2 text-left text-sm text-neutral-200 hover:bg-neutral-800/60"
-                  title="Export beat notation as PDF"
-                >
-                  PDF
+	                  onClick={() => {
+	                    setIsShareActionsDialogOpen(false);
+	                    setIsPrintDialogOpen(true);
+	                  }}
+	                  className="rounded-lg border border-neutral-800 bg-neutral-900/60 px-3 py-2 text-left text-sm text-neutral-200 hover:bg-neutral-800/60"
+	                  title="Export beat notation as PDF"
+	                >
+	                  PDF
+                </button>
+                <button
+                  type="button"
+	                  onClick={() => {
+	                    setIsShareActionsDialogOpen(false);
+	                    setIsNotationPngDialogOpen(true);
+	                  }}
+	                  className="rounded-lg border border-neutral-800 bg-neutral-900/60 px-3 py-2 text-left text-sm text-neutral-200 hover:bg-neutral-800/60"
+	                  title="Export beat notation as transparent PNG"
+	                >
+	                  PNG
                 </button>
                 <button
                   type="button"
                   onClick={() => {
                     setIsShareActionsDialogOpen(false);
-                    setIsNotationPngDialogOpen(true);
-                  }}
-                  className="rounded border border-neutral-700 px-3 py-2 text-left text-sm text-neutral-200 hover:bg-neutral-800/60"
-                  title="Export beat notation as transparent PNG"
-                >
-                  PNG
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsShareActionsDialogOpen(false);
-                    setMidiExportMode("beat");
-                    setIsMidiDialogOpen(true);
-                  }}
-                  className="rounded border border-neutral-700 px-3 py-2 text-left text-sm text-neutral-200 hover:bg-neutral-800/60"
-                  title="Export current pattern as MIDI file"
-                >
-                  Export MIDI
-                </button>
-              </div>
-              <div className="my-2 border-t border-neutral-800" />
-              <div className="px-2 pb-1 text-[11px] uppercase tracking-wide text-neutral-500">Arrangement</div>
-              <div className="grid grid-cols-1 gap-1">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsShareActionsDialogOpen(false);
+	                    setMidiExportMode("beat");
+	                    setIsMidiDialogOpen(true);
+	                  }}
+	                  className="rounded-lg border border-neutral-800 bg-neutral-900/60 px-3 py-2 text-left text-sm text-neutral-200 hover:bg-neutral-800/60"
+	                  title="Export current pattern as MIDI file"
+	                >
+	                  Export MIDI
+	                </button>
+	              </div>
+	              <div className="my-3 border-t border-neutral-800" />
+	              <div className="px-1 pb-2 text-sm text-neutral-300">Arrangement</div>
+	              <div className="grid grid-cols-1 gap-1.5">
+	                <button
+	                  type="button"
+	                  onClick={() => {
+	                    setIsShareActionsDialogOpen(false);
                     handleShareLink("arrangement");
                   }}
-                  disabled={arrangementItems.length < 1}
-                  className={`rounded border px-3 py-2 text-left text-sm ${
-                    shareCopied && shareLinkType?.startsWith("Arrangement")
-                      ? "border-neutral-600 text-white bg-neutral-800"
-                      : arrangementItems.length > 0
-                        ? "border-neutral-700 text-neutral-200 hover:bg-neutral-800/60"
-                        : "border-neutral-800 text-neutral-500 bg-neutral-900/60 cursor-not-allowed"
-                  }`}
-                  title="Copy shareable arrangement link"
+	                  disabled={arrangementItems.length < 1}
+	                  className={`rounded-lg border px-3 py-2 text-left text-sm ${
+	                    shareCopied && shareLinkType?.startsWith("Arrangement")
+	                      ? "border-neutral-600 bg-neutral-800 text-white"
+	                      : arrangementItems.length > 0
+	                        ? "border-neutral-800 bg-neutral-900/60 text-neutral-200 hover:bg-neutral-800/60"
+	                        : "border-neutral-800 text-neutral-500 bg-neutral-900/60 cursor-not-allowed"
+	                  }`}
+	                  title="Copy shareable arrangement link"
                 >
                   {shareCopied && shareLinkType?.startsWith("Arrangement")
                     ? `Link copied (${shareLinkType})`
@@ -21145,15 +21234,15 @@ useEffect(() => {
                   type="button"
                   onClick={() => {
                     setIsShareActionsDialogOpen(false);
-                    setIsArrangementPrintDialogOpen(true);
-                  }}
-                  disabled={arrangementNotationPages.length < 1}
-                  className={`rounded border px-3 py-2 text-left text-sm ${
-                    arrangementNotationPages.length > 0
-                      ? "border-neutral-700 text-neutral-200 hover:bg-neutral-800/60"
-                      : "border-neutral-800 text-neutral-500 bg-neutral-900/60 cursor-not-allowed"
-                  }`}
-                  title="Export arrangement sheet as PDF"
+	                    setIsArrangementPrintDialogOpen(true);
+	                  }}
+	                  disabled={arrangementNotationPages.length < 1}
+	                  className={`rounded-lg border px-3 py-2 text-left text-sm ${
+	                    arrangementNotationPages.length > 0
+	                      ? "border-neutral-800 bg-neutral-900/60 text-neutral-200 hover:bg-neutral-800/60"
+	                      : "border-neutral-800 text-neutral-500 bg-neutral-900/60 cursor-not-allowed"
+	                  }`}
+	                  title="Export arrangement sheet as PDF"
                 >
                   PDF
                 </button>
@@ -21163,44 +21252,44 @@ useEffect(() => {
                     setIsShareActionsDialogOpen(false);
                     setPrintTitle(arrangementDisplayName || "Arrangement");
                     setPrintComposer(arrangementComposerDraft.trim());
-                    setMidiExportMode("arrangement");
-                    setIsMidiDialogOpen(true);
-                  }}
-                  disabled={arrangementItems.length < 1}
-                  className={`rounded border px-3 py-2 text-left text-sm ${
-                    arrangementItems.length > 0
-                      ? "border-neutral-700 text-neutral-200 hover:bg-neutral-800/60"
-                      : "border-neutral-800 text-neutral-500 bg-neutral-900/60 cursor-not-allowed"
-                  }`}
-                  title="Export arrangement as MIDI file"
+	                    setMidiExportMode("arrangement");
+	                    setIsMidiDialogOpen(true);
+	                  }}
+	                  disabled={arrangementItems.length < 1}
+	                  className={`rounded-lg border px-3 py-2 text-left text-sm ${
+	                    arrangementItems.length > 0
+	                      ? "border-neutral-800 bg-neutral-900/60 text-neutral-200 hover:bg-neutral-800/60"
+	                      : "border-neutral-800 text-neutral-500 bg-neutral-900/60 cursor-not-allowed"
+	                  }`}
+	                  title="Export arrangement as MIDI file"
                 >
-                  Export MIDI
+	                  Export MIDI
+	                </button>
+	              </div>
+	              <div className="my-3 border-t border-neutral-800" />
+	              <div className="px-1 pb-2 text-sm text-neutral-300">Import</div>
+	              <div className="grid grid-cols-1 gap-1.5">
+	                <button
+	                  type="button"
+	                  onClick={() => {
+	                    setIsShareActionsDialogOpen(false);
+	                    midiImportInputRef.current?.click();
+	                  }}
+	                  className="rounded-lg border border-neutral-800 bg-neutral-900/60 px-3 py-2 text-left text-sm text-neutral-200 hover:bg-neutral-800/60"
+	                  title="Import MIDI"
+	                >
+	                  MIDI
                 </button>
-              </div>
-              <div className="my-2 border-t border-neutral-800" />
-              <div className="px-2 pb-1 text-[11px] uppercase tracking-wide text-neutral-500">Import</div>
-              <div className="grid grid-cols-1 gap-1">
                 <button
                   type="button"
-                  onClick={() => {
-                    setIsShareActionsDialogOpen(false);
-                    midiImportInputRef.current?.click();
-                  }}
-                  className="rounded border border-neutral-700 px-3 py-2 text-left text-sm text-neutral-200 hover:bg-neutral-800/60"
-                  title="Import MIDI"
-                >
-                  MIDI
-                </button>
-                <button
-                  type="button"
-                  onClick={reopenLastMidiImportMapping}
-                  disabled={!lastMidiImportSession?.arrayBuffer}
-                  className={`rounded border px-3 py-2 text-left text-sm ${
-                    lastMidiImportSession?.arrayBuffer
-                      ? "border-neutral-700 text-neutral-200 hover:bg-neutral-800/60"
-                      : "border-neutral-800 text-neutral-500 bg-neutral-900/60 cursor-not-allowed"
-                  }`}
-                  title="Reopen mapping for the last imported MIDI file"
+	                  onClick={reopenLastMidiImportMapping}
+	                  disabled={!lastMidiImportSession?.arrayBuffer}
+	                  className={`rounded-lg border px-3 py-2 text-left text-sm ${
+	                    lastMidiImportSession?.arrayBuffer
+	                      ? "border-neutral-800 bg-neutral-900/60 text-neutral-200 hover:bg-neutral-800/60"
+	                      : "border-neutral-800 text-neutral-500 bg-neutral-900/60 cursor-not-allowed"
+	                  }`}
+	                  title="Reopen mapping for the last imported MIDI file"
                 >
                   Edit Last MIDI Mapping
                 </button>
@@ -24169,7 +24258,7 @@ function Grid({
 
 
   return (
-    <div className="relative flex flex-col gap-6" data-gridsurface="1">
+    <div className="relative inline-flex w-max flex-col gap-6" data-gridsurface="1">
       {Array.from({ length: Math.ceil(bars / Math.max(1, Math.min(bars, Number(gridBarsPerLine) || 1))) }).map((_, lineIdx) => {
         const perLine = Math.max(1, Math.min(bars, Number(gridBarsPerLine) || 1));
         const barStart = lineIdx * perLine;

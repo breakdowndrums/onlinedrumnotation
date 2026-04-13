@@ -783,6 +783,8 @@ const ARRANGEMENT_TITLE_LINE1_STORAGE_KEY = "drum-grid-arrangement-title-line1-v
 const ARRANGEMENT_TITLE_LINE2_STORAGE_KEY = "drum-grid-arrangement-title-line2-v1";
 const ARRANGEMENT_COMPOSER_STORAGE_KEY = "drum-grid-arrangement-composer-v1";
 const PREFERENCES_CATEGORY_STORAGE_KEY = "drum-grid-preferences-category-v1";
+const GRID_NOTATION_GAP_STORAGE_KEY = "drum-grid-grid-notation-gap-v1";
+const NOTATION_GRID_GAP_OFFSET_STORAGE_KEY = "drum-grid-notation-grid-gap-offset-v1";
 const DEFAULT_LOOP_REPEATS_STORAGE_KEY = "drum-grid-default-loop-repeats-v1";
 const BEAT_LIBRARY_CONTAINERS_STORAGE_KEY = "drum-grid-beat-library-containers-v1";
 const DEVICE_LOCAL_BEAT_LIBRARY_CONTAINERS_SNAPSHOT_STORAGE_KEY =
@@ -792,7 +794,7 @@ const PERSONAL_LIBRARY_STATE_SHARE_LINK_KIND = "arrangement";
 const BEAT_LIBRARY_SELECTED_CONTAINER_STORAGE_KEY = "drum-grid-beat-library-selected-container-v1";
 const BEAT_LIBRARY_ROOT_COLLAPSED_STORAGE_KEY = "drum-grid-beat-library-root-collapsed-v1";
 const GRID_SETTINGS_PRESET_LIBRARY_STORAGE_KEY = "drum-grid-grid-settings-presets-v1";
-const APP_VERSION = "0.1.253";
+const APP_VERSION = "0.1.266";
 const BEAT_CATEGORY_OPTIONS = [
   "Groove",
   "Fill",
@@ -2929,8 +2931,7 @@ export default function App() {
       return false;
     }
   });
-  const useFixedDesktopFooter =
-    !isEmbedMode && viewportSize.width >= 768 && viewportSize.height >= 820;
+  const useFixedDesktopFooter = false;
   const requestedExample = React.useMemo(() => {
     if (!routeOptions.exampleId) return null;
     return EMBED_EXAMPLES[routeOptions.exampleId] || null;
@@ -3581,6 +3582,22 @@ export default function App() {
   const [barsPerLine, setBarsPerLine] = useState(4);
   const [gridBarsPerLine, setGridBarsPerLine] = useState(4);
   const [layout, setLayout] = useState("grid-top");
+  const [gridNotationGap, setGridNotationGap] = useState(() => {
+    try {
+      const raw = Number(window.localStorage.getItem(GRID_NOTATION_GAP_STORAGE_KEY));
+      return Number.isFinite(raw) ? Math.max(0, Math.min(80, Math.round(raw))) : 20;
+    } catch (_) {
+      return 20;
+    }
+  });
+  const [notationGridGapOffset, setNotationGridGapOffset] = useState(() => {
+    try {
+      const raw = Number(window.localStorage.getItem(NOTATION_GRID_GAP_OFFSET_STORAGE_KEY));
+      return Number.isFinite(raw) ? Math.max(-40, Math.min(50, Math.round(raw))) : -30;
+    } catch (_) {
+      return -30;
+    }
+  });
   const [activeTab, setActiveTab] = useState("none"); // none | timing | notation | selection
   const [timeSig, setTimeSig] = useState({ n: 4, d: 4 });
   const [keepTiming, setKeepTiming] = useState(true);
@@ -5201,6 +5218,19 @@ export default function App() {
       window.localStorage.setItem(PREFERENCES_CATEGORY_STORAGE_KEY, preferencesCategory);
     } catch (_) {}
   }, [preferencesCategory]);
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(GRID_NOTATION_GAP_STORAGE_KEY, String(gridNotationGap));
+    } catch (_) {}
+  }, [gridNotationGap]);
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        NOTATION_GRID_GAP_OFFSET_STORAGE_KEY,
+        String(notationGridGapOffset)
+      );
+    } catch (_) {}
+  }, [notationGridGapOffset]);
   useEffect(() => {
     try {
       if (authUser?.id) return;
@@ -17313,8 +17343,9 @@ useEffect(() => {
   ) : null;
 
   const desktopSettingsSidebar = showDesktopSettingsSidebar && !settingsSidebarCollapsed ? (
+    <div className="self-start w-[15.5rem] shrink-0">
     <aside
-      className="sticky top-0 mt-6 z-20 self-start w-[15.5rem] shrink-0 overflow-visible rounded-xl border border-neutral-800 bg-neutral-900 p-4 shadow-xl shadow-black/20"
+      className="sticky top-0 mt-6 z-20 overflow-visible rounded-xl border border-neutral-800 bg-neutral-900 p-4 shadow-xl shadow-black/20"
       data-loopui="1"
     >
       <div className="mb-4 flex items-center justify-between gap-2">
@@ -17909,6 +17940,11 @@ useEffect(() => {
         </div>
       </div>
     </aside>
+    <div
+      aria-hidden="true"
+      className="pointer-events-none h-12 w-full bg-transparent"
+    />
+    </div>
   ) : null;
 
 
@@ -18351,7 +18387,14 @@ useEffect(() => {
               </div>
             </div>
 
-	            <div className="w-full overflow-visible">
+	            <div
+                className="w-full overflow-visible"
+                style={
+                  layout === "notation-top"
+                    ? { marginTop: `${24 + notationGridGapOffset}px` }
+                    : undefined
+                }
+              >
 	              <div className="inline-block align-top pr-4">
                 <Grid
                 instruments={instruments}
@@ -18447,7 +18490,10 @@ useEffect(() => {
             </div>
             </div>
 
-            <div className="w-full pr-4 inline-block align-top pl-14">
+            <div
+              className="w-full pr-4 inline-block align-top pl-14"
+              style={layout === "grid-top" ? { marginTop: `${gridNotationGap}px` } : undefined}
+            >
               <div className="w-full" ref={setNotationExportEl}>
                 <Notation
                   instruments={instruments}
@@ -23269,17 +23315,69 @@ useEffect(() => {
                         </div>
                       </div>
 
-                      <label className="text-sm text-neutral-300 flex items-center gap-2">
-                        <span className="whitespace-nowrap">Layout</span>
-                        <select
-                          value={layout}
-                          onChange={(e) => setLayout(e.target.value)}
-                          className="bg-neutral-800 border border-neutral-700 rounded px-2 py-1"
-                        >
-                          <option value="grid-top">Grid top / Notation bottom</option>
-                          <option value="notation-top">Notation top / Grid bottom</option>
-                        </select>
-                      </label>
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm text-neutral-300 whitespace-nowrap">Layout</span>
+                        <div className="flex items-stretch overflow-hidden rounded-md border border-neutral-700 bg-neutral-800">
+                          <button
+                            type="button"
+                            onClick={() => setLayout("grid-top")}
+                            className={`px-3 py-1 text-sm whitespace-nowrap ${
+                              layout === "grid-top"
+                                ? "bg-neutral-700 text-white"
+                                : "bg-neutral-800 text-neutral-400 hover:bg-neutral-700/60 hover:text-neutral-200"
+                            }`}
+                          >
+                            Grid top
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setLayout("notation-top")}
+                            className={`border-l border-neutral-700 px-3 py-1 text-sm whitespace-nowrap ${
+                              layout === "notation-top"
+                                ? "bg-neutral-700 text-white"
+                                : "bg-neutral-800 text-neutral-400 hover:bg-neutral-700/60 hover:text-neutral-200"
+                            }`}
+                          >
+                            Notation top
+                          </button>
+                        </div>
+                      </div>
+
+                      {layout === "grid-top" ? (
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm text-neutral-300 whitespace-nowrap">Offset</span>
+                          <input
+                            type="range"
+                            min="0"
+                            max="80"
+                            step="1"
+                            value={gridNotationGap}
+                            onChange={(e) => setGridNotationGap(Number(e.target.value))}
+                            className="w-32"
+                          />
+                          <span className="w-10 text-right text-xs text-neutral-400">
+                            {gridNotationGap}
+                          </span>
+                        </div>
+                      ) : null}
+
+                      {layout === "notation-top" ? (
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm text-neutral-300 whitespace-nowrap">Offset</span>
+                          <input
+                            type="range"
+                            min="-40"
+                            max="50"
+                            step="1"
+                            value={notationGridGapOffset}
+                            onChange={(e) => setNotationGridGapOffset(Number(e.target.value))}
+                            className="w-32"
+                          />
+                          <span className="w-10 text-right text-xs text-neutral-400">
+                            {notationGridGapOffset}
+                          </span>
+                        </div>
+                      ) : null}
                     </div>
                   </>
                 ) : (

@@ -791,10 +791,14 @@ const DEVICE_LOCAL_BEAT_LIBRARY_CONTAINERS_SNAPSHOT_STORAGE_KEY =
   "drum-grid-device-local-beat-library-containers-snapshot-v1";
 const PERSONAL_LIBRARY_STATE_PAYLOAD_KIND = "personal-library-state";
 const PERSONAL_LIBRARY_STATE_SHARE_LINK_KIND = "arrangement";
+const SHARE_LINK_CLEANUP_LAST_RUN_STORAGE_KEY = "drum-grid-share-link-cleanup-last-run-v1";
+const SHARE_LINK_CLEANUP_LAST_COUNT_STORAGE_KEY = "drum-grid-share-link-cleanup-last-count-v1";
+const TEMPORARY_SHARE_LINK_MAX_AGE_MS = 1000 * 60 * 60 * 24 * 120;
+const TEMPORARY_SHARE_LINK_CLEANUP_INTERVAL_MS = 1000 * 60 * 60 * 24;
 const BEAT_LIBRARY_SELECTED_CONTAINER_STORAGE_KEY = "drum-grid-beat-library-selected-container-v1";
 const BEAT_LIBRARY_ROOT_COLLAPSED_STORAGE_KEY = "drum-grid-beat-library-root-collapsed-v1";
 const GRID_SETTINGS_PRESET_LIBRARY_STORAGE_KEY = "drum-grid-grid-settings-presets-v1";
-const APP_VERSION = "0.1.266";
+const APP_VERSION = "0.1.274";
 const BEAT_CATEGORY_OPTIONS = [
   "Groove",
   "Fill",
@@ -1559,6 +1563,206 @@ function makeShortShareId() {
   const bytes = new Uint8Array(6);
   window.crypto.getRandomValues(bytes);
   return Array.from(bytes, (b) => b.toString(36).padStart(2, "0")).join("").slice(0, 10);
+}
+
+function isPlainObjectRecord(value) {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function stableSerializeValue(value) {
+  if (value == null) return "null";
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableSerializeValue(item)).join(",")}]`;
+  }
+  if (typeof value === "object") {
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stableSerializeValue(value[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+async function computeStableSha256Hex(input) {
+  const text = String(input || "");
+  try {
+    if (window.crypto?.subtle) {
+      const bytes = new TextEncoder().encode(text);
+      const digest = await window.crypto.subtle.digest("SHA-256", bytes);
+      return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+    }
+  } catch (_) {}
+  let hash = 2166136261;
+  for (let idx = 0; idx < text.length; idx += 1) {
+    hash ^= text.charCodeAt(idx);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `fnv1a-${(hash >>> 0).toString(16).padStart(8, "0")}`;
+}
+
+function buildCanonicalArrangementSharePayload(payload) {
+  if (!isPlainObjectRecord(payload)) return null;
+  const beats = Array.isArray(payload.beats) ? payload.beats : [];
+  const beatIndexBySharedId = new Map();
+  const normalizedBeats = beats
+    .map((beat, index) => {
+      const sharedId = String(beat?.id || "");
+      if (sharedId) beatIndexBySharedId.set(sharedId, index);
+      return {
+        name: String(beat?.name || "").trim() || `Beat ${index + 1}`,
+        category: String(beat?.category || "Groove"),
+        style: beat?.style ? String(beat.style) : "",
+        timeSigCategory: String(beat?.timeSigCategory || "4/4"),
+        bpm: Math.max(20, Math.min(400, Number(beat?.bpm) || Number(beat?.payload?.bpm) || 120)),
+        payload: getComparableBeatPayload(beat?.payload || {}),
+      };
+    });
+  const normalizedItems = normalizeArrangementItems(payload.items).map((item) => ({
+    beatIndex: Math.max(0, beatIndexBySharedId.get(String(item?.beatId || "")) ?? 0),
+    repeats: Math.max(1, Number(item?.repeats) || 1),
+  }));
+  return {
+    v: Number(payload?.v) || 1,
+    kind: "arrangement",
+    name: String(payload?.name || "").trim() || "Arrangement",
+    titleLine1: String(payload?.titleLine1 || "").trim(),
+    titleLine2: String(payload?.titleLine2 || "").trim(),
+    composer: String(payload?.composer || "").trim(),
+    beats: normalizedBeats,
+    items: normalizedItems,
+  };
+}
+
+async function buildSharePayloadFingerprint(mode, payload) {
+  const canonical =
+    mode === "arrangement"
+      ? buildCanonicalArrangementSharePayload(payload)
+      : {
+          kind: "beat",
+          payload: getComparableBeatPayload(payload),
+        };
+  return computeStableSha256Hex(stableSerializeValue(canonical));
+}
+
+function getShareLinkMeta(payload) {
+  if (!isPlainObjectRecord(payload) || !isPlainObjectRecord(payload.shareMeta)) return null;
+  return payload.shareMeta;
+}
+
+function isPersonalLibraryStatePayload(payload) {
+  return String(payload?.kind || "") === PERSONAL_LIBRARY_STATE_PAYLOAD_KIND;
+}
+
+function isPublishedDefaultSharePayload(payload) {
+  return payload?.publishedDefault === true;
+}
+
+function isTemporarySharePayload(payload) {
+  return getShareLinkMeta(payload)?.temporary === true;
+}
+
+function withShareLinkMeta(payload, nextMeta) {
+  if (!isPlainObjectRecord(payload)) return payload;
+  const sanitizedMeta = isPlainObjectRecord(nextMeta) ? nextMeta : {};
+  return {
+    ...payload,
+    shareMeta: sanitizedMeta,
+  };
+}
+
+function getSharePayloadFingerprint(payload) {
+  return String(getShareLinkMeta(payload)?.fingerprint || "").trim();
+}
+
+function buildTemporarySharePayload(payload, fingerprint = "") {
+  if (!isPlainObjectRecord(payload)) return payload;
+  const now = new Date().toISOString();
+  return withShareLinkMeta(payload, {
+    temporary: true,
+    fingerprint: String(fingerprint || "").trim(),
+    createdAt: now,
+    lastAccessedAt: null,
+    accessCount: 0,
+  });
+}
+
+function buildTouchedSharePayload(payload) {
+  if (!isTemporarySharePayload(payload)) return payload;
+  const currentMeta = getShareLinkMeta(payload) || {};
+  return withShareLinkMeta(payload, {
+    ...currentMeta,
+    temporary: true,
+    lastAccessedAt: new Date().toISOString(),
+    accessCount: Math.max(0, Number(currentMeta.accessCount) || 0) + 1,
+  });
+}
+
+function isShareLinkAutoCleanupCandidate(row, nowMs = Date.now()) {
+  const payload = row?.payload;
+  if (!isTemporarySharePayload(payload)) return false;
+  if (isPublishedDefaultSharePayload(payload) || isPersonalLibraryStatePayload(payload)) return false;
+  const meta = getShareLinkMeta(payload) || {};
+  const accessCount = Math.max(0, Number(meta.accessCount) || 0);
+  if (accessCount > 0) return false;
+  const createdAtMs = Date.parse(
+    String(meta.createdAt || row?.created_at || row?.updated_at || "")
+  );
+  if (!Number.isFinite(createdAtMs)) return false;
+  return nowMs - createdAtMs >= TEMPORARY_SHARE_LINK_MAX_AGE_MS;
+}
+
+function getProfileShareLinkLabel(row) {
+  const payload = row?.payload;
+  const kind = String(row?.kind || "");
+  if (isPersonalLibraryStatePayload(payload)) return "Personal library state";
+  if (kind === "beat") {
+    if (isPublishedDefaultSharePayload(payload)) {
+      return String(payload?.name || "").trim() || "Public beat";
+    }
+    return String(payload?.name || "").trim() || "Shared beat";
+  }
+  if (kind === "arrangement") {
+    if (isPublishedDefaultSharePayload(payload)) {
+      return (
+        String(payload?.titleLine1 || "").trim() ||
+        String(payload?.name || "").trim() ||
+        "Public arrangement"
+      );
+    }
+    return (
+      String(payload?.titleLine1 || "").trim() ||
+      String(payload?.name || "").trim() ||
+      "Shared arrangement"
+    );
+  }
+  return "Share link";
+}
+
+function getProfileShareLinkTypeLabel(row) {
+  const payload = row?.payload;
+  if (isPersonalLibraryStatePayload(payload)) return "Library state";
+  if (isTemporarySharePayload(payload)) return "Temporary";
+  if (isPublishedDefaultSharePayload(payload)) return "Public";
+  return String(row?.kind || "Share");
+}
+
+function normalizeProfileShareLinkEntry(row) {
+  if (!row || typeof row !== "object") return null;
+  const payload = isPlainObjectRecord(row.payload) ? row.payload : {};
+  const shareMeta = getShareLinkMeta(payload) || {};
+  const createdAt =
+    String(shareMeta.createdAt || row.created_at || row.updated_at || "").trim() || "";
+  return {
+    id: String(row.id || ""),
+    kind: String(row.kind || ""),
+    label: getProfileShareLinkLabel(row),
+    typeLabel: getProfileShareLinkTypeLabel(row),
+    temporary: isTemporarySharePayload(payload),
+    published: isPublishedDefaultSharePayload(payload),
+    accessCount: Math.max(0, Number(shareMeta.accessCount) || 0),
+    lastAccessedAt: String(shareMeta.lastAccessedAt || "").trim(),
+    createdAt,
+  };
 }
 
 function normalizePublishedBeatEntry(row) {
@@ -3528,6 +3732,9 @@ export default function App() {
   const [personalLibraryRefreshing, setPersonalLibraryRefreshing] = useState(false);
   const [personalLibraryLastSyncAt, setPersonalLibraryLastSyncAt] = useState("");
   const [profileShareQrCount, setProfileShareQrCount] = useState(0);
+  const [profileTemporaryShareCount, setProfileTemporaryShareCount] = useState(0);
+  const [profileCleanedShareCount, setProfileCleanedShareCount] = useState(0);
+  const [profileShareLinks, setProfileShareLinks] = useState([]);
   const [profileStatsLoading, setProfileStatsLoading] = useState(false);
   const [libraryFiltersOpen, setLibraryFiltersOpen] = useState(false);
   const [arrangementLibraryMenuOpen, setArrangementLibraryMenuOpen] = useState(false);
@@ -3925,6 +4132,10 @@ export default function App() {
   const [showBraveAudioNotice, setShowBraveAudioNotice] = useState(true);
   const [shareCopied, setShareCopied] = useState(false);
   const [shareLinkType, setShareLinkType] = useState("");
+  const [shareLinkMode, setShareLinkMode] = useState({
+    beat: "short",
+    arrangement: "short",
+  });
   const [bpmDraft, setBpmDraft] = useState("120");
   const [menuViewportTick, setMenuViewportTick] = useState(0);
   const activeTabRef = React.useRef(activeTab);
@@ -4340,6 +4551,9 @@ export default function App() {
   const refreshProfileCloudStats = React.useCallback(async () => {
     if (!hasSupabaseEnabled || !supabase || !authUser?.id) {
       setProfileShareQrCount(0);
+      setProfileTemporaryShareCount(0);
+      setProfileCleanedShareCount(0);
+      setProfileShareLinks([]);
       setProfileStatsLoading(false);
       return;
     }
@@ -4348,20 +4562,72 @@ export default function App() {
       const stateId = getPersonalLibraryStateShareId(authUser.id);
       let query = supabase
         .from("share_links")
-        .select("id", { count: "exact", head: true })
+        .select("id,kind,payload,created_at,updated_at")
         .eq("owner_user_id", authUser.id);
       if (stateId) {
         query = query.neq("id", stateId);
       }
-      const { count, error } = await query;
+      const { data, error } = await query;
       if (error) throw error;
-      setProfileShareQrCount(Number.isFinite(count) ? count : 0);
+      const rows = Array.isArray(data) ? data : [];
+      setProfileShareQrCount(rows.length);
+      setProfileTemporaryShareCount(
+        rows.filter((row) => isTemporarySharePayload(row?.payload)).length
+      );
+      setProfileShareLinks(
+        rows
+          .map(normalizeProfileShareLinkEntry)
+          .filter(Boolean)
+      );
+      try {
+        const cleanedCountRaw = window.localStorage.getItem(
+          `${SHARE_LINK_CLEANUP_LAST_COUNT_STORAGE_KEY}:${authUser.id}`
+        );
+        const cleanedCount = Number(cleanedCountRaw || "0");
+        setProfileCleanedShareCount(Number.isFinite(cleanedCount) ? Math.max(0, cleanedCount) : 0);
+      } catch (_) {
+        setProfileCleanedShareCount(0);
+      }
     } catch (_) {
       setProfileShareQrCount(0);
+      setProfileTemporaryShareCount(0);
+      setProfileCleanedShareCount(0);
+      setProfileShareLinks([]);
     } finally {
       setProfileStatsLoading(false);
     }
   }, [authUser?.id]);
+  const openProfileShareLinkInNewTab = React.useCallback((shareId) => {
+    const normalizedId = String(shareId || "").trim();
+    if (!normalizedId) return;
+    window.open(
+      `${window.location.origin}/g/${encodeURIComponent(normalizedId)}`,
+      "_blank",
+      "noopener,noreferrer"
+    );
+  }, []);
+  const deleteProfileShareLink = React.useCallback(async (shareId) => {
+    const normalizedId = String(shareId || "").trim();
+    if (!normalizedId || !hasSupabaseEnabled || !supabase || !authUser?.id) return false;
+    const entry = profileShareLinks.find((item) => String(item?.id || "") === normalizedId) || null;
+    const label = entry?.label || "this share link";
+    if (!window.confirm(`Delete ${label}?`)) return false;
+    const { error } = await supabase
+      .from("share_links")
+      .delete()
+      .eq("id", normalizedId)
+      .eq("owner_user_id", authUser.id);
+    if (error) {
+      setAuthError(error.message || "Failed to delete share link.");
+      return false;
+    }
+    setProfileShareLinks((prev) => prev.filter((item) => String(item?.id || "") !== normalizedId));
+    setProfileShareQrCount((prev) => Math.max(0, prev - 1));
+    if (entry?.temporary) {
+      setProfileTemporaryShareCount((prev) => Math.max(0, prev - 1));
+    }
+    return true;
+  }, [authUser?.id, profileShareLinks]);
   const refreshPublicArrangementLibrary = React.useCallback(async () => {
     setPublicArrangementLibraryLoading(true);
     setPublicLibraryError("");
@@ -4457,6 +4723,63 @@ export default function App() {
     if (error) throw error;
     lastSyncedBeatLibraryContainersJsonRef.current = JSON.stringify(nextContainers);
     return true;
+  }, [authUser?.id]);
+  const touchShareLinkAccess = React.useCallback(async (shareId, payload) => {
+    const normalizedShareId = String(shareId || "");
+    if (!normalizedShareId || !hasSupabaseEnabled || !supabase) return;
+    if (!isTemporarySharePayload(payload)) return;
+    const nextPayload = buildTouchedSharePayload(payload);
+    if (nextPayload === payload) return;
+    try {
+      await supabase
+        .from("share_links")
+        .update({ payload: nextPayload })
+        .eq("id", normalizedShareId);
+    } catch (_) {}
+  }, []);
+  const cleanupExpiredTemporaryShareLinks = React.useCallback(async ({ force = false } = {}) => {
+    if (!hasSupabaseEnabled || !supabase || !authUser?.id) return 0;
+    const storageKey = `${SHARE_LINK_CLEANUP_LAST_RUN_STORAGE_KEY}:${authUser.id}`;
+    const countStorageKey = `${SHARE_LINK_CLEANUP_LAST_COUNT_STORAGE_KEY}:${authUser.id}`;
+    if (!force) {
+      try {
+        const lastRunMs = Number(window.localStorage.getItem(storageKey) || "0");
+        if (Number.isFinite(lastRunMs) && lastRunMs > 0) {
+          if (Date.now() - lastRunMs < TEMPORARY_SHARE_LINK_CLEANUP_INTERVAL_MS) return 0;
+        }
+      } catch (_) {}
+    }
+    try {
+      const { data, error } = await supabase
+        .from("share_links")
+        .select("id,payload,created_at,updated_at")
+        .eq("owner_user_id", authUser.id)
+        .in("kind", ["beat", "arrangement"])
+        .limit(1000);
+      if (error) throw error;
+      const rows = Array.isArray(data) ? data : [];
+      const nowMs = Date.now();
+      const idsToDelete = rows
+        .filter((row) => isShareLinkAutoCleanupCandidate(row, nowMs))
+        .map((row) => String(row?.id || ""))
+        .filter(Boolean);
+      if (idsToDelete.length) {
+        const { error: deleteError } = await supabase
+          .from("share_links")
+          .delete()
+          .eq("owner_user_id", authUser.id)
+          .in("id", idsToDelete);
+        if (deleteError) throw deleteError;
+      }
+      try {
+        window.localStorage.setItem(storageKey, String(nowMs));
+        window.localStorage.setItem(countStorageKey, String(idsToDelete.length));
+      } catch (_) {}
+      setProfileCleanedShareCount(idsToDelete.length);
+      return idsToDelete.length;
+    } catch (_) {
+      return 0;
+    }
   }, [authUser?.id]);
   const refreshPersonalLibraryFromCloud = React.useCallback(async (options = {}) => {
     const { alertOnError = false, pushCurrentFoldersFirst = true } = options;
@@ -5639,6 +5962,11 @@ export default function App() {
   }, [activeTab]);
 
   useEffect(() => {
+    if (!authUser?.id || !hasSupabaseEnabled || !supabase) return;
+    void cleanupExpiredTemporaryShareLinks();
+  }, [authUser?.id, cleanupExpiredTemporaryShareLinks]);
+
+  useEffect(() => {
     if (!routeOptions.shareId) {
       setResolvedSharedState(null);
       return;
@@ -5651,13 +5979,14 @@ export default function App() {
         if (hasSupabaseEnabled && supabase) {
           const { data, error } = await supabase
             .from("share_links")
-            .select("payload")
+            .select("id,payload")
             .eq("id", String(routeOptions.shareId))
             .maybeSingle();
           if (!cancelled && !error) {
             const payload = data?.payload;
             if (payload && typeof payload === "object") {
               setResolvedSharedState(payload);
+              void touchShareLinkAccess(data?.id || routeOptions.shareId, payload);
               return;
             }
           }
@@ -5678,7 +6007,7 @@ export default function App() {
       cancelled = true;
       controller.abort();
     };
-  }, [routeOptions.shareId, resolvedSharedState]);
+  }, [routeOptions.shareId, resolvedSharedState, touchShareLinkAccess]);
 
   useEffect(() => {
     return () => {
@@ -15409,7 +15738,7 @@ useEffect(() => {
   }, [isArrangementOpen, arrangementDetailsCollapsed, refreshPublicArrangementLibrary]);
 
   const createShareLink = React.useCallback(async (mode = "beat", options = {}) => {
-    const { requireShort = false } = options || {};
+    const { requireShort = false, forceLong = false } = options || {};
     const payload = mode === "arrangement" ? buildCurrentArrangementSharePayload() : buildCurrentBeatPayload();
     if (!payload || (mode === "arrangement" && (!Array.isArray(payload.items) || payload.items.length < 1))) {
       throw new Error("Failed to create share link");
@@ -15417,42 +15746,88 @@ useEffect(() => {
     let text = "";
     let usedShortLink = false;
     try {
-      if (hasSupabaseEnabled && supabase && authUser?.id) {
-        let id = "";
-        let inserted = false;
-        for (let i = 0; i < 6; i++) {
-          const candidate = makeShortShareId();
-          const { error } = await supabase.from("share_links").insert({
-            id: candidate,
-            kind: mode === "arrangement" ? "arrangement" : "beat",
-            owner_user_id: authUser.id,
-            payload,
+      if (!forceLong && hasSupabaseEnabled && supabase && authUser?.id) {
+        const fingerprint = await buildSharePayloadFingerprint(mode, payload);
+        const { data: existingRows, error: existingError } = await supabase
+          .from("share_links")
+          .select("id,payload")
+          .eq("owner_user_id", authUser.id)
+          .eq("kind", mode === "arrangement" ? "arrangement" : "beat")
+          .limit(500);
+        if (!existingError) {
+          const matchedRow = (Array.isArray(existingRows) ? existingRows : []).find((row) => {
+            const rowPayload = row?.payload;
+            if (!isTemporarySharePayload(rowPayload)) return false;
+            if (isPublishedDefaultSharePayload(rowPayload) || isPersonalLibraryStatePayload(rowPayload)) return false;
+            const existingFingerprint = getSharePayloadFingerprint(rowPayload);
+            return existingFingerprint && existingFingerprint === fingerprint;
           });
-          if (!error) {
-            id = candidate;
-            inserted = true;
+          if (matchedRow?.id) {
+            text = `${window.location.origin}/g/${encodeURIComponent(String(matchedRow.id || ""))}`;
+            usedShortLink = true;
+          }
+        }
+        if (!text && !existingError && Array.isArray(existingRows)) {
+          for (const row of existingRows) {
+            const rowPayload = row?.payload;
+            if (!isTemporarySharePayload(rowPayload)) continue;
+            if (isPublishedDefaultSharePayload(rowPayload) || isPersonalLibraryStatePayload(rowPayload)) continue;
+            const existingFingerprint =
+              getSharePayloadFingerprint(rowPayload) ||
+              await buildSharePayloadFingerprint(mode, rowPayload);
+            if (existingFingerprint !== fingerprint) continue;
+            text = `${window.location.origin}/g/${encodeURIComponent(String(row.id || ""))}`;
+            usedShortLink = true;
+            if (!getSharePayloadFingerprint(rowPayload)) {
+              void supabase
+                .from("share_links")
+                .update({ payload: withShareLinkMeta(rowPayload, {
+                  ...(getShareLinkMeta(rowPayload) || {}),
+                  temporary: true,
+                  fingerprint,
+                }) })
+                .eq("id", String(row.id || ""));
+            }
             break;
           }
         }
-        if (inserted && id) {
+        let id = "";
+        let inserted = false;
+        if (!text) {
+          for (let i = 0; i < 6; i++) {
+            const candidate = makeShortShareId();
+            const { error } = await supabase.from("share_links").insert({
+              id: candidate,
+              kind: mode === "arrangement" ? "arrangement" : "beat",
+              owner_user_id: authUser.id,
+              payload: buildTemporarySharePayload(payload, fingerprint),
+            });
+            if (!error) {
+              id = candidate;
+              inserted = true;
+              break;
+            }
+          }
+        }
+        if (!text && inserted && id) {
           text = `${window.location.origin}/g/${encodeURIComponent(id)}`;
           usedShortLink = true;
         }
       }
-      if (!text) {
-      const res = await fetch("/api/share", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ payload }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        const id = String(data?.id || "");
-        if (id) {
-          text = `${window.location.origin}/g/${encodeURIComponent(id)}`;
-          usedShortLink = true;
+      if (!forceLong && !text) {
+        const res = await fetch("/api/share", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ payload }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          const id = String(data?.id || "");
+          if (id) {
+            text = `${window.location.origin}/g/${encodeURIComponent(id)}`;
+            usedShortLink = true;
+          }
         }
-      }
       }
     } catch (_) {
       // fall through to local URL state fallback
@@ -15504,7 +15879,11 @@ useEffect(() => {
   }, [handleBeatPdfExport]);
 
   const handleShareLink = React.useCallback(async (mode = "beat") => {
-    const { text, usedShortLink } = await createShareLink(mode);
+    const selectedMode =
+      mode === "arrangement" ? shareLinkMode.arrangement : shareLinkMode.beat;
+    const { text, usedShortLink } = await createShareLink(mode, {
+      forceLong: selectedMode === "long",
+    });
 
     try {
       if (navigator.clipboard?.writeText) {
@@ -15524,6 +15903,7 @@ useEffect(() => {
     }
   }, [
     createShareLink,
+    shareLinkMode,
   ]);
   const handleArrangementPdfExport = React.useCallback(async () => {
     try {
@@ -21220,23 +21600,52 @@ useEffect(() => {
 	            >
 	              <div className="px-1 pb-2 text-sm text-neutral-300">Beat</div>
 	              <div className="grid grid-cols-1 gap-1.5">
-	                <button
-	                  type="button"
-	                  onClick={() => {
-	                    setIsShareActionsDialogOpen(false);
-	                    handleShareLink("beat");
-	                  }}
-	                  className={`rounded-lg border px-3 py-2 text-left text-sm ${
-	                    shareCopied && shareLinkType?.startsWith("Beat")
-	                      ? "border-neutral-600 bg-neutral-800 text-white"
-	                      : "border-neutral-800 bg-neutral-900/60 text-neutral-200 hover:bg-neutral-800/60"
-	                  }`}
-	                  title="Copy shareable beat link"
-	                >
-                  {shareCopied && shareLinkType?.startsWith("Beat")
-                    ? `Link copied (${shareLinkType})`
-                    : "Link"}
-                </button>
+	                <div className="grid grid-cols-[1fr_auto] gap-1.5">
+	                  <button
+	                    type="button"
+	                    onClick={() => {
+	                      handleShareLink("beat");
+	                    }}
+	                    className={`rounded-lg border px-3 py-2 text-left text-sm ${
+	                      shareCopied && shareLinkType?.startsWith("Beat")
+	                        ? "border-neutral-600 bg-neutral-800 text-white"
+	                        : "border-neutral-800 bg-neutral-900/60 text-neutral-200 hover:bg-neutral-800/60"
+	                    }`}
+	                    title="Copy shareable beat link"
+	                  >
+                    {shareCopied && shareLinkType?.startsWith("Beat")
+                      ? shareLinkType === "Beat Short"
+                        ? "Short link created and copied"
+                        : `Link copied (${shareLinkType})`
+                      : "Link"}
+                  </button>
+	                  <div className="inline-flex rounded-lg border border-neutral-800 bg-neutral-900/60 p-0.5">
+	                    <button
+	                      type="button"
+	                      onClick={() => setShareLinkMode((prev) => ({ ...prev, beat: "short" }))}
+	                      className={`rounded-md px-2 py-1 text-xs ${
+	                        shareLinkMode.beat === "short"
+	                          ? "bg-neutral-800 text-white"
+	                          : "text-neutral-400 hover:bg-neutral-800/40"
+	                      }`}
+	                      title="Short share link"
+	                    >
+	                      Short
+	                    </button>
+	                    <button
+	                      type="button"
+	                      onClick={() => setShareLinkMode((prev) => ({ ...prev, beat: "long" }))}
+	                      className={`rounded-md px-2 py-1 text-xs ${
+	                        shareLinkMode.beat === "long"
+	                          ? "bg-neutral-800 text-white"
+	                          : "text-neutral-400 hover:bg-neutral-800/40"
+	                      }`}
+	                      title="Long share link: stores the full beat in the URL, so it works without share storage, but the link is much longer."
+	                    >
+	                      Long
+	                    </button>
+	                  </div>
+	                </div>
                 <button
                   type="button"
 	                  onClick={() => {
@@ -21275,26 +21684,55 @@ useEffect(() => {
 	              <div className="my-3 border-t border-neutral-800" />
 	              <div className="px-1 pb-2 text-sm text-neutral-300">Arrangement</div>
 	              <div className="grid grid-cols-1 gap-1.5">
-	                <button
-	                  type="button"
-	                  onClick={() => {
-	                    setIsShareActionsDialogOpen(false);
-                    handleShareLink("arrangement");
-                  }}
-	                  disabled={arrangementItems.length < 1}
-	                  className={`rounded-lg border px-3 py-2 text-left text-sm ${
-	                    shareCopied && shareLinkType?.startsWith("Arrangement")
-	                      ? "border-neutral-600 bg-neutral-800 text-white"
-	                      : arrangementItems.length > 0
-	                        ? "border-neutral-800 bg-neutral-900/60 text-neutral-200 hover:bg-neutral-800/60"
-	                        : "border-neutral-800 text-neutral-500 bg-neutral-900/60 cursor-not-allowed"
-	                  }`}
-	                  title="Copy shareable arrangement link"
-                >
-                  {shareCopied && shareLinkType?.startsWith("Arrangement")
-                    ? `Link copied (${shareLinkType})`
-                    : "Link"}
-                </button>
+	                <div className="grid grid-cols-[1fr_auto] gap-1.5">
+	                  <button
+	                    type="button"
+	                    onClick={() => {
+                      handleShareLink("arrangement");
+                    }}
+	                    disabled={arrangementItems.length < 1}
+	                    className={`rounded-lg border px-3 py-2 text-left text-sm ${
+	                      shareCopied && shareLinkType?.startsWith("Arrangement")
+	                        ? "border-neutral-600 bg-neutral-800 text-white"
+	                        : arrangementItems.length > 0
+	                          ? "border-neutral-800 bg-neutral-900/60 text-neutral-200 hover:bg-neutral-800/60"
+	                          : "border-neutral-800 text-neutral-500 bg-neutral-900/60 cursor-not-allowed"
+	                    }`}
+	                    title="Copy shareable arrangement link"
+                  >
+                    {shareCopied && shareLinkType?.startsWith("Arrangement")
+                      ? shareLinkType === "Arrangement Short"
+                        ? "Short link created and copied"
+                        : `Link copied (${shareLinkType})`
+                      : "Link"}
+                  </button>
+	                  <div className="inline-flex rounded-lg border border-neutral-800 bg-neutral-900/60 p-0.5">
+	                    <button
+	                      type="button"
+	                      onClick={() => setShareLinkMode((prev) => ({ ...prev, arrangement: "short" }))}
+	                      className={`rounded-md px-2 py-1 text-xs ${
+	                        shareLinkMode.arrangement === "short"
+	                          ? "bg-neutral-800 text-white"
+	                          : "text-neutral-400 hover:bg-neutral-800/40"
+	                      }`}
+	                      title="Short share link"
+	                    >
+	                      Short
+	                    </button>
+	                    <button
+	                      type="button"
+	                      onClick={() => setShareLinkMode((prev) => ({ ...prev, arrangement: "long" }))}
+	                      className={`rounded-md px-2 py-1 text-xs ${
+	                        shareLinkMode.arrangement === "long"
+	                          ? "bg-neutral-800 text-white"
+	                          : "text-neutral-400 hover:bg-neutral-800/40"
+	                      }`}
+	                      title="Long share link: stores the full arrangement in the URL, so it works without share storage, but the link is much longer."
+	                    >
+	                      Long
+	                    </button>
+	                  </div>
+	                </div>
                 <button
                   type="button"
                   onClick={() => {
@@ -22561,6 +22999,11 @@ useEffect(() => {
         arrangementsCount={savedArrangements.length}
         foldersCount={beatLibraryContainers.length}
         shareQrCount={profileShareQrCount}
+        temporaryShareCount={profileTemporaryShareCount}
+        cleanedShareCount={profileCleanedShareCount}
+        shareLinks={profileShareLinks}
+        onOpenShareLink={openProfileShareLinkInNewTab}
+        onDeleteShareLink={deleteProfileShareLink}
         lastSyncAt={authProfileLastSyncLabel}
         statsPending={profileStatsLoading || personalLibraryRefreshing}
       />

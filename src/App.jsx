@@ -799,7 +799,7 @@ const TEMPORARY_SHARE_LINK_CLEANUP_INTERVAL_MS = 1000 * 60 * 60 * 24;
 const BEAT_LIBRARY_SELECTED_CONTAINER_STORAGE_KEY = "drum-grid-beat-library-selected-container-v1";
 const BEAT_LIBRARY_ROOT_COLLAPSED_STORAGE_KEY = "drum-grid-beat-library-root-collapsed-v1";
 const GRID_SETTINGS_PRESET_LIBRARY_STORAGE_KEY = "drum-grid-grid-settings-presets-v1";
-const APP_VERSION = "0.1.308";
+const APP_VERSION = "0.1.309";
 const BEAT_CATEGORY_OPTIONS = [
   "Groove",
   "Fill",
@@ -19456,31 +19456,6 @@ useEffect(() => {
             ) : (
               <>
                 <div className="bg-black p-3">
-                  <div className="mb-2 flex items-center justify-between gap-3">
-                    <span className="text-xs text-neutral-400">
-                      {authUser?.id ? "Posting as signed-in user" : "Posting anonymously"}
-                    </span>
-                    {feedbackSuccessMessage ? (
-                      <span className="text-xs text-sky-300">{feedbackSuccessMessage}</span>
-                    ) : null}
-                  </div>
-                  <div className="mb-2 flex flex-wrap items-center gap-2">
-                    {["bug", "feature_idea"].map((typeId) => (
-                      <button
-                        key={`feedback-type-${typeId}`}
-                        type="button"
-                        onClick={() => toggleFeedbackType(typeId)}
-                        className={`rounded border px-2.5 py-1 text-xs transition-colors ${
-                          feedbackTypes.includes(typeId)
-                            ? "border-sky-700/80 bg-sky-950/25 text-sky-200"
-                            : "border-neutral-800 bg-transparent text-neutral-500 hover:border-neutral-700 hover:text-neutral-300"
-                        }`}
-                      >
-                        {feedbackTypeLabel(typeId)}
-                      </button>
-                    ))}
-                    <span className="text-[11px] text-neutral-600">Optional. Pick none, one, or several.</span>
-                  </div>
                   <textarea
                     value={feedbackBody}
                     onChange={(e) => {
@@ -19493,10 +19468,36 @@ useEffect(() => {
                     placeholder="Share a bug, feature idea, or workflow request..."
                     className="w-full resize-y rounded bg-neutral-900/80 px-3 py-2 text-sm text-neutral-200 outline-none ring-0 placeholder:text-neutral-600 focus:outline-none focus:ring-0"
                   />
-                  <div className="mt-2 flex items-center justify-between gap-3">
-                    <span className="text-[11px] text-neutral-500">
-                      {String(feedbackBody || "").length >= 2000 ? "Character limit reached" : ""}
-                    </span>
+                  <div className="mt-2 text-xs text-neutral-400">
+                    {authUser?.id ? "Posting as signed-in user" : "Posting anonymously"}
+                  </div>
+                  <div className="mt-2 flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex min-w-0 flex-wrap items-center gap-2">
+                      {["bug", "feature_idea"].map((typeId) => (
+                        <button
+                          key={`feedback-type-${typeId}`}
+                          type="button"
+                          onClick={() => toggleFeedbackType(typeId)}
+                          className={`rounded border px-2.5 py-1 text-xs transition-colors ${
+                            feedbackTypes.includes(typeId)
+                              ? "border-sky-700/80 bg-sky-950/25 text-sky-200"
+                              : "border-neutral-800 bg-transparent text-neutral-500 hover:border-neutral-700 hover:text-neutral-300"
+                          }`}
+                        >
+                          {feedbackTypeLabel(typeId)}
+                        </button>
+                      ))}
+                      <span className="text-[11px] text-neutral-600">Optional. Pick none, one, or several.</span>
+                      <span className="text-[11px] text-neutral-500">
+                        {String(feedbackBody || "").length >= 2000 ? "Character limit reached" : ""}
+                      </span>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-3">
+                      {feedbackSuccessMessage ? (
+                        <span className="text-xs text-sky-300">{feedbackSuccessMessage}</span>
+                      ) : null}
+                    </div>
+                    <div className="ml-auto shrink-0">
                     <button
                       type="button"
                       onClick={submitFeedback}
@@ -19509,6 +19510,7 @@ useEffect(() => {
                     >
                       {feedbackSubmitting ? "Sending..." : "Send feedback"}
                     </button>
+                    </div>
                   </div>
                   {feedbackError ? (
                     <div className="mt-2 text-xs text-amber-300">{feedbackError}</div>

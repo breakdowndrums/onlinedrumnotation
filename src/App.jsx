@@ -799,7 +799,7 @@ const TEMPORARY_SHARE_LINK_CLEANUP_INTERVAL_MS = 1000 * 60 * 60 * 24;
 const BEAT_LIBRARY_SELECTED_CONTAINER_STORAGE_KEY = "drum-grid-beat-library-selected-container-v1";
 const BEAT_LIBRARY_ROOT_COLLAPSED_STORAGE_KEY = "drum-grid-beat-library-root-collapsed-v1";
 const GRID_SETTINGS_PRESET_LIBRARY_STORAGE_KEY = "drum-grid-grid-settings-presets-v1";
-const APP_VERSION = "0.1.307";
+const APP_VERSION = "0.1.308";
 const BEAT_CATEGORY_OPTIONS = [
   "Groove",
   "Fill",
@@ -19646,7 +19646,7 @@ useEffect(() => {
                               <div className="whitespace-pre-wrap text-xs text-neutral-500">{item.body}</div>
                               {item.adminReply ? (
                                 <div className="mt-3 rounded bg-neutral-900/70 px-3 py-2 text-xs text-neutral-500">
-                                  <div className="mb-1 text-center text-xs text-neutral-500">
+                                  <div className="mb-1 text-left text-xs uppercase text-neutral-500">
                                     Admin reply
                                   </div>
                                   <div className="whitespace-pre-wrap">{item.adminReply}</div>

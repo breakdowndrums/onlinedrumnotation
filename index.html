@@ -52,6 +52,12 @@
       .seo-panel {
         padding: 0;
       }
+      .seo-content > .seo-panel + .seo-panel {
+        margin-top: 20px;
+      }
+      .seo-content > .seo-panel:has(details[open]) + .seo-panel {
+        margin-top: 12px;
+      }
       .seo-panel details {
         display: block;
       }

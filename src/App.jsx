@@ -799,7 +799,7 @@ const TEMPORARY_SHARE_LINK_CLEANUP_INTERVAL_MS = 1000 * 60 * 60 * 24;
 const BEAT_LIBRARY_SELECTED_CONTAINER_STORAGE_KEY = "drum-grid-beat-library-selected-container-v1";
 const BEAT_LIBRARY_ROOT_COLLAPSED_STORAGE_KEY = "drum-grid-beat-library-root-collapsed-v1";
 const GRID_SETTINGS_PRESET_LIBRARY_STORAGE_KEY = "drum-grid-grid-settings-presets-v1";
-const APP_VERSION = "0.1.303";
+const APP_VERSION = "0.1.307";
 const BEAT_CATEGORY_OPTIONS = [
   "Groove",
   "Fill",
@@ -3264,7 +3264,7 @@ export default function App() {
   const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
   const [feedbackError, setFeedbackError] = useState("");
   const [feedbackBody, setFeedbackBody] = useState("");
-  const [feedbackType, setFeedbackType] = useState("idea");
+  const [feedbackTypes, setFeedbackTypes] = useState([]);
   const [feedbackSort, setFeedbackSort] = useState("newest");
   const [feedbackSuccessMessage, setFeedbackSuccessMessage] = useState("");
   const [feedbackVoteMap, setFeedbackVoteMap] = useState({});
@@ -4366,7 +4366,21 @@ export default function App() {
       authorKind: String(row.author_kind || (row.user_id ? "registered" : "anonymous")),
       authorLabel: String(row.author_label || "").trim(),
       userId: row.user_id ? String(row.user_id) : "",
-      feedbackType: String(row.feedback_type || "idea").trim().toLowerCase() || "idea",
+      feedbackTypes: (() => {
+        const next = Array.isArray(row.feedback_types)
+          ? row.feedback_types
+          : row.feedback_type
+            ? [row.feedback_type]
+            : [];
+        return Array.from(
+          new Set(
+            next
+              .map((entry) => String(entry || "").trim().toLowerCase())
+              .map((entry) => (entry === "feature" || entry === "idea" ? "feature_idea" : entry))
+              .filter((entry) => entry === "bug" || entry === "feature_idea")
+          )
+        );
+      })(),
       adminReply: String(row.admin_reply || "").trim(),
       resolutionStatus: String(row.resolution_status || "reviewing").trim().toLowerCase() || "reviewing",
     };
@@ -4374,8 +4388,17 @@ export default function App() {
   const feedbackTypeLabel = React.useCallback((value) => {
     const normalized = String(value || "").trim().toLowerCase();
     if (normalized === "bug") return "Bug";
-    if (normalized === "feature") return "Feature";
-    return "Idea";
+    return "Feature idea";
+  }, []);
+  const toggleFeedbackType = React.useCallback((value) => {
+    const normalized = String(value || "").trim().toLowerCase();
+    if (normalized !== "bug" && normalized !== "feature_idea") return;
+    setFeedbackTypes((prev) => {
+      const list = Array.isArray(prev) ? prev : [];
+      return list.includes(normalized)
+        ? list.filter((entry) => entry !== normalized)
+        : [...list, normalized];
+    });
   }, []);
   const feedbackResolutionLabel = React.useCallback((value) => {
     const normalized = String(value || "").trim().toLowerCase();
@@ -4819,10 +4842,10 @@ export default function App() {
       await callFeedbackApi("POST", {
         action: "submit",
         body,
-        feedbackType,
+        feedbackTypes,
       });
       setFeedbackBody("");
-      setFeedbackType("idea");
+      setFeedbackTypes([]);
       setFeedbackSuccessMessage("Feedback sent. It is private until published by admin.");
       await refreshFeedbackItems();
       return true;
@@ -4832,7 +4855,7 @@ export default function App() {
     } finally {
       setFeedbackSubmitting(false);
     }
-  }, [callFeedbackApi, feedbackBody, feedbackType, hasSupabaseEnabled, refreshFeedbackItems]);
+  }, [callFeedbackApi, feedbackBody, feedbackTypes, hasSupabaseEnabled, refreshFeedbackItems]);
   const setFeedbackItemVisibility = React.useCallback(
     async (feedbackId, makePublic) => {
       const normalizedId = String(feedbackId || "").trim();
@@ -7336,6 +7359,11 @@ useEffect(() => {
     });
     setSelection(null);
   }, [selection, selectionCellCount, instruments]);
+  const clearGridSelectionOnly = React.useCallback(() => {
+    setLoopRule(null);
+    setSelection(null);
+    setWrappedSelectionCells(null);
+  }, []);
 
   const rankCell = React.useCallback((v) => (v === CELL.ACCENT ? 3 : v === CELL.ON ? 2 : v === CELL.GHOST ? 1 : 0), []);
   const cloneGridState = React.useCallback((g) => {
@@ -12064,6 +12092,54 @@ useEffect(() => {
     if (!beatId) return null;
     return localBeats.find((entry) => String(entry?.id || "") === beatId) || null;
   }, [loadedLocalBeatId, localBeats, selectedArrangementSourceBeatKey, selectedBeatLibraryBeatIds]);
+  const handleBeatLibrarySidebarTrashClick = React.useCallback(async () => {
+    if (selection) {
+      clearGridSelectionOnly();
+      return;
+    }
+    if (selectedBeatLibraryBeatIds.length > 0) {
+      const orderedSelectedIds = visibleLocalBeatIdsInLibraryOrder.filter((id) =>
+        selectedBeatLibraryBeatIds.includes(id)
+      );
+      if (!orderedSelectedIds.length) return;
+      const confirmLabel =
+        orderedSelectedIds.length === 1
+          ? `"${String(
+              localBeats.find((beat) => String(beat?.id || "") === orderedSelectedIds[0])?.name || "this beat"
+            )}"`
+          : `${orderedSelectedIds.length} selected beats`;
+      if (!window.confirm(`Delete ${confirmLabel}?`)) return;
+      await deleteLocalBeatsByIds(orderedSelectedIds);
+      clearBeatLibraryBeatSelection();
+      return;
+    }
+    if (selectedLocalBeatForTrash?.id) {
+      const beatName = String(selectedLocalBeatForTrash.name || "this beat");
+      if (!window.confirm(`Delete "${beatName}"?`)) return;
+      await deleteLocalBeatById(selectedLocalBeatForTrash.id);
+      return;
+    }
+    const currentContainerId = selectedBeatLibraryContainerIdRef.current || "all";
+    if (currentContainerId !== "all") {
+      const folderName =
+        beatLibraryContainers.find((entry) => String(entry.id) === String(currentContainerId))?.name ||
+        "this folder";
+      if (!window.confirm(`Delete "${folderName}"?`)) return;
+      deleteBeatLibraryContainer(currentContainerId);
+    }
+  }, [
+    beatLibraryContainers,
+    clearBeatLibraryBeatSelection,
+    clearGridSelectionOnly,
+    deleteBeatLibraryContainer,
+    deleteLocalBeatById,
+    deleteLocalBeatsByIds,
+    localBeats,
+    selectedBeatLibraryBeatIds,
+    selectedLocalBeatForTrash,
+    selection,
+    visibleLocalBeatIdsInLibraryOrder,
+  ]);
   const arrangementDisplayName = React.useMemo(
     () =>
       getArrangementNameFromTitles(
@@ -15637,6 +15713,11 @@ useEffect(() => {
             >
               <SaveStateIcon />
             </button>
+            {playabilityWarningsEnabled && playabilityWarningSteps.length > 0 ? (
+              <span className="shrink-0 text-[11px] text-amber-300/90">
+                {`${playabilityWarningSteps.length} playability warning${playabilityWarningSteps.length === 1 ? "" : "s"}`}
+              </span>
+            ) : null}
             <button
               type="button"
               onMouseDown={(e) => e.preventDefault()}
@@ -15699,6 +15780,11 @@ useEffect(() => {
             >
               <SaveStateIcon />
             </button>
+            {playabilityWarningsEnabled && playabilityWarningSteps.length > 0 ? (
+              <span className="shrink-0 text-[11px] text-amber-300/90">
+                {`${playabilityWarningSteps.length} playability warning${playabilityWarningSteps.length === 1 ? "" : "s"}`}
+              </span>
+            ) : null}
           </div>
         )}
       </div>
@@ -17789,40 +17875,7 @@ useEffect(() => {
                   <button
                     ref={beatLibraryTrashTargetRef}
                     type="button"
-                    onClick={async () => {
-                      if (selectedBeatLibraryBeatIds.length > 0) {
-                        const orderedSelectedIds = visibleLocalBeatIdsInLibraryOrder.filter((id) =>
-                          selectedBeatLibraryBeatIds.includes(id)
-                        );
-                        if (!orderedSelectedIds.length) return;
-                        const confirmLabel =
-                          orderedSelectedIds.length === 1
-                            ? `"${String(
-                                localBeats.find((beat) => String(beat?.id || "") === orderedSelectedIds[0])?.name ||
-                                  "this beat"
-                              )}"`
-                            : `${orderedSelectedIds.length} selected beats`;
-                        if (!window.confirm(`Delete ${confirmLabel}?`)) return;
-                        await deleteLocalBeatsByIds(orderedSelectedIds);
-                        clearBeatLibraryBeatSelection();
-                        return;
-                      }
-                      if (selectedLocalBeatForTrash?.id) {
-                        const beatName = String(selectedLocalBeatForTrash.name || "this beat");
-                        if (!window.confirm(`Delete "${beatName}"?`)) return;
-                        await deleteLocalBeatById(selectedLocalBeatForTrash.id);
-                        return;
-                      }
-                      const currentContainerId = selectedBeatLibraryContainerIdRef.current || "all";
-                      if (currentContainerId !== "all") {
-                        const folderName =
-                          beatLibraryContainers.find(
-                            (entry) => String(entry.id) === String(currentContainerId)
-                          )?.name || "this folder";
-                        if (!window.confirm(`Delete "${folderName}"?`)) return;
-                        deleteBeatLibraryContainer(currentContainerId);
-                      }
-                    }}
+                    onClick={handleBeatLibrarySidebarTrashClick}
                     onDragOver={(e) => {
                       e.preventDefault();
                       setBeatLibraryDropTargetId("__trash__");
@@ -17843,7 +17896,9 @@ useEffect(() => {
                           : "border-neutral-800 text-neutral-500 bg-neutral-900/60"
                     }`}
                     title={
-                      selectedLocalBeatForTrash?.id
+                      selection
+                        ? "Clear current grid selection"
+                        : selectedLocalBeatForTrash?.id
                         ? "Delete selected beat or drop beats/folders here"
                         : selectedBeatLibraryContainerId !== "all"
                           ? "Delete selected folder or drop beats/folders here"
@@ -19410,20 +19465,21 @@ useEffect(() => {
                     ) : null}
                   </div>
                   <div className="mb-2 flex flex-wrap items-center gap-2">
-                    {["bug", "feature", "idea"].map((typeId) => (
+                    {["bug", "feature_idea"].map((typeId) => (
                       <button
                         key={`feedback-type-${typeId}`}
                         type="button"
-                        onClick={() => setFeedbackType(typeId)}
-                        className={`rounded px-2 py-1 text-xs ${
-                          feedbackType === typeId
-                            ? "bg-neutral-800 text-white"
-                            : "bg-neutral-950/50 text-neutral-500 hover:bg-neutral-900/70"
+                        onClick={() => toggleFeedbackType(typeId)}
+                        className={`rounded border px-2.5 py-1 text-xs transition-colors ${
+                          feedbackTypes.includes(typeId)
+                            ? "border-sky-700/80 bg-sky-950/25 text-sky-200"
+                            : "border-neutral-800 bg-transparent text-neutral-500 hover:border-neutral-700 hover:text-neutral-300"
                         }`}
                       >
                         {feedbackTypeLabel(typeId)}
                       </button>
                     ))}
+                    <span className="text-[11px] text-neutral-600">Optional. Pick none, one, or several.</span>
                   </div>
                   <textarea
                     value={feedbackBody}
@@ -19434,7 +19490,7 @@ useEffect(() => {
                     }}
                     rows={4}
                     maxLength={2000}
-                    placeholder="Share a bug, feature request, or workflow idea..."
+                    placeholder="Share a bug, feature idea, or workflow request..."
                     className="w-full resize-y rounded bg-neutral-900/80 px-3 py-2 text-sm text-neutral-200 outline-none ring-0 placeholder:text-neutral-600 focus:outline-none focus:ring-0"
                   />
                   <div className="mt-2 flex items-center justify-between gap-3">
@@ -19511,9 +19567,7 @@ useEffect(() => {
                         )
                       : feedbackItems.filter((item) => item.isPublic)
                     ).length < 1 ? (
-                    <div className="px-3 py-2 text-xs text-neutral-500">
-                      No feedback yet.
-                    </div>
+                    null
                   ) : (
                     (isAdminUser
                       ? feedbackItems.filter((item) =>
@@ -19537,12 +19591,12 @@ useEffect(() => {
                                 type="button"
                                 onClick={() => voteOnFeedbackItem(item.id, 1)}
                                 disabled={!item.isPublic}
-                                className={`h-6 w-6 rounded border text-xs ${
+                                className={`h-6 w-6 rounded text-xs ${
                                   !item.isPublic
-                                    ? "border-neutral-900 bg-neutral-950 text-neutral-700 cursor-not-allowed"
+                                    ? "bg-neutral-950 text-neutral-700 cursor-not-allowed"
                                     : currentVote === 1
-                                      ? "border-sky-600 bg-sky-900/30 text-sky-100"
-                                      : "border-neutral-800 bg-neutral-900/70 text-neutral-400 hover:bg-neutral-800/60"
+                                      ? "border border-sky-600 bg-sky-900/30 text-sky-100"
+                                      : "bg-neutral-900/70 text-neutral-400 hover:bg-neutral-800/60"
                                 }`}
                                 title={item.isPublic ? "Upvote" : "Voting is only available on public feedback"}
                               >
@@ -19555,12 +19609,12 @@ useEffect(() => {
                                 type="button"
                                 onClick={() => voteOnFeedbackItem(item.id, -1)}
                                 disabled={!item.isPublic}
-                                className={`h-6 w-6 rounded border text-xs ${
+                                className={`h-6 w-6 rounded text-xs ${
                                   !item.isPublic
-                                    ? "border-neutral-900 bg-neutral-950 text-neutral-700 cursor-not-allowed"
+                                    ? "bg-neutral-950 text-neutral-700 cursor-not-allowed"
                                     : currentVote === -1
-                                      ? "border-sky-600 bg-sky-900/30 text-sky-100"
-                                      : "border-neutral-800 bg-neutral-900/70 text-neutral-400 hover:bg-neutral-800/60"
+                                      ? "border border-sky-600 bg-sky-900/30 text-sky-100"
+                                      : "bg-neutral-900/70 text-neutral-400 hover:bg-neutral-800/60"
                                 }`}
                                 title={item.isPublic ? "Downvote" : "Voting is only available on public feedback"}
                               >
@@ -19569,31 +19623,36 @@ useEffect(() => {
                             </div>
                             <div className="min-w-0 flex-1">
                               <div className="mb-2 flex flex-wrap items-center gap-2 text-[11px]">
-                                <span className="rounded bg-neutral-900 px-2 py-1 text-neutral-300">
-                                  {feedbackTypeLabel(item.feedbackType)}
-                                </span>
+                                {item.feedbackTypes.map((typeId) => (
+                                  <span
+                                    key={`feedback-type-badge-${item.id}-${typeId}`}
+                                    className="rounded border border-neutral-800 bg-transparent px-2.5 py-1 text-neutral-400"
+                                  >
+                                    {feedbackTypeLabel(typeId)}
+                                  </span>
+                                ))}
                                 {item.resolutionStatus ? (
-                                  <span className={`rounded px-2 py-1 ${
+                                  <span className={`rounded-md px-2.5 py-1 font-medium ${
                                     item.resolutionStatus === "done"
-                                      ? "bg-emerald-950/60 text-emerald-300"
+                                      ? "bg-emerald-900/55 text-emerald-200"
                                       : item.resolutionStatus === "planned"
-                                        ? "bg-sky-950/60 text-sky-300"
-                                        : "bg-neutral-900 text-neutral-400"
+                                        ? "bg-amber-900/55 text-amber-200"
+                                        : "bg-neutral-800 text-neutral-300"
                                   }`}>
                                     {feedbackResolutionLabel(item.resolutionStatus)}
                                   </span>
                                 ) : null}
                               </div>
-                              <div className="whitespace-pre-wrap text-sm text-neutral-300">{item.body}</div>
+                              <div className="whitespace-pre-wrap text-xs text-neutral-500">{item.body}</div>
                               {item.adminReply ? (
-                                <div className="mt-3 rounded bg-neutral-900/70 px-3 py-2 text-xs text-neutral-300">
-                                  <div className="mb-1 text-[11px] uppercase tracking-[0.16em] text-neutral-500">
+                                <div className="mt-3 rounded bg-neutral-900/70 px-3 py-2 text-xs text-neutral-500">
+                                  <div className="mb-1 text-center text-xs text-neutral-500">
                                     Admin reply
                                   </div>
                                   <div className="whitespace-pre-wrap">{item.adminReply}</div>
                                 </div>
                               ) : null}
-                              <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-neutral-500">
+                              <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-neutral-700">
                                 <span>{item.authorLabel || (item.authorKind === "registered" ? "Signed-in user" : "Anonymous")}</span>
                                 <span className="text-neutral-700">·</span>
                                 <span>{formatFeedbackDate(item.createdAt)}</span>
@@ -19616,9 +19675,13 @@ useEffect(() => {
                                         onClick={() =>
                                           updateFeedbackAdminMeta(item.id, { resolutionStatus: statusId })
                                         }
-                                        className={`rounded px-2 py-1 text-xs ${
+                                        className={`rounded-md px-2.5 py-1 text-xs font-medium ${
                                           item.resolutionStatus === statusId
-                                            ? "bg-neutral-800 text-white"
+                                            ? statusId === "done"
+                                              ? "bg-emerald-900/55 text-emerald-200"
+                                              : statusId === "planned"
+                                                ? "bg-amber-900/55 text-amber-200"
+                                                : "bg-neutral-800 text-neutral-100"
                                             : "bg-neutral-950/40 text-neutral-500 hover:bg-neutral-900/60"
                                         }`}
                                       >
@@ -20377,40 +20440,7 @@ useEffect(() => {
                             <button
                               ref={beatLibraryTrashTargetRef}
                               type="button"
-                              onClick={async () => {
-                                if (selectedBeatLibraryBeatIds.length > 0) {
-                                  const orderedSelectedIds = visibleLocalBeatIdsInLibraryOrder.filter((id) =>
-                                    selectedBeatLibraryBeatIds.includes(id)
-                                  );
-                                  if (!orderedSelectedIds.length) return;
-                                  const confirmLabel =
-                                    orderedSelectedIds.length === 1
-                                      ? `"${String(
-                                          localBeats.find((beat) => String(beat?.id || "") === orderedSelectedIds[0])?.name ||
-                                            "this beat"
-                                        )}"`
-                                      : `${orderedSelectedIds.length} selected beats`;
-                                  if (!window.confirm(`Delete ${confirmLabel}?`)) return;
-                                  await deleteLocalBeatsByIds(orderedSelectedIds);
-                                  clearBeatLibraryBeatSelection();
-                                  return;
-                                }
-                                if (selectedLocalBeatForTrash?.id) {
-                                  const beatName = String(selectedLocalBeatForTrash.name || "this beat");
-                                  if (!window.confirm(`Delete "${beatName}"?`)) return;
-                                  await deleteLocalBeatById(selectedLocalBeatForTrash.id);
-                                  return;
-                                }
-                                const currentContainerId = selectedBeatLibraryContainerIdRef.current || "all";
-                                if (currentContainerId !== "all") {
-                                  const folderName =
-                                    beatLibraryContainers.find(
-                                      (entry) => String(entry.id) === String(currentContainerId)
-                                    )?.name || "this folder";
-                                  if (!window.confirm(`Delete "${folderName}"?`)) return;
-                                  deleteBeatLibraryContainer(currentContainerId);
-                                }
-                              }}
+                              onClick={handleBeatLibrarySidebarTrashClick}
                               onDragOver={(e) => {
                                 e.preventDefault();
                                 setBeatLibraryDropTargetId("__trash__");
@@ -20431,7 +20461,9 @@ useEffect(() => {
                                     : "border-neutral-800 text-neutral-500 bg-neutral-900/60"
                               }`}
                               title={
-                                selectedLocalBeatForTrash?.id
+                                selection
+                                  ? "Clear current grid selection"
+                                  : selectedLocalBeatForTrash?.id
                                   ? "Delete selected beat or drop beats/folders here"
                                   : selectedBeatLibraryContainerId !== "all"
                                     ? "Delete selected folder or drop beats/folders here"

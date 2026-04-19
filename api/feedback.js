@@ -27,10 +27,13 @@ async function readJsonBody(req) {
   }
 }
 
-function normalizeFeedbackType(value) {
-  const normalized = String(value || "").trim().toLowerCase();
-  if (normalized === "bug" || normalized === "feature" || normalized === "idea") return normalized;
-  return "idea";
+function normalizeFeedbackTypes(value) {
+  const rawValues = Array.isArray(value) ? value : value ? [value] : [];
+  const normalized = rawValues
+    .map((entry) => String(entry || "").trim().toLowerCase())
+    .map((entry) => (entry === "feature" || entry === "idea" ? "feature_idea" : entry))
+    .filter((entry) => entry === "bug" || entry === "feature_idea");
+  return Array.from(new Set(normalized));
 }
 
 function normalizeFeedbackResolution(value) {
@@ -79,7 +82,7 @@ async function listFeedback(req, res) {
 
   let query = supabaseAdmin
     .from("feedback_items")
-    .select("id,created_at,updated_at,user_id,author_kind,author_label,body,status,is_public,vote_score,vote_count,feedback_type,admin_reply,resolution_status");
+    .select("id,created_at,updated_at,user_id,author_kind,author_label,body,status,is_public,vote_score,vote_count,feedback_type,feedback_types,admin_reply,resolution_status");
 
   if (!isAdmin) {
     query = query.eq("is_public", true).eq("status", "public");
@@ -121,7 +124,7 @@ async function submitFeedback(req, res) {
   const { user } = await getRequestUser(req);
   const fingerprint = user?.id ? "" : readFingerprint(req);
   const text = String(body?.body || "").trim();
-  const feedbackType = normalizeFeedbackType(body?.feedbackType);
+  const feedbackTypes = normalizeFeedbackTypes(body?.feedbackTypes);
   if (text.length < 3) return res.status(400).json({ error: "Feedback is too short." });
   if (text.length > MAX_FEEDBACK_LENGTH) return res.status(400).json({ error: "Feedback is too long." });
   if (!user?.id) {
@@ -141,7 +144,8 @@ async function submitFeedback(req, res) {
     vote_score: 0,
     vote_count: 0,
     fingerprint: user?.id ? null : fingerprint || null,
-    feedback_type: feedbackType,
+    feedback_type: feedbackTypes[0] === "bug" ? "bug" : "feature",
+    feedback_types: feedbackTypes,
     resolution_status: "reviewing",
   });
   if (error) return res.status(500).json({ error: error.message || "Failed to submit feedback." });

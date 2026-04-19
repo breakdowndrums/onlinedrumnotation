@@ -14,6 +14,9 @@ create table if not exists public.feedback_items (
   vote_count integer not null default 0,
   fingerprint text null,
   feedback_type text not null default 'idea' check (feedback_type in ('bug', 'feature', 'idea')),
+  feedback_types text[] not null default '{}'::text[] check (
+    feedback_types <@ array['bug', 'feature_idea']::text[]
+  ),
   admin_reply text null check (admin_reply is null or char_length(admin_reply) <= 2000),
   resolution_status text not null default 'reviewing' check (resolution_status in ('reviewing', 'planned', 'done')),
   admin_note text null
@@ -21,6 +24,9 @@ create table if not exists public.feedback_items (
 
 alter table public.feedback_items
   add column if not exists feedback_type text not null default 'idea';
+
+alter table public.feedback_items
+  add column if not exists feedback_types text[] not null default '{}'::text[];
 
 alter table public.feedback_items
   add column if not exists admin_reply text null;

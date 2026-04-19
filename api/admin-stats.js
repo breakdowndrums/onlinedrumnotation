@@ -54,37 +54,70 @@ async function countAuthUsers(since = "") {
   return total;
 }
 
-export default async function handler(req, res) {
-  if (req.method !== "GET") {
-    res.setHeader("Allow", "GET");
-    return res.status(405).json({ error: "Method not allowed" });
-  }
-  if (!hasSupabaseAdmin || !supabaseAdmin) {
-    return res.status(503).json({ error: "Stats backend not configured." });
-  }
-  const { isAdmin } = await getRequestUser(req);
-  if (!isAdmin) return res.status(403).json({ error: "Admin required." });
+function isMissingRelationError(error) {
+  const message = String(error?.message || "").toLowerCase();
+  return (
+    message.includes("does not exist") ||
+    message.includes("relation") ||
+    message.includes("schema cache")
+  );
+}
 
+async function safeMetric(label, fn, warnings) {
   try {
+    return await fn();
+  } catch (error) {
+    warnings.push(`${label}: ${error?.message || "failed"}`);
+    return 0;
+  }
+}
+
+export default async function handler(req, res) {
+  try {
+    if (req.method !== "GET") {
+      res.setHeader("Allow", "GET");
+      return res.status(405).json({ error: "Method not allowed" });
+    }
+    if (!hasSupabaseAdmin || !supabaseAdmin) {
+      return res.status(503).json({ error: "Stats backend not configured." });
+    }
+    const { isAdmin } = await getRequestUser(req);
+    if (!isAdmin) return res.status(403).json({ error: "Admin required." });
+
     const range = readRange(req.query.range);
     const since = getSinceForRange(range);
-    const [
-      users,
-      signedUpUsers,
-      siteVisits,
-      beatShareCreates,
-      arrangementShareCreates,
-      beatShareOpens,
-      arrangementShareOpens,
-    ] = await Promise.all([
-      countEvents({ eventType: "site_visit", since, distinct: true }),
-      countAuthUsers(since),
-      countEvents({ eventType: "site_visit", since }),
-      countEvents({ eventType: "share_create", shareKind: "beat", since }),
-      countEvents({ eventType: "share_create", shareKind: "arrangement", since }),
-      countEvents({ eventType: "share_open", shareKind: "beat", since }),
-      countEvents({ eventType: "share_open", shareKind: "arrangement", since }),
-    ]);
+    const warnings = [];
+    const users = await safeMetric(
+      "Users",
+      () => countEvents({ eventType: "site_visit", since, distinct: true }),
+      warnings
+    );
+    const signedUpUsers = await safeMetric("Signed up users", () => countAuthUsers(since), warnings);
+    const siteVisits = await safeMetric(
+      "Site visits",
+      () => countEvents({ eventType: "site_visit", since }),
+      warnings
+    );
+    const beatShareCreates = await safeMetric(
+      "Beat share links created",
+      () => countEvents({ eventType: "share_create", shareKind: "beat", since }),
+      warnings
+    );
+    const arrangementShareCreates = await safeMetric(
+      "Arrangement share links created",
+      () => countEvents({ eventType: "share_create", shareKind: "arrangement", since }),
+      warnings
+    );
+    const beatShareOpens = await safeMetric(
+      "Beat opens via link / QR",
+      () => countEvents({ eventType: "share_open", shareKind: "beat", since }),
+      warnings
+    );
+    const arrangementShareOpens = await safeMetric(
+      "Arrangement opens via link / QR",
+      () => countEvents({ eventType: "share_open", shareKind: "arrangement", since }),
+      warnings
+    );
 
     return res.status(200).json({
       range,
@@ -97,8 +130,25 @@ export default async function handler(req, res) {
         beatShareOpens,
         arrangementShareOpens,
       },
+      warnings,
     });
   } catch (error) {
-    return res.status(500).json({ error: error?.message || "Failed to load stats." });
+    const message = error?.message || "Failed to load stats.";
+    if (isMissingRelationError(error)) {
+      return res.status(200).json({
+        range: readRange(req?.query?.range),
+        stats: {
+          users: 0,
+          signedUpUsers: 0,
+          siteVisits: 0,
+          beatShareCreates: 0,
+          arrangementShareCreates: 0,
+          beatShareOpens: 0,
+          arrangementShareOpens: 0,
+        },
+        warnings: [message],
+      });
+    }
+    return res.status(500).json({ error: message });
   }
 }

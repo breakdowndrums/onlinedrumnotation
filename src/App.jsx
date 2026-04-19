@@ -832,7 +832,7 @@ const TEMPORARY_SHARE_LINK_CLEANUP_INTERVAL_MS = 1000 * 60 * 60 * 24;
 const BEAT_LIBRARY_SELECTED_CONTAINER_STORAGE_KEY = "drum-grid-beat-library-selected-container-v1";
 const BEAT_LIBRARY_ROOT_COLLAPSED_STORAGE_KEY = "drum-grid-beat-library-root-collapsed-v1";
 const GRID_SETTINGS_PRESET_LIBRARY_STORAGE_KEY = "drum-grid-grid-settings-presets-v1";
-const APP_VERSION = "0.1.317";
+const APP_VERSION = "0.1.318";
 const BEAT_CATEGORY_OPTIONS = [
   "Groove",
   "Fill",
@@ -3306,6 +3306,7 @@ export default function App() {
   const [adminStatsRange, setAdminStatsRange] = useState("day");
   const [adminStatsLoading, setAdminStatsLoading] = useState(false);
   const [adminStatsError, setAdminStatsError] = useState("");
+  const [adminStatsWarnings, setAdminStatsWarnings] = useState([]);
   const [adminStats, setAdminStats] = useState({
     users: 0,
     signedUpUsers: 0,
@@ -5004,6 +5005,7 @@ export default function App() {
     if (!isAdminUser || !hasSupabaseEnabled) {
       setAdminStatsLoading(false);
       setAdminStatsError("");
+      setAdminStatsWarnings([]);
       setAdminStats({
         users: 0,
         signedUpUsers: 0,
@@ -5017,6 +5019,7 @@ export default function App() {
     }
     setAdminStatsLoading(true);
     setAdminStatsError("");
+    setAdminStatsWarnings([]);
     try {
       const headers = {};
       const accessToken = String(authSession?.access_token || "").trim();
@@ -5037,6 +5040,11 @@ export default function App() {
         throw new Error(data?.error || "Failed to load stats.");
       }
       const nextStats = data?.stats && typeof data.stats === "object" ? data.stats : {};
+      setAdminStatsWarnings(
+        Array.isArray(data?.warnings)
+          ? data.warnings.map((entry) => String(entry || "").trim()).filter(Boolean)
+          : []
+      );
       setAdminStats({
         users: Math.max(0, Number(nextStats.users) || 0),
         signedUpUsers: Math.max(0, Number(nextStats.signedUpUsers) || 0),
@@ -5048,6 +5056,7 @@ export default function App() {
       });
     } catch (error) {
       setAdminStatsError(error?.message || "Failed to load stats.");
+      setAdminStatsWarnings([]);
     } finally {
       setAdminStatsLoading(false);
     }
@@ -19984,6 +19993,18 @@ useEffect(() => {
                 </div>
                 {adminStatsError ? (
                   <div className="text-xs text-amber-300">{adminStatsError}</div>
+                ) : null}
+                {!adminStatsError && adminStatsWarnings.length > 0 ? (
+                  <div className="space-y-1">
+                    {adminStatsWarnings.map((warning, warningIdx) => (
+                      <div
+                        key={`admin-stats-warning-${warningIdx}`}
+                        className="text-xs text-amber-300"
+                      >
+                        {warning}
+                      </div>
+                    ))}
+                  </div>
                 ) : null}
                 {adminStatsLoading ? (
                   <div className="text-xs text-neutral-500">Loading stats...</div>

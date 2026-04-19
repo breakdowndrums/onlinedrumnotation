@@ -13,6 +13,7 @@ import QRCode from "qrcode";
 import { usePlayback } from "./audio/usePlayback";
 import * as Vex from "vexflow";
 import customSmuflFont from "./fonts/customSmuflFont.json";
+import { getDrumGridVisitorId } from "./utils/visitorId";
 import { DndContext, DragOverlay, PointerSensor, closestCenter, pointerWithin, useDroppable, useSensor, useSensors } from "@dnd-kit/core";
 import {
   SortableContext,
@@ -832,7 +833,7 @@ const TEMPORARY_SHARE_LINK_CLEANUP_INTERVAL_MS = 1000 * 60 * 60 * 24;
 const BEAT_LIBRARY_SELECTED_CONTAINER_STORAGE_KEY = "drum-grid-beat-library-selected-container-v1";
 const BEAT_LIBRARY_ROOT_COLLAPSED_STORAGE_KEY = "drum-grid-beat-library-root-collapsed-v1";
 const GRID_SETTINGS_PRESET_LIBRARY_STORAGE_KEY = "drum-grid-grid-settings-presets-v1";
-const APP_VERSION = "0.1.318";
+const APP_VERSION = "0.1.319";
 const BEAT_CATEGORY_OPTIONS = [
   "Groove",
   "Fill",
@@ -1695,6 +1696,10 @@ function isTemporarySharePayload(payload) {
   return getShareLinkMeta(payload)?.temporary === true;
 }
 
+function isPermanentSharePayload(payload) {
+  return getShareLinkMeta(payload)?.permanent === true;
+}
+
 function withShareLinkMeta(payload, nextMeta) {
   if (!isPlainObjectRecord(payload)) return payload;
   const sanitizedMeta = isPlainObjectRecord(nextMeta) ? nextMeta : {};
@@ -1713,6 +1718,7 @@ function buildTemporarySharePayload(payload, fingerprint = "") {
   const now = new Date().toISOString();
   return withShareLinkMeta(payload, {
     temporary: true,
+    permanent: false,
     fingerprint: String(fingerprint || "").trim(),
     createdAt: now,
     lastAccessedAt: null,
@@ -1726,6 +1732,7 @@ function buildTouchedSharePayload(payload) {
   return withShareLinkMeta(payload, {
     ...currentMeta,
     temporary: true,
+    permanent: false,
     lastAccessedAt: new Date().toISOString(),
     accessCount: Math.max(0, Number(currentMeta.accessCount) || 0) + 1,
   });
@@ -1734,6 +1741,7 @@ function buildTouchedSharePayload(payload) {
 function isShareLinkAutoCleanupCandidate(row, nowMs = Date.now()) {
   const payload = row?.payload;
   if (!isTemporarySharePayload(payload)) return false;
+  if (isPermanentSharePayload(payload)) return false;
   if (isPublishedDefaultSharePayload(payload) || isPersonalLibraryStatePayload(payload)) return false;
   const meta = getShareLinkMeta(payload) || {};
   const accessCount = Math.max(0, Number(meta.accessCount) || 0);
@@ -1775,6 +1783,7 @@ function getProfileShareLinkLabel(row) {
 function getProfileShareLinkTypeLabel(row) {
   const payload = row?.payload;
   if (isPersonalLibraryStatePayload(payload)) return "Library state";
+  if (isPermanentSharePayload(payload)) return "Permanent";
   if (isTemporarySharePayload(payload)) return "Temporary";
   if (isPublishedDefaultSharePayload(payload)) return "Public";
   return String(row?.kind || "Share");
@@ -4237,6 +4246,13 @@ export default function App() {
     beat: "short",
     arrangement: "short",
   });
+  const [shareLinkRetention, setShareLinkRetention] = useState({
+    beat: "temporary",
+    arrangement: "temporary",
+  });
+  const [usageLimitsLoading, setUsageLimitsLoading] = useState(false);
+  const [usageLimitsError, setUsageLimitsError] = useState("");
+  const [usageLimits, setUsageLimits] = useState(null);
   const [bpmDraft, setBpmDraft] = useState("120");
   const [menuViewportTick, setMenuViewportTick] = useState(0);
   const activeTabRef = React.useRef(activeTab);
@@ -4406,6 +4422,44 @@ export default function App() {
       }),
     [authSession?.access_token]
   );
+  const callUsageLimitsApi = React.useCallback(async () => {
+    const headers = {
+      "x-dg-visitor-id": getDrumGridVisitorId(),
+    };
+    const accessToken = String(authSession?.access_token || "").trim();
+    if (accessToken) {
+      headers.Authorization = `Bearer ${accessToken}`;
+    }
+    const response = await fetch("/api/usage-limits", { headers });
+    let data = null;
+    try {
+      data = await response.json();
+    } catch (_) {
+      data = null;
+    }
+    if (!response.ok) {
+      throw new Error(data?.error || "Failed to load usage limits.");
+    }
+    return data || {};
+  }, [authSession?.access_token]);
+  const refreshUsageLimits = React.useCallback(async ({ silent = false } = {}) => {
+    if (!silent) {
+      setUsageLimitsLoading(true);
+      setUsageLimitsError("");
+    }
+    try {
+      const data = await callUsageLimitsApi();
+      setUsageLimits(data);
+      setUsageLimitsError("");
+      return data;
+    } catch (error) {
+      const message = error?.message || "Failed to load usage limits.";
+      setUsageLimitsError(message);
+      return null;
+    } finally {
+      if (!silent) setUsageLimitsLoading(false);
+    }
+  }, [callUsageLimitsApi]);
   const normalizeFeedbackItem = React.useCallback((row) => {
     if (!row || typeof row !== "object") return null;
     const body = String(row.body || "").trim();
@@ -5001,6 +5055,13 @@ export default function App() {
   React.useEffect(() => {
     refreshFeedbackItems();
   }, [refreshFeedbackItems]);
+  React.useEffect(() => {
+    refreshUsageLimits({ silent: false });
+  }, [refreshUsageLimits]);
+  React.useEffect(() => {
+    if (!isShareActionsDialogOpen) return;
+    void refreshUsageLimits({ silent: false });
+  }, [isShareActionsDialogOpen, refreshUsageLimits]);
   const refreshAdminStats = React.useCallback(async () => {
     if (!isAdminUser || !hasSupabaseEnabled) {
       setAdminStatsLoading(false);
@@ -5363,6 +5424,19 @@ export default function App() {
     const localFoldersToMerge = (Array.isArray(source.folders) ? source.folders : []).filter((entry) =>
       selectedFolderIds.has(String(entry?.id || ""))
     );
+    const quotaSnapshot = (await refreshUsageLimits({ silent: true })) || usageLimits;
+    const remainingBeatSlots = Math.max(0, Number(quotaSnapshot?.cloudLibrary?.remaining?.beats) || 0);
+    const remainingArrangementSlots = Math.max(0, Number(quotaSnapshot?.cloudLibrary?.remaining?.arrangements) || 0);
+    if (localBeatsToMerge.length > remainingBeatSlots) {
+      throw new Error(
+        `Personal cloud beat limit reached. You can merge ${remainingBeatSlots} more beat${remainingBeatSlots === 1 ? "" : "s"} right now.`
+      );
+    }
+    if (localArrangementsToMerge.length > remainingArrangementSlots) {
+      throw new Error(
+        `Personal cloud arrangement limit reached. You can merge ${remainingArrangementSlots} more arrangement${remainingArrangementSlots === 1 ? "" : "s"} right now.`
+      );
+    }
 
     let mergedFolders = normalizeBeatLibraryContainers(beatLibraryContainersRef.current);
     const folderIdMap = new Map();
@@ -5452,8 +5526,9 @@ export default function App() {
       alertOnError: true,
       pushCurrentFoldersFirst: false,
     });
+    void refreshUsageLimits({ silent: true });
     return true;
-  }, [authUser?.id, refreshPersonalLibraryFromCloud, saveCloudBeatLibraryContainers]);
+  }, [authUser?.id, refreshPersonalLibraryFromCloud, refreshUsageLimits, saveCloudBeatLibraryContainers, usageLimits]);
   const pendingPersonalCloudImportFolderChildrenByParent = React.useMemo(() => {
     const map = new Map();
     if (!pendingPersonalCloudImport) return map;
@@ -10907,6 +10982,14 @@ useEffect(() => {
     };
     const targetHasCloudId = Boolean(target?.id && isUuidLike(String(target.id)));
     if (authUser?.id && hasSupabaseEnabled && supabase) {
+      if (!(targetHasCloudId && mode === "update")) {
+        try {
+          await ensureCloudArrangementQuotaAvailable(1);
+        } catch (error) {
+          alert(error?.message || "Personal cloud arrangement limit reached.");
+          return;
+        }
+      }
       const payload = {
         user_id: authUser.id,
         name: nextEntry.name,
@@ -10957,6 +11040,7 @@ useEffect(() => {
       setArrangementTitleLine2Draft(savedEntry.titleLine2);
       setArrangementComposerDraft(savedEntry.composer);
       setLoadedArrangementId(savedEntry.id);
+      void refreshUsageLimits({ silent: true });
       return;
     }
     pushLocalBeatHistory();
@@ -10978,7 +11062,7 @@ useEffect(() => {
     setArrangementTitleLine2Draft(nextEntry.titleLine2);
     setArrangementComposerDraft(nextEntry.composer);
     setLoadedArrangementId(nextId);
-  }, [authUser?.id, arrangementItems, arrangementTitleLine1Draft, arrangementTitleLine2Draft, arrangementComposerDraft, savedArrangements, loadedArrangementId, pushLocalBeatHistory]);
+  }, [authUser?.id, arrangementItems, arrangementTitleLine1Draft, arrangementTitleLine2Draft, arrangementComposerDraft, savedArrangements, loadedArrangementId, pushLocalBeatHistory, ensureCloudArrangementQuotaAvailable, refreshUsageLimits]);
   const createNewArrangement = React.useCallback(async () => {
     const now = new Date().toISOString();
     const nextId = `arrlib-${Math.random().toString(36).slice(2, 10)}`;
@@ -10994,6 +11078,12 @@ useEffect(() => {
       items: [],
     };
     if (authUser?.id && hasSupabaseEnabled && supabase) {
+      try {
+        await ensureCloudArrangementQuotaAvailable(1);
+      } catch (error) {
+        alert(error?.message || "Personal cloud arrangement limit reached.");
+        return;
+      }
       const { data, error } = await supabase
         .from("arrangements")
         .insert({
@@ -11034,6 +11124,7 @@ useEffect(() => {
       setArrangementDetailsCollapsed(false);
       setArrangementSourceTab("local");
       setIsArrangementOpen(true);
+      void refreshUsageLimits({ silent: true });
       return;
     }
     pushLocalBeatHistory();
@@ -11059,7 +11150,7 @@ useEffect(() => {
     setArrangementDetailsCollapsed(false);
     setArrangementSourceTab("local");
     setIsArrangementOpen(true);
-  }, [authUser?.id, pushLocalBeatHistory, savedArrangements.length]);
+  }, [authUser?.id, pushLocalBeatHistory, savedArrangements.length, ensureCloudArrangementQuotaAvailable, refreshUsageLimits]);
   const loadSavedArrangement = React.useCallback(
     (entry) => {
       if (!entry || !Array.isArray(entry.items)) return;
@@ -14740,6 +14831,46 @@ useEffect(() => {
       shareKind: effectiveSharedState.kind === "arrangement" ? "arrangement" : "beat",
     });
   }, [requestedSharedState, resolvedSharedState, routeOptions.shared, routeOptions.shareId, trackStatsEvent]);
+  const ensureShortShareQuotaAvailable = React.useCallback(async () => {
+    const snapshot = (await refreshUsageLimits({ silent: true })) || usageLimits;
+    const shortLinks = snapshot?.shortLinks;
+    if (!shortLinks || typeof shortLinks !== "object") return true;
+    if (snapshot?.isSignedIn) {
+      const remaining = Math.max(0, Number(shortLinks?.remaining?.month) || 0);
+      if (remaining < 1) {
+        throw new Error("Monthly short-link limit reached for this account. Use a long link instead.");
+      }
+      return true;
+    }
+    const remainingDay = Math.max(0, Number(shortLinks?.remaining?.day) || 0);
+    const remainingMonth = Math.max(0, Number(shortLinks?.remaining?.month) || 0);
+    if (remainingDay < 1) {
+      throw new Error("Daily short-link limit reached for this browser. Use a long link instead.");
+    }
+    if (remainingMonth < 1) {
+      throw new Error("Monthly short-link limit reached for this browser. Use a long link instead.");
+    }
+    return true;
+  }, [refreshUsageLimits, usageLimits]);
+  const ensureCloudBeatQuotaAvailable = React.useCallback(async () => {
+    if (!authUser?.id || !hasSupabaseEnabled || !supabase) return true;
+    const snapshot = (await refreshUsageLimits({ silent: true })) || usageLimits;
+    const cloudLibrary = snapshot?.cloudLibrary;
+    const remaining = Math.max(0, Number(cloudLibrary?.remaining?.beats) || 0);
+    if (remaining < 1) {
+      throw new Error("Personal cloud beat limit reached. Delete beats or keep working locally.");
+    }
+    return true;
+  }, [authUser?.id, hasSupabaseEnabled, refreshUsageLimits, supabase, usageLimits]);
+  const ensureCloudArrangementQuotaAvailable = React.useCallback(async (extraNeeded = 1) => {
+    if (!authUser?.id || !hasSupabaseEnabled || !supabase) return true;
+    const snapshot = (await refreshUsageLimits({ silent: true })) || usageLimits;
+    const remaining = Math.max(0, Number(snapshot?.cloudLibrary?.remaining?.arrangements) || 0);
+    if (remaining < Math.max(1, Number(extraNeeded) || 1)) {
+      throw new Error("Personal cloud arrangement limit reached. Delete arrangements or keep working locally.");
+    }
+    return true;
+  }, [authUser?.id, hasSupabaseEnabled, refreshUsageLimits, supabase, usageLimits]);
   const saveCurrentBeatLocal = React.useCallback(async () => {
     const name = getUniqueBeatName(beatNameDraft);
     const now = new Date().toISOString();
@@ -14776,6 +14907,12 @@ useEffect(() => {
       source: "local",
     };
     if (authUser?.id && hasSupabaseEnabled && supabase) {
+      try {
+        await ensureCloudBeatQuotaAvailable();
+      } catch (error) {
+        alert(error?.message || "Personal cloud beat limit reached.");
+        return;
+      }
       const { data, error } = await supabase
         .from("beats")
         .insert({
@@ -14800,6 +14937,7 @@ useEffect(() => {
       setIsCurrentBeatStripRenaming(false);
       setCurrentBeatStripRenameWidth(null);
       setPendingCurrentBeatStripAutoRename(true);
+      void refreshUsageLimits({ silent: true });
       return;
     }
     setLocalBeatsWithUndo((prev) => [item, ...prev].slice(0, 500));
@@ -14818,6 +14956,8 @@ useEffect(() => {
     timeSig,
     bpm,
     buildCurrentBeatPayload,
+    ensureCloudBeatQuotaAvailable,
+    refreshUsageLimits,
     localBeats,
     getUniqueBeatName,
     setLocalBeatsWithUndo,
@@ -15873,19 +16013,6 @@ useEffect(() => {
             >
               <SaveStateIcon />
             </button>
-            <HelpHotspot
-              tip={
-                <>
-                  <div>Grid: long press a cell to cycle note modes.</div>
-                  <div className="mt-1">Selection: long press and drag to select.</div>
-                  <div className="mt-1">Selection: use arrow keys to move it.</div>
-                  <div className="mt-1">Looping: press &quot;L&quot; to toggle looping for the current selection.</div>
-                  <div className="mt-1">Tuplets: press the count numbers above the grid to cycle tuplets.</div>
-                </>
-              }
-              align="left"
-              widthClass="w-72"
-            />
             {playabilityWarningsEnabled && playabilityWarningSteps.length > 0 ? (
               <span className="shrink-0 text-[11px] text-amber-300/90">
                 {`${playabilityWarningSteps.length} playability warning${playabilityWarningSteps.length === 1 ? "" : "s"}`}
@@ -15953,19 +16080,6 @@ useEffect(() => {
             >
               <SaveStateIcon />
             </button>
-            <HelpHotspot
-              tip={
-                <>
-                  <div>Grid: long press a cell to cycle note modes.</div>
-                  <div className="mt-1">Selection: long press and drag to select.</div>
-                  <div className="mt-1">Selection: use arrow keys to move it.</div>
-                  <div className="mt-1">Looping: press &quot;L&quot; to toggle looping for the current selection.</div>
-                  <div className="mt-1">Tuplets: press the count numbers above the grid to cycle tuplets.</div>
-                </>
-              }
-              align="left"
-              widthClass="w-72"
-            />
             {playabilityWarningsEnabled && playabilityWarningSteps.length > 0 ? (
               <span className="shrink-0 text-[11px] text-amber-300/90">
                 {`${playabilityWarningSteps.length} playability warning${playabilityWarningSteps.length === 1 ? "" : "s"}`}
@@ -16539,6 +16653,7 @@ useEffect(() => {
         let id = "";
         let inserted = false;
         if (!text) {
+          await ensureShortShareQuotaAvailable();
           for (let i = 0; i < 6; i++) {
             const candidate = makeShortShareId();
             const { error } = await supabase.from("share_links").insert({
@@ -16561,6 +16676,7 @@ useEffect(() => {
         }
       }
       if (!forceLong && !text) {
+        await ensureShortShareQuotaAvailable();
         const res = await fetch("/api/share", {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -16576,7 +16692,14 @@ useEffect(() => {
           }
         }
       }
-    } catch (_) {
+    } catch (error) {
+      if (requireShort) {
+        throw error;
+      }
+      const message = String(error?.message || "").toLowerCase();
+      if (message.includes("limit reached")) {
+        throw error;
+      }
       // fall through to local URL state fallback
     }
     if (!text) {
@@ -16596,6 +16719,7 @@ useEffect(() => {
       void trackStatsEvent("share_create", {
         shareKind: mode === "arrangement" ? "arrangement" : "beat",
       });
+      void refreshUsageLimits({ silent: true });
     }
     return {
       text,
@@ -16607,22 +16731,28 @@ useEffect(() => {
     authUser?.id,
     buildCurrentBeatPayload,
     buildCurrentArrangementSharePayload,
+    ensureShortShareQuotaAvailable,
     hasSupabaseEnabled,
+    refreshUsageLimits,
     supabase,
     trackStatsEvent,
   ]);
   const handleBeatPdfExport = React.useCallback(async () => {
-    const qrText = printQrEnabled
-      ? (await createShareLink("beat", { requireShort: true })).text
-      : "";
-    await exportNotationPdf(notationExportRef.current, {
-      title: printTitle.trim() || "Drum Notation",
-      scoreTitle: printTitle.trim(),
-      composer: printComposer.trim(),
-      watermark: printWatermarkEnabled,
-      includeSticking: showNotationSticking,
-      qrText,
-    });
+    try {
+      const qrText = printQrEnabled
+        ? (await createShareLink("beat", { requireShort: true })).text
+        : "";
+      await exportNotationPdf(notationExportRef.current, {
+        title: printTitle.trim() || "Drum Notation",
+        scoreTitle: printTitle.trim(),
+        composer: printComposer.trim(),
+        watermark: printWatermarkEnabled,
+        includeSticking: showNotationSticking,
+        qrText,
+      });
+    } catch (error) {
+      alert(error?.message || "Failed to export PDF");
+    }
   }, [
     createShareLink,
     printQrEnabled,
@@ -16636,13 +16766,13 @@ useEffect(() => {
   }, [handleBeatPdfExport]);
 
   const handleShareLink = React.useCallback(async (mode = "beat") => {
-    const selectedMode =
-      mode === "arrangement" ? shareLinkMode.arrangement : shareLinkMode.beat;
-    const { text, usedShortLink } = await createShareLink(mode, {
-      forceLong: selectedMode === "long",
-    });
-
     try {
+      const selectedMode =
+        mode === "arrangement" ? shareLinkMode.arrangement : shareLinkMode.beat;
+      const { text, usedShortLink } = await createShareLink(mode, {
+        forceLong: selectedMode === "long",
+        requireShort: selectedMode === "short",
+      });
       if (navigator.clipboard?.writeText) {
         await navigator.clipboard.writeText(text);
         setShareLinkType(`${mode === "arrangement" ? "Arrangement" : "Beat"} ${usedShortLink ? "Short" : "Long"}`);
@@ -16655,8 +16785,8 @@ useEffect(() => {
       } else {
         window.prompt("Copy share link", text);
       }
-    } catch (_) {
-      window.prompt("Copy share link", text);
+    } catch (error) {
+      alert(error?.message || "Failed to create share link.");
     }
   }, [
     createShareLink,
@@ -19152,6 +19282,19 @@ useEffect(() => {
 	          </div>
           <div className="min-w-4 flex-1" />
           <div className="inline-flex shrink-0 items-center gap-2 whitespace-nowrap">
+            <HelpHotspot
+              tip={
+                <>
+                  <div>Grid: long press a cell to cycle note modes.</div>
+                  <div className="mt-1">Selection: long press and drag to select.</div>
+                  <div className="mt-1">Selection: use arrow keys to move it.</div>
+                  <div className="mt-1">Looping: press &quot;L&quot; to toggle looping for the current selection.</div>
+                  <div className="mt-1">Tuplets: press the count numbers above the grid to cycle tuplets.</div>
+                </>
+              }
+              align="left"
+              widthClass="w-72"
+            />
             <button
               type="button"
               onClick={handleTopUndo}
@@ -22494,6 +22637,25 @@ useEffect(() => {
 	              onClick={(e) => e.stopPropagation()}
 	              onMouseDown={(e) => e.stopPropagation()}
 	            >
+                <div className="mb-3 rounded-lg border border-neutral-800 bg-neutral-900/40 px-3 py-2 text-xs text-neutral-500">
+                  {usageLimitsLoading ? (
+                    <div>Loading short-link limits…</div>
+                  ) : usageLimitsError ? (
+                    <div>{usageLimitsError}</div>
+                  ) : usageLimits?.shortLinks ? (
+                    usageLimits.isSignedIn ? (
+                      <div>{`Short links this month: ${usageLimits.shortLinks.counts?.month || 0} / ${usageLimits.shortLinks.limits?.month || 60}`}</div>
+                    ) : (
+                      <div>{`Short links today: ${usageLimits.shortLinks.counts?.day || 0} / ${usageLimits.shortLinks.limits?.day || 15} · month: ${usageLimits.shortLinks.counts?.month || 0} / ${usageLimits.shortLinks.limits?.month || 30}`}</div>
+                    )
+                  ) : null}
+                  <div className="mt-1">
+                    Short links need database storage. Long links always work without share storage, but they are much longer.
+                  </div>
+                  <div className="mt-1">
+                    Temporary short links may be cleaned later if unused. Permanent short links are reserved for future paid storage.
+                  </div>
+                </div>
 	              <div className="px-1 pb-2 text-sm text-neutral-300">Beat</div>
 	              <div className="grid grid-cols-1 gap-1.5">
 	                <div className="grid grid-cols-[1fr_auto] gap-1.5">
@@ -22542,6 +22704,28 @@ useEffect(() => {
 	                    </button>
 	                  </div>
 	                </div>
+                  <div className="inline-flex w-fit rounded-lg border border-neutral-800 bg-neutral-900/60 p-0.5">
+                    <button
+                      type="button"
+                      onClick={() => setShareLinkRetention((prev) => ({ ...prev, beat: "temporary" }))}
+                      className={`rounded-md px-2 py-1 text-xs ${
+                        shareLinkRetention.beat === "temporary"
+                          ? "bg-neutral-800 text-white"
+                          : "text-neutral-400 hover:bg-neutral-800/40"
+                      }`}
+                      title="Temporary short link"
+                    >
+                      Temporary
+                    </button>
+                    <button
+                      type="button"
+                      disabled
+                      className="rounded-md px-2 py-1 text-xs text-neutral-600 cursor-not-allowed"
+                      title="Permanent short links are reserved for future paid storage."
+                    >
+                      Permanent
+                    </button>
+                  </div>
                 <button
                   type="button"
 	                  onClick={() => {
@@ -22629,6 +22813,28 @@ useEffect(() => {
 	                    </button>
 	                  </div>
 	                </div>
+                  <div className="inline-flex w-fit rounded-lg border border-neutral-800 bg-neutral-900/60 p-0.5">
+                    <button
+                      type="button"
+                      onClick={() => setShareLinkRetention((prev) => ({ ...prev, arrangement: "temporary" }))}
+                      className={`rounded-md px-2 py-1 text-xs ${
+                        shareLinkRetention.arrangement === "temporary"
+                          ? "bg-neutral-800 text-white"
+                          : "text-neutral-400 hover:bg-neutral-800/40"
+                      }`}
+                      title="Temporary short link"
+                    >
+                      Temporary
+                    </button>
+                    <button
+                      type="button"
+                      disabled
+                      className="rounded-md px-2 py-1 text-xs text-neutral-600 cursor-not-allowed"
+                      title="Permanent short links are reserved for future paid storage."
+                    >
+                      Permanent
+                    </button>
+                  </div>
                 <button
                   type="button"
                   onClick={() => {

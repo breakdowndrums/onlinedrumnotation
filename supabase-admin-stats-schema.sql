@@ -17,6 +17,9 @@ create index if not exists app_events_share_kind_created_at_idx on public.app_ev
 create index if not exists app_events_visitor_id_idx on public.app_events (visitor_id);
 create index if not exists app_events_user_id_idx on public.app_events (user_id);
 
+grant usage on schema public to service_role;
+grant all privileges on table public.app_events to service_role;
+
 alter table public.app_events enable row level security;
 
 drop policy if exists "app_events_service_role_only" on public.app_events;

@@ -799,7 +799,7 @@ const TEMPORARY_SHARE_LINK_CLEANUP_INTERVAL_MS = 1000 * 60 * 60 * 24;
 const BEAT_LIBRARY_SELECTED_CONTAINER_STORAGE_KEY = "drum-grid-beat-library-selected-container-v1";
 const BEAT_LIBRARY_ROOT_COLLAPSED_STORAGE_KEY = "drum-grid-beat-library-root-collapsed-v1";
 const GRID_SETTINGS_PRESET_LIBRARY_STORAGE_KEY = "drum-grid-grid-settings-presets-v1";
-const APP_VERSION = "0.1.302";
+const APP_VERSION = "0.1.303";
 const BEAT_CATEGORY_OPTIONS = [
   "Groove",
   "Fill",
@@ -3264,9 +3264,12 @@ export default function App() {
   const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
   const [feedbackError, setFeedbackError] = useState("");
   const [feedbackBody, setFeedbackBody] = useState("");
+  const [feedbackType, setFeedbackType] = useState("idea");
+  const [feedbackSort, setFeedbackSort] = useState("newest");
   const [feedbackSuccessMessage, setFeedbackSuccessMessage] = useState("");
   const [feedbackVoteMap, setFeedbackVoteMap] = useState({});
   const [feedbackAdminFilter, setFeedbackAdminFilter] = useState("pending");
+  const [feedbackAdminReplyDrafts, setFeedbackAdminReplyDrafts] = useState({});
   useEffect(() => {
     const onViewportChange = () => {
       setViewportSize({
@@ -4363,7 +4366,22 @@ export default function App() {
       authorKind: String(row.author_kind || (row.user_id ? "registered" : "anonymous")),
       authorLabel: String(row.author_label || "").trim(),
       userId: row.user_id ? String(row.user_id) : "",
+      feedbackType: String(row.feedback_type || "idea").trim().toLowerCase() || "idea",
+      adminReply: String(row.admin_reply || "").trim(),
+      resolutionStatus: String(row.resolution_status || "reviewing").trim().toLowerCase() || "reviewing",
     };
+  }, []);
+  const feedbackTypeLabel = React.useCallback((value) => {
+    const normalized = String(value || "").trim().toLowerCase();
+    if (normalized === "bug") return "Bug";
+    if (normalized === "feature") return "Feature";
+    return "Idea";
+  }, []);
+  const feedbackResolutionLabel = React.useCallback((value) => {
+    const normalized = String(value || "").trim().toLowerCase();
+    if (normalized === "planned") return "Planned";
+    if (normalized === "done") return "Done";
+    return "Reviewing";
   }, []);
   const formatFeedbackDate = React.useCallback((raw) => {
     const value = String(raw || "").trim();
@@ -4720,8 +4738,39 @@ export default function App() {
     }
     return true;
   }, [authUser?.id, profileShareLinks]);
+  const callFeedbackApi = React.useCallback(
+    async (method, payload = null, options = {}) => {
+      const headers = {
+        "Content-Type": "application/json",
+      };
+      if (anonymousFeedbackFingerprint) {
+        headers["x-feedback-fingerprint"] = anonymousFeedbackFingerprint;
+      }
+      const accessToken = String(authSession?.access_token || "").trim();
+      if (accessToken) {
+        headers.Authorization = `Bearer ${accessToken}`;
+      }
+      const query = options.query ? `?${new URLSearchParams(options.query).toString()}` : "";
+      const response = await fetch(`/api/feedback${query}`, {
+        method,
+        headers,
+        body: payload ? JSON.stringify(payload) : undefined,
+      });
+      let data = null;
+      try {
+        data = await response.json();
+      } catch (_) {
+        data = null;
+      }
+      if (!response.ok) {
+        throw new Error(data?.error || "Feedback request failed.");
+      }
+      return data || {};
+    },
+    [anonymousFeedbackFingerprint, authSession?.access_token]
+  );
   const refreshFeedbackItems = React.useCallback(async () => {
-    if (!hasSupabaseEnabled || !supabase) {
+    if (!hasSupabaseEnabled) {
       setFeedbackItems([]);
       setFeedbackVoteMap({});
       setFeedbackLoading(false);
@@ -4730,41 +4779,17 @@ export default function App() {
     setFeedbackLoading(true);
     setFeedbackError("");
     try {
-      let query = supabase
-        .from("feedback_items")
-        .select("id,created_at,updated_at,user_id,author_kind,author_label,body,status,is_public,vote_score,vote_count")
-        .order("created_at", { ascending: false })
-        .limit(200);
-      if (!isAdminUser) {
-        query = query.eq("is_public", true).eq("status", "public");
-      }
-      const { data, error } = await query;
-      if (error) throw error;
-      const normalized = (Array.isArray(data) ? data : [])
+      const data = await callFeedbackApi("GET", null, {
+        query: {
+          sort: feedbackSort,
+          adminFilter: feedbackAdminFilter,
+        },
+      });
+      const normalized = (Array.isArray(data?.items) ? data.items : [])
         .map(normalizeFeedbackItem)
         .filter(Boolean);
       setFeedbackItems(normalized);
-
-      if (authUser?.id || anonymousFeedbackFingerprint) {
-        let votesQuery = supabase
-          .from("feedback_votes")
-          .select("feedback_id,vote");
-        if (authUser?.id) {
-          votesQuery = votesQuery.eq("user_id", authUser.id);
-        } else {
-          votesQuery = votesQuery.eq("fingerprint", anonymousFeedbackFingerprint);
-        }
-        const { data: voteRows, error: voteError } = await votesQuery.limit(500);
-        if (voteError) throw voteError;
-        const nextVoteMap = Object.fromEntries(
-          (Array.isArray(voteRows) ? voteRows : [])
-            .map((row) => [String(row.feedback_id || ""), Number(row.vote) || 0])
-            .filter(([id, vote]) => id && (vote === 1 || vote === -1))
-        );
-        setFeedbackVoteMap(nextVoteMap);
-      } else {
-        setFeedbackVoteMap({});
-      }
+      setFeedbackVoteMap(data?.myVotes && typeof data.myVotes === "object" ? data.myVotes : {});
     } catch (error) {
       setFeedbackItems([]);
       setFeedbackVoteMap({});
@@ -4772,7 +4797,7 @@ export default function App() {
     } finally {
       setFeedbackLoading(false);
     }
-  }, [anonymousFeedbackFingerprint, authUser?.id, isAdminUser, normalizeFeedbackItem]);
+  }, [callFeedbackApi, feedbackAdminFilter, feedbackSort, hasSupabaseEnabled, normalizeFeedbackItem]);
   const submitFeedback = React.useCallback(async () => {
     const body = String(feedbackBody || "").trim();
     if (body.length < 3) {
@@ -4783,7 +4808,7 @@ export default function App() {
       setFeedbackError("Feedback is too long.");
       return false;
     }
-    if (!hasSupabaseEnabled || !supabase) {
+    if (!hasSupabaseEnabled) {
       setFeedbackError("Feedback is not configured yet.");
       return false;
     }
@@ -4791,20 +4816,13 @@ export default function App() {
     setFeedbackError("");
     setFeedbackSuccessMessage("");
     try {
-      const payload = {
-        user_id: authUser?.id || null,
-        author_kind: authUser?.id ? "registered" : "anonymous",
-        author_label: authUser?.id ? "Signed-in user" : "Anonymous",
+      await callFeedbackApi("POST", {
+        action: "submit",
         body,
-        status: "pending",
-        is_public: false,
-        vote_score: 0,
-        vote_count: 0,
-        fingerprint: authUser?.id ? null : anonymousFeedbackFingerprint || null,
-      };
-      const { error } = await supabase.from("feedback_items").insert(payload);
-      if (error) throw error;
+        feedbackType,
+      });
       setFeedbackBody("");
+      setFeedbackType("idea");
       setFeedbackSuccessMessage("Feedback sent. It is private until published by admin.");
       await refreshFeedbackItems();
       return true;
@@ -4814,107 +4832,67 @@ export default function App() {
     } finally {
       setFeedbackSubmitting(false);
     }
-  }, [anonymousFeedbackFingerprint, authUser?.id, feedbackBody, refreshFeedbackItems]);
-  const setFeedbackItemVisibility = React.useCallback(async (feedbackId, makePublic) => {
-    const normalizedId = String(feedbackId || "").trim();
-    if (!normalizedId || !isAdminUser || !hasSupabaseEnabled || !supabase) return false;
-    try {
-      const nextStatus = makePublic ? "public" : "hidden";
-      const { error } = await supabase
-        .from("feedback_items")
-        .update({
-          is_public: makePublic,
-          status: nextStatus,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", normalizedId);
-      if (error) throw error;
-      await refreshFeedbackItems();
-      return true;
-    } catch (error) {
-      setFeedbackError(error?.message || "Failed to update feedback visibility.");
-      return false;
-    }
-  }, [isAdminUser, refreshFeedbackItems]);
-  const voteOnFeedbackItem = React.useCallback(async (feedbackId, vote) => {
-    const normalizedId = String(feedbackId || "").trim();
-    const nextVote = Number(vote) === -1 ? -1 : 1;
-    if (!normalizedId || !hasSupabaseEnabled || !supabase) return false;
-    const target = feedbackItems.find((item) => item.id === normalizedId);
-    if (!target?.isPublic) return false;
-    const existingVote = Number(feedbackVoteMap[normalizedId] || 0);
-    const identityUserId = authUser?.id || null;
-    const identityFingerprint = identityUserId ? null : anonymousFeedbackFingerprint || null;
-    if (!identityUserId && !identityFingerprint) return false;
-    try {
-      let nextScore = target.voteScore;
-      let nextCount = target.voteCount;
-      if (existingVote === nextVote) {
-        let query = supabase.from("feedback_votes").delete().eq("feedback_id", normalizedId);
-        query = identityUserId ? query.eq("user_id", identityUserId) : query.eq("fingerprint", identityFingerprint);
-        const { error } = await query;
-        if (error) throw error;
-        nextScore -= existingVote;
-        nextCount = Math.max(0, nextCount - 1);
-        setFeedbackVoteMap((prev) => {
-          const next = { ...(prev || {}) };
-          delete next[normalizedId];
-          return next;
+  }, [callFeedbackApi, feedbackBody, feedbackType, hasSupabaseEnabled, refreshFeedbackItems]);
+  const setFeedbackItemVisibility = React.useCallback(
+    async (feedbackId, makePublic) => {
+      const normalizedId = String(feedbackId || "").trim();
+      if (!normalizedId || !isAdminUser) return false;
+      try {
+        await callFeedbackApi("POST", {
+          action: "moderate",
+          feedbackId: normalizedId,
+          makePublic,
         });
-      } else {
-        let selectQuery = supabase.from("feedback_votes").select("id,vote").eq("feedback_id", normalizedId).limit(1);
-        selectQuery = identityUserId
-          ? selectQuery.eq("user_id", identityUserId)
-          : selectQuery.eq("fingerprint", identityFingerprint);
-        const { data: existingRows, error: selectError } = await selectQuery;
-        if (selectError) throw selectError;
-        const existingRow = Array.isArray(existingRows) ? existingRows[0] || null : null;
-        if (existingRow?.id) {
-          const { error: updateVoteError } = await supabase
-            .from("feedback_votes")
-            .update({ vote: nextVote })
-            .eq("id", existingRow.id);
-          if (updateVoteError) throw updateVoteError;
-          nextScore = nextScore - (Number(existingRow.vote) || 0) + nextVote;
-        } else {
-          const { error: insertVoteError } = await supabase.from("feedback_votes").insert({
-            feedback_id: normalizedId,
-            user_id: identityUserId,
-            fingerprint: identityFingerprint,
-            vote: nextVote,
-          });
-          if (insertVoteError) throw insertVoteError;
-          nextScore += nextVote;
-          nextCount += 1;
-        }
-        setFeedbackVoteMap((prev) => ({ ...(prev || {}), [normalizedId]: nextVote }));
+        await refreshFeedbackItems();
+        return true;
+      } catch (error) {
+        setFeedbackError(error?.message || "Failed to update feedback visibility.");
+        return false;
       }
-      const { error: updateItemError } = await supabase
-        .from("feedback_items")
-        .update({
-          vote_score: nextScore,
-          vote_count: nextCount,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", normalizedId);
-      if (updateItemError) throw updateItemError;
-      setFeedbackItems((prev) =>
-        prev.map((item) =>
-          item.id === normalizedId
-            ? {
-                ...item,
-                voteScore: nextScore,
-                voteCount: nextCount,
-              }
-            : item
-        )
-      );
-      return true;
-    } catch (error) {
-      setFeedbackError(error?.message || "Failed to vote on feedback.");
-      return false;
-    }
-  }, [anonymousFeedbackFingerprint, authUser?.id, feedbackItems, feedbackVoteMap]);
+    },
+    [callFeedbackApi, isAdminUser, refreshFeedbackItems]
+  );
+  const updateFeedbackAdminMeta = React.useCallback(
+    async (feedbackId, patch = {}) => {
+      const normalizedId = String(feedbackId || "").trim();
+      if (!normalizedId || !isAdminUser) return false;
+      try {
+        await callFeedbackApi("POST", {
+          action: "moderate",
+          feedbackId: normalizedId,
+          ...patch,
+        });
+        await refreshFeedbackItems();
+        return true;
+      } catch (error) {
+        setFeedbackError(error?.message || "Failed to update feedback.");
+        return false;
+      }
+    },
+    [callFeedbackApi, isAdminUser, refreshFeedbackItems]
+  );
+  const voteOnFeedbackItem = React.useCallback(
+    async (feedbackId, vote) => {
+      const normalizedId = String(feedbackId || "").trim();
+      const nextVote = Number(vote) === -1 ? -1 : 1;
+      if (!normalizedId || !hasSupabaseEnabled) return false;
+      const target = feedbackItems.find((item) => item.id === normalizedId);
+      if (!target?.isPublic) return false;
+      try {
+        await callFeedbackApi("POST", {
+          action: "vote",
+          feedbackId: normalizedId,
+          vote: nextVote,
+        });
+        await refreshFeedbackItems();
+        return true;
+      } catch (error) {
+        setFeedbackError(error?.message || "Failed to vote on feedback.");
+        return false;
+      }
+    },
+    [callFeedbackApi, feedbackItems, hasSupabaseEnabled, refreshFeedbackItems]
+  );
   React.useEffect(() => {
     refreshFeedbackItems();
   }, [refreshFeedbackItems]);
@@ -19431,6 +19409,22 @@ useEffect(() => {
                       <span className="text-xs text-sky-300">{feedbackSuccessMessage}</span>
                     ) : null}
                   </div>
+                  <div className="mb-2 flex flex-wrap items-center gap-2">
+                    {["bug", "feature", "idea"].map((typeId) => (
+                      <button
+                        key={`feedback-type-${typeId}`}
+                        type="button"
+                        onClick={() => setFeedbackType(typeId)}
+                        className={`rounded px-2 py-1 text-xs ${
+                          feedbackType === typeId
+                            ? "bg-neutral-800 text-white"
+                            : "bg-neutral-950/50 text-neutral-500 hover:bg-neutral-900/70"
+                        }`}
+                      >
+                        {feedbackTypeLabel(typeId)}
+                      </button>
+                    ))}
+                  </div>
                   <textarea
                     value={feedbackBody}
                     onChange={(e) => {
@@ -19465,17 +19459,32 @@ useEffect(() => {
                   ) : null}
                 </div>
 
-                {isAdminUser ? (
-                  <div className="flex flex-wrap items-center gap-2 text-xs">
+                <div className="flex flex-wrap items-center gap-2 text-xs">
+                  {["newest", "top"].map((sortId) => (
+                    <button
+                      key={`feedback-sort-${sortId}`}
+                      type="button"
+                      onClick={() => setFeedbackSort(sortId)}
+                      className={`rounded px-2 py-1 ${
+                        feedbackSort === sortId
+                          ? "bg-neutral-800 text-white"
+                          : "bg-neutral-950/40 text-neutral-500 hover:bg-neutral-900/60"
+                      }`}
+                    >
+                      {sortId === "top" ? "Top" : "Newest"}
+                    </button>
+                  ))}
+                  {isAdminUser ? (
+                    <>
                     {["pending", "public", "hidden", "all"].map((filterId) => (
                       <button
                         key={`feedback-filter-${filterId}`}
                         type="button"
                         onClick={() => setFeedbackAdminFilter(filterId)}
-                        className={`rounded border px-2 py-1 ${
+                        className={`rounded px-2 py-1 ${
                           feedbackAdminFilter === filterId
-                            ? "border-neutral-700 bg-neutral-800 text-white"
-                            : "border-neutral-800 bg-neutral-950/40 text-neutral-500 hover:bg-neutral-900/60"
+                            ? "bg-neutral-800 text-white"
+                            : "bg-neutral-950/40 text-neutral-500 hover:bg-neutral-900/60"
                         }`}
                       >
                         {filterId === "all"
@@ -19483,8 +19492,9 @@ useEffect(() => {
                           : filterId.charAt(0).toUpperCase() + filterId.slice(1)}
                       </button>
                     ))}
-                  </div>
-                ) : null}
+                    </>
+                  ) : null}
+                </div>
 
                 <div className="space-y-2">
                   {feedbackLoading ? (
@@ -19558,7 +19568,31 @@ useEffect(() => {
                               </button>
                             </div>
                             <div className="min-w-0 flex-1">
+                              <div className="mb-2 flex flex-wrap items-center gap-2 text-[11px]">
+                                <span className="rounded bg-neutral-900 px-2 py-1 text-neutral-300">
+                                  {feedbackTypeLabel(item.feedbackType)}
+                                </span>
+                                {item.resolutionStatus ? (
+                                  <span className={`rounded px-2 py-1 ${
+                                    item.resolutionStatus === "done"
+                                      ? "bg-emerald-950/60 text-emerald-300"
+                                      : item.resolutionStatus === "planned"
+                                        ? "bg-sky-950/60 text-sky-300"
+                                        : "bg-neutral-900 text-neutral-400"
+                                  }`}>
+                                    {feedbackResolutionLabel(item.resolutionStatus)}
+                                  </span>
+                                ) : null}
+                              </div>
                               <div className="whitespace-pre-wrap text-sm text-neutral-300">{item.body}</div>
+                              {item.adminReply ? (
+                                <div className="mt-3 rounded bg-neutral-900/70 px-3 py-2 text-xs text-neutral-300">
+                                  <div className="mb-1 text-[11px] uppercase tracking-[0.16em] text-neutral-500">
+                                    Admin reply
+                                  </div>
+                                  <div className="whitespace-pre-wrap">{item.adminReply}</div>
+                                </div>
+                              ) : null}
                               <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-neutral-500">
                                 <span>{item.authorLabel || (item.authorKind === "registered" ? "Signed-in user" : "Anonymous")}</span>
                                 <span className="text-neutral-700">·</span>
@@ -19573,15 +19607,45 @@ useEffect(() => {
                                 ) : null}
                               </div>
                               {isAdminUser ? (
-                                <div className="mt-3 flex flex-wrap items-center gap-2">
+                                <div className="mt-3 space-y-2">
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    {["reviewing", "planned", "done"].map((statusId) => (
+                                      <button
+                                        key={`feedback-status-${item.id}-${statusId}`}
+                                        type="button"
+                                        onClick={() =>
+                                          updateFeedbackAdminMeta(item.id, { resolutionStatus: statusId })
+                                        }
+                                        className={`rounded px-2 py-1 text-xs ${
+                                          item.resolutionStatus === statusId
+                                            ? "bg-neutral-800 text-white"
+                                            : "bg-neutral-950/40 text-neutral-500 hover:bg-neutral-900/60"
+                                        }`}
+                                      >
+                                        {feedbackResolutionLabel(statusId)}
+                                      </button>
+                                    ))}
+                                  </div>
+                                  <textarea
+                                    value={feedbackAdminReplyDrafts[item.id] ?? item.adminReply ?? ""}
+                                    onChange={(e) =>
+                                      setFeedbackAdminReplyDrafts((prev) => ({
+                                        ...(prev || {}),
+                                        [item.id]: e.target.value,
+                                      }))
+                                    }
+                                    rows={3}
+                                    placeholder="Add admin reply..."
+                                    className="w-full resize-y rounded bg-neutral-900/80 px-3 py-2 text-xs text-neutral-200 outline-none ring-0 placeholder:text-neutral-600 focus:outline-none focus:ring-0"
+                                  />
                                   <button
                                     type="button"
                                     onClick={() => setFeedbackItemVisibility(item.id, true)}
                                     disabled={item.isPublic}
-                                    className={`rounded border px-2 py-1 text-xs ${
+                                    className={`rounded px-2 py-1 text-xs ${
                                       item.isPublic
-                                        ? "border-neutral-900 bg-neutral-950 text-neutral-700 cursor-not-allowed"
-                                        : "border-neutral-700 bg-neutral-800 text-neutral-200 hover:bg-neutral-700/60"
+                                        ? "bg-neutral-950 text-neutral-700 cursor-not-allowed"
+                                        : "bg-neutral-800 text-neutral-200 hover:bg-neutral-700/60"
                                     }`}
                                   >
                                     Make public
@@ -19590,13 +19654,26 @@ useEffect(() => {
                                     type="button"
                                     onClick={() => setFeedbackItemVisibility(item.id, false)}
                                     disabled={!item.isPublic && item.status === "hidden"}
-                                    className={`rounded border px-2 py-1 text-xs ${
+                                    className={`rounded px-2 py-1 text-xs ${
                                       !item.isPublic && item.status === "hidden"
-                                        ? "border-neutral-900 bg-neutral-950 text-neutral-700 cursor-not-allowed"
-                                        : "border-neutral-800 bg-neutral-900/60 text-neutral-400 hover:bg-neutral-800/60"
+                                        ? "bg-neutral-950 text-neutral-700 cursor-not-allowed"
+                                        : "bg-neutral-900/60 text-neutral-400 hover:bg-neutral-800/60"
                                     }`}
                                   >
                                     Hide
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      updateFeedbackAdminMeta(item.id, {
+                                        adminReply: String(
+                                          feedbackAdminReplyDrafts[item.id] ?? item.adminReply ?? ""
+                                        ),
+                                      })
+                                    }
+                                    className="rounded bg-neutral-800 px-2 py-1 text-xs text-neutral-200 hover:bg-neutral-700/60"
+                                  >
+                                    Save reply
                                   </button>
                                 </div>
                               ) : null}

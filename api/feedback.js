@@ -220,6 +220,17 @@ async function moderateFeedback(req, res) {
   return res.status(200).json({ ok: true });
 }
 
+async function deleteFeedback(req, res) {
+  const body = await readJsonBody(req);
+  const { isAdmin } = await getRequestUser(req);
+  if (!isAdmin) return res.status(403).json({ error: "Admin required." });
+  const feedbackId = String(body?.feedbackId || "").trim();
+  if (!feedbackId) return res.status(400).json({ error: "Missing feedback id." });
+  const { error } = await supabaseAdmin.from("feedback_items").delete().eq("id", feedbackId);
+  if (error) return res.status(500).json({ error: error.message || "Failed to delete feedback." });
+  return res.status(200).json({ ok: true });
+}
+
 export default async function handler(req, res) {
   if (!hasSupabaseAdmin || !supabaseAdmin) {
     return res.status(503).json({ error: "Feedback backend not configured." });
@@ -231,6 +242,7 @@ export default async function handler(req, res) {
     if (action === "submit") return submitFeedback(req, res);
     if (action === "vote") return voteFeedback(req, res);
     if (action === "moderate") return moderateFeedback(req, res);
+    if (action === "delete") return deleteFeedback(req, res);
     return res.status(400).json({ error: "Unknown feedback action." });
   }
   res.setHeader("Allow", "GET, POST");

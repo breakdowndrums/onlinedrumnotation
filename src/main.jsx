@@ -3,6 +3,9 @@ import ReactDOM from "react-dom/client";
 import { Analytics } from "@vercel/analytics/react";
 import App from "./App.jsx";
 import "./index.css";
+import { trackClientEvent } from "./utils/trackStats";
+
+const SITE_VISIT_SESSION_KEY = "drum-grid-site-visit-tracked-v1";
 
 async function preloadSharedStateIfNeeded() {
   const pathname = window.location.pathname || "/";
@@ -20,7 +23,21 @@ async function preloadSharedStateIfNeeded() {
   } catch (_) {}
 }
 
+function trackSiteVisitOncePerSession() {
+  if (typeof window === "undefined") return;
+  const pathname = window.location.pathname || "/";
+  const sessionKey = `${SITE_VISIT_SESSION_KEY}:${pathname}`;
+  try {
+    if (window.sessionStorage.getItem(sessionKey) === "1") return;
+    window.sessionStorage.setItem(sessionKey, "1");
+  } catch (_) {
+    // Keep tracking best-effort even if sessionStorage is unavailable.
+  }
+  void trackClientEvent("site_visit", { path: pathname });
+}
+
 preloadSharedStateIfNeeded().finally(() => {
+  trackSiteVisitOncePerSession();
   ReactDOM.createRoot(document.getElementById("root")).render(
     <React.StrictMode>
       <App />

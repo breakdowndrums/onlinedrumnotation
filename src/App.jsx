@@ -5,6 +5,7 @@ import { exportNotationPng } from "./utils/exportNotationPng";
 import { exportArrangementPdf } from "./utils/exportArrangementPdf";
 import { exportArrangementMidi, exportDrumMidi } from "./utils/exportMidi";
 import { importDrumMidi } from "./utils/importMidi";
+import { trackClientEvent } from "./utils/trackStats";
 import AuthDialog from "./components/AuthDialog";
 import LegalDialog from "./components/LegalDialog";
 import { hasSupabaseEnabled, supabase } from "./lib/supabase";
@@ -257,6 +258,38 @@ function SaveStateIcon() {
       }}
       aria-hidden="true"
     />
+  );
+}
+
+function HelpHotspot({ tip, className = "", align = "center", widthClass = "w-52" }) {
+  const [open, setOpen] = React.useState(false);
+  const popupPositionClass =
+    align === "left"
+      ? "left-0"
+      : align === "right"
+        ? "right-0"
+        : "left-1/2 -translate-x-1/2";
+  return (
+    <div
+      className={`relative inline-flex items-center ${className}`.trim()}
+      onMouseEnter={() => setOpen(true)}
+      onMouseLeave={() => setOpen(false)}
+    >
+      <button
+        type="button"
+        onClick={() => setOpen((prev) => !prev)}
+        onBlur={() => setOpen(false)}
+        className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-neutral-900 text-[10px] leading-none text-neutral-600 hover:border-neutral-700 hover:text-neutral-300"
+        aria-label="Show help tip"
+      >
+        ?
+      </button>
+      {open ? (
+        <div className={`absolute top-full z-[160] mt-2 ${widthClass} ${popupPositionClass} max-w-[calc(100vw-1.5rem)] rounded-md border border-neutral-800 bg-neutral-950/95 px-2.5 py-2 text-[11px] leading-4 text-neutral-400 shadow-xl`}>
+          {tip}
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -799,7 +832,7 @@ const TEMPORARY_SHARE_LINK_CLEANUP_INTERVAL_MS = 1000 * 60 * 60 * 24;
 const BEAT_LIBRARY_SELECTED_CONTAINER_STORAGE_KEY = "drum-grid-beat-library-selected-container-v1";
 const BEAT_LIBRARY_ROOT_COLLAPSED_STORAGE_KEY = "drum-grid-beat-library-root-collapsed-v1";
 const GRID_SETTINGS_PRESET_LIBRARY_STORAGE_KEY = "drum-grid-grid-settings-presets-v1";
-const APP_VERSION = "0.1.309";
+const APP_VERSION = "0.1.317";
 const BEAT_CATEGORY_OPTIONS = [
   "Groove",
   "Fill",
@@ -3270,6 +3303,18 @@ export default function App() {
   const [feedbackVoteMap, setFeedbackVoteMap] = useState({});
   const [feedbackAdminFilter, setFeedbackAdminFilter] = useState("pending");
   const [feedbackAdminReplyDrafts, setFeedbackAdminReplyDrafts] = useState({});
+  const [adminStatsRange, setAdminStatsRange] = useState("day");
+  const [adminStatsLoading, setAdminStatsLoading] = useState(false);
+  const [adminStatsError, setAdminStatsError] = useState("");
+  const [adminStats, setAdminStats] = useState({
+    users: 0,
+    signedUpUsers: 0,
+    siteVisits: 0,
+    beatShareCreates: 0,
+    arrangementShareCreates: 0,
+    beatShareOpens: 0,
+    arrangementShareOpens: 0,
+  });
   useEffect(() => {
     const onViewportChange = () => {
       setViewportSize({
@@ -4337,6 +4382,7 @@ export default function App() {
   const importedBeatLoadInProgressRef = React.useRef(false);
   const gridMenuButtonRef = React.useRef(null);
   const gridMenuPopupRef = React.useRef(null);
+  const trackedSharedOpenKeysRef = React.useRef(new Set());
   const authUser = authSession?.user || null;
   const authUserEmail = String(authUser?.email || "").trim();
   const authUserLabel = authUserEmail || "Account";
@@ -4347,6 +4393,18 @@ export default function App() {
     if (typeof document === "undefined") return null;
     return document.getElementById("feedback-panel-root");
   }, []);
+  const adminStatsPortalTarget = React.useMemo(() => {
+    if (typeof document === "undefined") return null;
+    return document.getElementById("admin-stats-panel-root");
+  }, []);
+  const trackStatsEvent = React.useCallback(
+    (eventType, options = {}) =>
+      trackClientEvent(eventType, {
+        ...options,
+        authToken: String(authSession?.access_token || "").trim(),
+      }),
+    [authSession?.access_token]
+  );
   const normalizeFeedbackItem = React.useCallback((row) => {
     if (!row || typeof row !== "object") return null;
     const body = String(row.body || "").trim();
@@ -4414,10 +4472,9 @@ export default function App() {
     try {
       return new Intl.DateTimeFormat(undefined, {
         dateStyle: "medium",
-        timeStyle: "short",
       }).format(date);
     } catch (_) {
-      return date.toLocaleString();
+      return date.toLocaleDateString();
     }
   }, []);
   const authProfileLastSyncLabel = React.useMemo(() => {
@@ -4894,6 +4951,30 @@ export default function App() {
     },
     [callFeedbackApi, isAdminUser, refreshFeedbackItems]
   );
+  const deleteFeedbackItem = React.useCallback(
+    async (feedbackId) => {
+      const normalizedId = String(feedbackId || "").trim();
+      if (!normalizedId || !isAdminUser) return false;
+      if (!window.confirm("Delete this feedback comment?")) return false;
+      try {
+        await callFeedbackApi("POST", {
+          action: "delete",
+          feedbackId: normalizedId,
+        });
+        setFeedbackAdminReplyDrafts((prev) => {
+          const next = { ...(prev || {}) };
+          delete next[normalizedId];
+          return next;
+        });
+        await refreshFeedbackItems();
+        return true;
+      } catch (error) {
+        setFeedbackError(error?.message || "Failed to delete feedback.");
+        return false;
+      }
+    },
+    [callFeedbackApi, isAdminUser, refreshFeedbackItems]
+  );
   const voteOnFeedbackItem = React.useCallback(
     async (feedbackId, vote) => {
       const normalizedId = String(feedbackId || "").trim();
@@ -4919,6 +5000,61 @@ export default function App() {
   React.useEffect(() => {
     refreshFeedbackItems();
   }, [refreshFeedbackItems]);
+  const refreshAdminStats = React.useCallback(async () => {
+    if (!isAdminUser || !hasSupabaseEnabled) {
+      setAdminStatsLoading(false);
+      setAdminStatsError("");
+      setAdminStats({
+        users: 0,
+        signedUpUsers: 0,
+        siteVisits: 0,
+        beatShareCreates: 0,
+        arrangementShareCreates: 0,
+        beatShareOpens: 0,
+        arrangementShareOpens: 0,
+      });
+      return;
+    }
+    setAdminStatsLoading(true);
+    setAdminStatsError("");
+    try {
+      const headers = {};
+      const accessToken = String(authSession?.access_token || "").trim();
+      if (accessToken) {
+        headers.Authorization = `Bearer ${accessToken}`;
+      }
+      const response = await fetch(
+        `/api/admin-stats?${new URLSearchParams({ range: adminStatsRange }).toString()}`,
+        { headers }
+      );
+      let data = null;
+      try {
+        data = await response.json();
+      } catch (_) {
+        data = null;
+      }
+      if (!response.ok) {
+        throw new Error(data?.error || "Failed to load stats.");
+      }
+      const nextStats = data?.stats && typeof data.stats === "object" ? data.stats : {};
+      setAdminStats({
+        users: Math.max(0, Number(nextStats.users) || 0),
+        signedUpUsers: Math.max(0, Number(nextStats.signedUpUsers) || 0),
+        siteVisits: Math.max(0, Number(nextStats.siteVisits) || 0),
+        beatShareCreates: Math.max(0, Number(nextStats.beatShareCreates) || 0),
+        arrangementShareCreates: Math.max(0, Number(nextStats.arrangementShareCreates) || 0),
+        beatShareOpens: Math.max(0, Number(nextStats.beatShareOpens) || 0),
+        arrangementShareOpens: Math.max(0, Number(nextStats.arrangementShareOpens) || 0),
+      });
+    } catch (error) {
+      setAdminStatsError(error?.message || "Failed to load stats.");
+    } finally {
+      setAdminStatsLoading(false);
+    }
+  }, [adminStatsRange, authSession?.access_token, hasSupabaseEnabled, isAdminUser]);
+  React.useEffect(() => {
+    refreshAdminStats();
+  }, [refreshAdminStats]);
   const refreshPublicArrangementLibrary = React.useCallback(async () => {
     setPublicArrangementLibraryLoading(true);
     setPublicLibraryError("");
@@ -14580,6 +14716,21 @@ useEffect(() => {
     setSharedArrangementBeats([]);
     applyImportedBeatPayload(effectiveSharedState, shareSourceKey);
   }, [requestedSharedState, resolvedSharedState, routeOptions.shared, routeOptions.shareId, applyImportedBeatPayload, applyImportedArrangementPayload]);
+  useEffect(() => {
+    const shareSourceKey = routeOptions.shareId
+      ? `g:${routeOptions.shareId}`
+      : routeOptions.shared
+        ? `s:${routeOptions.shared}`
+        : "";
+    if (!shareSourceKey) return;
+    const effectiveSharedState = routeOptions.shareId ? resolvedSharedState : requestedSharedState;
+    if (!effectiveSharedState || typeof effectiveSharedState !== "object") return;
+    if (trackedSharedOpenKeysRef.current.has(shareSourceKey)) return;
+    trackedSharedOpenKeysRef.current.add(shareSourceKey);
+    void trackStatsEvent("share_open", {
+      shareKind: effectiveSharedState.kind === "arrangement" ? "arrangement" : "beat",
+    });
+  }, [requestedSharedState, resolvedSharedState, routeOptions.shared, routeOptions.shareId, trackStatsEvent]);
   const saveCurrentBeatLocal = React.useCallback(async () => {
     const name = getUniqueBeatName(beatNameDraft);
     const now = new Date().toISOString();
@@ -15713,6 +15864,19 @@ useEffect(() => {
             >
               <SaveStateIcon />
             </button>
+            <HelpHotspot
+              tip={
+                <>
+                  <div>Grid: long press a cell to cycle note modes.</div>
+                  <div className="mt-1">Selection: long press and drag to select.</div>
+                  <div className="mt-1">Selection: use arrow keys to move it.</div>
+                  <div className="mt-1">Looping: press &quot;L&quot; to toggle looping for the current selection.</div>
+                  <div className="mt-1">Tuplets: press the count numbers above the grid to cycle tuplets.</div>
+                </>
+              }
+              align="left"
+              widthClass="w-72"
+            />
             {playabilityWarningsEnabled && playabilityWarningSteps.length > 0 ? (
               <span className="shrink-0 text-[11px] text-amber-300/90">
                 {`${playabilityWarningSteps.length} playability warning${playabilityWarningSteps.length === 1 ? "" : "s"}`}
@@ -15780,6 +15944,19 @@ useEffect(() => {
             >
               <SaveStateIcon />
             </button>
+            <HelpHotspot
+              tip={
+                <>
+                  <div>Grid: long press a cell to cycle note modes.</div>
+                  <div className="mt-1">Selection: long press and drag to select.</div>
+                  <div className="mt-1">Selection: use arrow keys to move it.</div>
+                  <div className="mt-1">Looping: press &quot;L&quot; to toggle looping for the current selection.</div>
+                  <div className="mt-1">Tuplets: press the count numbers above the grid to cycle tuplets.</div>
+                </>
+              }
+              align="left"
+              widthClass="w-72"
+            />
             {playabilityWarningsEnabled && playabilityWarningSteps.length > 0 ? (
               <span className="shrink-0 text-[11px] text-amber-300/90">
                 {`${playabilityWarningSteps.length} playability warning${playabilityWarningSteps.length === 1 ? "" : "s"}`}
@@ -16303,6 +16480,7 @@ useEffect(() => {
     }
     let text = "";
     let usedShortLink = false;
+    let createdNewShare = false;
     try {
       if (!forceLong && hasSupabaseEnabled && supabase && authUser?.id) {
         const fingerprint = await buildSharePayloadFingerprint(mode, payload);
@@ -16363,6 +16541,7 @@ useEffect(() => {
             if (!error) {
               id = candidate;
               inserted = true;
+              createdNewShare = true;
               break;
             }
           }
@@ -16384,6 +16563,7 @@ useEffect(() => {
           if (id) {
             text = `${window.location.origin}/g/${encodeURIComponent(id)}`;
             usedShortLink = true;
+            createdNewShare = data?.created !== false;
           }
         }
       }
@@ -16401,16 +16581,26 @@ useEffect(() => {
       const url = new URL(window.location.origin + "/");
       url.searchParams.set("s", encoded);
       text = url.toString();
+      createdNewShare = true;
+    }
+    if (createdNewShare) {
+      void trackStatsEvent("share_create", {
+        shareKind: mode === "arrangement" ? "arrangement" : "beat",
+      });
     }
     return {
       text,
       usedShortLink,
       mode,
+      createdNewShare,
     };
   }, [
     authUser?.id,
     buildCurrentBeatPayload,
     buildCurrentArrangementSharePayload,
+    hasSupabaseEnabled,
+    supabase,
+    trackStatsEvent,
   ]);
   const handleBeatPdfExport = React.useCallback(async () => {
     const qrText = printQrEnabled
@@ -19504,8 +19694,8 @@ useEffect(() => {
                       disabled={feedbackSubmitting}
                       className={`rounded px-3 py-1.5 text-xs ${
                         feedbackSubmitting
-                          ? "bg-neutral-900/60 text-neutral-500 cursor-not-allowed"
-                          : "bg-neutral-800 text-neutral-200 hover:bg-neutral-700/60"
+                          ? "bg-neutral-950/60 text-neutral-600 cursor-not-allowed"
+                          : "bg-neutral-900/70 text-neutral-400 hover:bg-neutral-800/60 hover:text-neutral-300"
                       }`}
                     >
                       {feedbackSubmitting ? "Sending..." : "Send feedback"}
@@ -19525,8 +19715,8 @@ useEffect(() => {
                       onClick={() => setFeedbackSort(sortId)}
                       className={`rounded px-2 py-1 ${
                         feedbackSort === sortId
-                          ? "bg-neutral-800 text-white"
-                          : "bg-neutral-950/40 text-neutral-500 hover:bg-neutral-900/60"
+                          ? "bg-neutral-900/70 text-neutral-300"
+                          : "bg-neutral-950/30 text-neutral-600 hover:bg-neutral-900/50 hover:text-neutral-400"
                       }`}
                     >
                       {sortId === "top" ? "Top" : "Newest"}
@@ -19541,8 +19731,8 @@ useEffect(() => {
                         onClick={() => setFeedbackAdminFilter(filterId)}
                         className={`rounded px-2 py-1 ${
                           feedbackAdminFilter === filterId
-                            ? "bg-neutral-800 text-white"
-                            : "bg-neutral-950/40 text-neutral-500 hover:bg-neutral-900/60"
+                            ? "bg-neutral-900/70 text-neutral-300"
+                            : "bg-neutral-950/30 text-neutral-600 hover:bg-neutral-900/50 hover:text-neutral-400"
                         }`}
                       >
                         {filterId === "all"
@@ -19639,7 +19829,7 @@ useEffect(() => {
                                       ? "bg-emerald-900/55 text-emerald-200"
                                       : item.resolutionStatus === "planned"
                                         ? "bg-amber-900/55 text-amber-200"
-                                        : "bg-neutral-800 text-neutral-300"
+                                        : "bg-neutral-900/60 text-neutral-500"
                                   }`}>
                                     {feedbackResolutionLabel(item.resolutionStatus)}
                                   </span>
@@ -19683,7 +19873,7 @@ useEffect(() => {
                                               ? "bg-emerald-900/55 text-emerald-200"
                                               : statusId === "planned"
                                                 ? "bg-amber-900/55 text-amber-200"
-                                                : "bg-neutral-800 text-neutral-100"
+                                                : "bg-neutral-900/60 text-neutral-500"
                                             : "bg-neutral-950/40 text-neutral-500 hover:bg-neutral-900/60"
                                         }`}
                                       >
@@ -19740,6 +19930,13 @@ useEffect(() => {
                                   >
                                     Save reply
                                   </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => deleteFeedbackItem(item.id)}
+                                    className="rounded bg-neutral-900/60 px-2 py-1 text-xs text-neutral-500 hover:bg-neutral-800/60 hover:text-neutral-300"
+                                  >
+                                    Delete
+                                  </button>
                                 </div>
                               ) : null}
                             </div>
@@ -19753,6 +19950,68 @@ useEffect(() => {
             )}
           </div>,
           feedbackPortalTarget
+        )}
+      {isAdminUser && adminStatsPortalTarget &&
+        createPortal(
+          <details>
+            <summary>
+              <span className="seo-summary">
+                <span className="seo-caret">▸</span>
+                <span>Stats</span>
+              </span>
+            </summary>
+            <div className="seo-body">
+              <div className="space-y-3">
+                <div className="flex flex-wrap items-center gap-2 text-xs">
+                  {[
+                    { id: "day", label: "This day" },
+                    { id: "week", label: "This week" },
+                    { id: "all", label: "All" },
+                  ].map((rangeOption) => (
+                    <button
+                      key={`admin-stats-range-${rangeOption.id}`}
+                      type="button"
+                      onClick={() => setAdminStatsRange(rangeOption.id)}
+                      className={`rounded px-2 py-1 ${
+                        adminStatsRange === rangeOption.id
+                          ? "bg-neutral-900/70 text-neutral-300"
+                          : "bg-neutral-950/30 text-neutral-600 hover:bg-neutral-900/50 hover:text-neutral-400"
+                      }`}
+                    >
+                      {rangeOption.label}
+                    </button>
+                  ))}
+                </div>
+                {adminStatsError ? (
+                  <div className="text-xs text-amber-300">{adminStatsError}</div>
+                ) : null}
+                {adminStatsLoading ? (
+                  <div className="text-xs text-neutral-500">Loading stats...</div>
+                ) : (
+                  <div className="grid gap-2 text-xs text-neutral-400 sm:grid-cols-2">
+                    {[
+                      ["Users", adminStats.users],
+                      ["Signed up users", adminStats.signedUpUsers],
+                      ["Site visits", adminStats.siteVisits],
+                      ["Beat share links created", adminStats.beatShareCreates],
+                      ["Arrangement share links created", adminStats.arrangementShareCreates],
+                      ["Beat opens via link / QR", adminStats.beatShareOpens],
+                      ["Arrangement opens via link / QR", adminStats.arrangementShareOpens],
+                    ].map(([label, value]) => (
+                      <div
+                        key={`admin-stat-${label}`}
+                        className="flex items-center justify-between gap-3 bg-black px-3 py-2"
+                      >
+                        <span className="text-neutral-500">{label}</span>
+                        <span className="text-neutral-200 tabular-nums">{value}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </details>,
+          adminStatsPortalTarget
         )}
       {!isEmbedMode &&
         createPortal(
@@ -25458,7 +25717,7 @@ function Grid({
 
         return (
           <div key={`gridline-${lineIdx}`} className="grid gap-1" style={{ gridTemplateColumns: `auto repeat(${timeline.length}, 28px)` }}>
-            <div />
+            <div className="flex h-6 items-end justify-end pr-2" />
             {timeline.map((t, i) => {
               if (t.type === "gap") return <div key={t.key} />;
               const label = labelFor(t.stepMeta || { quarterIndex: 0, subIndex: 0, subdiv: 1 });

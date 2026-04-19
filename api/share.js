@@ -194,7 +194,7 @@ export default async function handler(req, res) {
           const existingSerialized = stableSerializeValue(buildCanonicalSharePayload(parsed.payload));
           const incomingSerialized = stableSerializeValue(buildCanonicalSharePayload(payload));
           if (existingSerialized === incomingSerialized) {
-            return res.status(200).json({ id: deterministicId });
+            return res.status(200).json({ id: deterministicId, created: false });
           }
         }
       } catch (_) {}
@@ -221,7 +221,7 @@ export default async function handler(req, res) {
       { v: 1, payload, createdAt: new Date().toISOString() },
       SHARE_TTL_SECONDS
     );
-    return res.status(200).json({ id });
+    return res.status(200).json({ id, created: true });
   } catch (err) {
     return res.status(500).json({ error: "Failed to save share", detail: String(err?.message || err) });
   }

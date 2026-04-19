@@ -34,6 +34,7 @@ const TEMPO_QUARTER_UP_PATH =
   "M302 115v760h30v-828c0 -95 -123 -188 -223 -188c-61 0 -109 35 -109 94c0 97 99 188 222 188c33 0 61 -9 80 -26z";
 const MIDI_NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 const SHORTCUT_BINDINGS_STORAGE_KEY = "drum-grid-shortcut-bindings-v1";
+const FEEDBACK_ANON_FINGERPRINT_STORAGE_KEY = "drum-grid-feedback-anon-fingerprint-v1";
 const BEAT_AUTO_UPDATE_ENABLED_STORAGE_KEY = "drum-grid-beat-auto-update-enabled-v1";
 const SHORTCUTS = [
   {
@@ -798,7 +799,7 @@ const TEMPORARY_SHARE_LINK_CLEANUP_INTERVAL_MS = 1000 * 60 * 60 * 24;
 const BEAT_LIBRARY_SELECTED_CONTAINER_STORAGE_KEY = "drum-grid-beat-library-selected-container-v1";
 const BEAT_LIBRARY_ROOT_COLLAPSED_STORAGE_KEY = "drum-grid-beat-library-root-collapsed-v1";
 const GRID_SETTINGS_PRESET_LIBRARY_STORAGE_KEY = "drum-grid-grid-settings-presets-v1";
-const APP_VERSION = "0.1.274";
+const APP_VERSION = "0.1.302";
 const BEAT_CATEGORY_OPTIONS = [
   "Groove",
   "Fill",
@@ -1763,6 +1764,49 @@ function normalizeProfileShareLinkEntry(row) {
     lastAccessedAt: String(shareMeta.lastAccessedAt || "").trim(),
     createdAt,
   };
+}
+
+function truncateMiddleText(value, maxLength = 22, edgeLength = 7) {
+  const text = String(value || "");
+  if (text.length <= maxLength) return text;
+  const safeEdge = Math.max(2, Math.min(edgeLength, Math.floor((maxLength - 1) / 2)));
+  const start = text.slice(0, safeEdge);
+  const end = text.slice(-safeEdge);
+  return `${start}…${end}`;
+}
+
+function truncatePrefixToLastText(value, maxLength = 12, prefixLength = 3, minTailLength = 3) {
+  const text = String(value || "");
+  if (text.length <= maxLength) return text;
+  const safePrefix = Math.max(1, Math.min(prefixLength, Math.max(1, maxLength - 4)));
+  const availableTail = Math.max(1, maxLength - safePrefix - 1);
+  const safeTail = Math.max(1, Math.min(text.length - safePrefix, Math.max(minTailLength, availableTail)));
+  return `${text.slice(0, safePrefix)}…${text.slice(-safeTail)}`;
+}
+
+function truncateToLastText(value, maxLength = 14, tailLength = 8) {
+  const text = String(value || "");
+  if (text.length <= maxLength) return text;
+  const safeTail = Math.max(3, Math.min(tailLength, maxLength - 1));
+  return `…${text.slice(-safeTail)}`;
+}
+
+function getAnonymousFeedbackFingerprint() {
+  if (typeof window === "undefined") return "";
+  try {
+    const existing = String(
+      window.localStorage.getItem(FEEDBACK_ANON_FINGERPRINT_STORAGE_KEY) || ""
+    ).trim();
+    if (existing) return existing;
+    const next =
+      typeof window.crypto?.randomUUID === "function"
+        ? window.crypto.randomUUID()
+        : `anon-${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;
+    window.localStorage.setItem(FEEDBACK_ANON_FINGERPRINT_STORAGE_KEY, next);
+    return next;
+  } catch (_) {
+    return "";
+  }
 }
 
 function normalizePublishedBeatEntry(row) {
@@ -3215,6 +3259,14 @@ export default function App() {
   const [isLoopAdvancedMenuOpen, setIsLoopAdvancedMenuOpen] = useState(false);
   const [legalTab, setLegalTab] = useState("impressum"); // impressum | privacy
   const [showLegalEmail, setShowLegalEmail] = useState(false);
+  const [feedbackItems, setFeedbackItems] = useState([]);
+  const [feedbackLoading, setFeedbackLoading] = useState(false);
+  const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
+  const [feedbackError, setFeedbackError] = useState("");
+  const [feedbackBody, setFeedbackBody] = useState("");
+  const [feedbackSuccessMessage, setFeedbackSuccessMessage] = useState("");
+  const [feedbackVoteMap, setFeedbackVoteMap] = useState({});
+  const [feedbackAdminFilter, setFeedbackAdminFilter] = useState("pending");
   useEffect(() => {
     const onViewportChange = () => {
       setViewportSize({
@@ -4287,6 +4339,46 @@ export default function App() {
   const authUserLabel = authUserEmail || "Account";
   const adminEmail = String(import.meta.env.VITE_ADMIN_EMAIL || "").trim().toLowerCase();
   const isAdminUser = Boolean(authUser?.id && adminEmail && authUserEmail.toLowerCase() === adminEmail);
+  const anonymousFeedbackFingerprint = React.useMemo(() => getAnonymousFeedbackFingerprint(), []);
+  const feedbackPortalTarget = React.useMemo(() => {
+    if (typeof document === "undefined") return null;
+    return document.getElementById("feedback-panel-root");
+  }, []);
+  const normalizeFeedbackItem = React.useCallback((row) => {
+    if (!row || typeof row !== "object") return null;
+    const body = String(row.body || "").trim();
+    if (!body) return null;
+    const score = Math.max(
+      Number(row.vote_score) || 0,
+      0 - Math.max(0, Number(row.vote_count) || 0)
+    );
+    return {
+      id: String(row.id || ""),
+      body,
+      createdAt: String(row.created_at || row.updated_at || ""),
+      status: String(row.status || (row.is_public ? "public" : "pending")),
+      isPublic: row.is_public === true,
+      voteScore: Number.isFinite(score) ? score : 0,
+      voteCount: Math.max(0, Number(row.vote_count) || 0),
+      authorKind: String(row.author_kind || (row.user_id ? "registered" : "anonymous")),
+      authorLabel: String(row.author_label || "").trim(),
+      userId: row.user_id ? String(row.user_id) : "",
+    };
+  }, []);
+  const formatFeedbackDate = React.useCallback((raw) => {
+    const value = String(raw || "").trim();
+    if (!value) return "";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return "";
+    try {
+      return new Intl.DateTimeFormat(undefined, {
+        dateStyle: "medium",
+        timeStyle: "short",
+      }).format(date);
+    } catch (_) {
+      return date.toLocaleString();
+    }
+  }, []);
   const authProfileLastSyncLabel = React.useMemo(() => {
     const raw = String(personalLibraryLastSyncAt || "").trim();
     if (!raw) return "";
@@ -4628,6 +4720,204 @@ export default function App() {
     }
     return true;
   }, [authUser?.id, profileShareLinks]);
+  const refreshFeedbackItems = React.useCallback(async () => {
+    if (!hasSupabaseEnabled || !supabase) {
+      setFeedbackItems([]);
+      setFeedbackVoteMap({});
+      setFeedbackLoading(false);
+      return;
+    }
+    setFeedbackLoading(true);
+    setFeedbackError("");
+    try {
+      let query = supabase
+        .from("feedback_items")
+        .select("id,created_at,updated_at,user_id,author_kind,author_label,body,status,is_public,vote_score,vote_count")
+        .order("created_at", { ascending: false })
+        .limit(200);
+      if (!isAdminUser) {
+        query = query.eq("is_public", true).eq("status", "public");
+      }
+      const { data, error } = await query;
+      if (error) throw error;
+      const normalized = (Array.isArray(data) ? data : [])
+        .map(normalizeFeedbackItem)
+        .filter(Boolean);
+      setFeedbackItems(normalized);
+
+      if (authUser?.id || anonymousFeedbackFingerprint) {
+        let votesQuery = supabase
+          .from("feedback_votes")
+          .select("feedback_id,vote");
+        if (authUser?.id) {
+          votesQuery = votesQuery.eq("user_id", authUser.id);
+        } else {
+          votesQuery = votesQuery.eq("fingerprint", anonymousFeedbackFingerprint);
+        }
+        const { data: voteRows, error: voteError } = await votesQuery.limit(500);
+        if (voteError) throw voteError;
+        const nextVoteMap = Object.fromEntries(
+          (Array.isArray(voteRows) ? voteRows : [])
+            .map((row) => [String(row.feedback_id || ""), Number(row.vote) || 0])
+            .filter(([id, vote]) => id && (vote === 1 || vote === -1))
+        );
+        setFeedbackVoteMap(nextVoteMap);
+      } else {
+        setFeedbackVoteMap({});
+      }
+    } catch (error) {
+      setFeedbackItems([]);
+      setFeedbackVoteMap({});
+      setFeedbackError(error?.message || "Failed to load feedback.");
+    } finally {
+      setFeedbackLoading(false);
+    }
+  }, [anonymousFeedbackFingerprint, authUser?.id, isAdminUser, normalizeFeedbackItem]);
+  const submitFeedback = React.useCallback(async () => {
+    const body = String(feedbackBody || "").trim();
+    if (body.length < 3) {
+      setFeedbackError("Feedback is too short.");
+      return false;
+    }
+    if (body.length > 2000) {
+      setFeedbackError("Feedback is too long.");
+      return false;
+    }
+    if (!hasSupabaseEnabled || !supabase) {
+      setFeedbackError("Feedback is not configured yet.");
+      return false;
+    }
+    setFeedbackSubmitting(true);
+    setFeedbackError("");
+    setFeedbackSuccessMessage("");
+    try {
+      const payload = {
+        user_id: authUser?.id || null,
+        author_kind: authUser?.id ? "registered" : "anonymous",
+        author_label: authUser?.id ? "Signed-in user" : "Anonymous",
+        body,
+        status: "pending",
+        is_public: false,
+        vote_score: 0,
+        vote_count: 0,
+        fingerprint: authUser?.id ? null : anonymousFeedbackFingerprint || null,
+      };
+      const { error } = await supabase.from("feedback_items").insert(payload);
+      if (error) throw error;
+      setFeedbackBody("");
+      setFeedbackSuccessMessage("Feedback sent. It is private until published by admin.");
+      await refreshFeedbackItems();
+      return true;
+    } catch (error) {
+      setFeedbackError(error?.message || "Failed to submit feedback.");
+      return false;
+    } finally {
+      setFeedbackSubmitting(false);
+    }
+  }, [anonymousFeedbackFingerprint, authUser?.id, feedbackBody, refreshFeedbackItems]);
+  const setFeedbackItemVisibility = React.useCallback(async (feedbackId, makePublic) => {
+    const normalizedId = String(feedbackId || "").trim();
+    if (!normalizedId || !isAdminUser || !hasSupabaseEnabled || !supabase) return false;
+    try {
+      const nextStatus = makePublic ? "public" : "hidden";
+      const { error } = await supabase
+        .from("feedback_items")
+        .update({
+          is_public: makePublic,
+          status: nextStatus,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", normalizedId);
+      if (error) throw error;
+      await refreshFeedbackItems();
+      return true;
+    } catch (error) {
+      setFeedbackError(error?.message || "Failed to update feedback visibility.");
+      return false;
+    }
+  }, [isAdminUser, refreshFeedbackItems]);
+  const voteOnFeedbackItem = React.useCallback(async (feedbackId, vote) => {
+    const normalizedId = String(feedbackId || "").trim();
+    const nextVote = Number(vote) === -1 ? -1 : 1;
+    if (!normalizedId || !hasSupabaseEnabled || !supabase) return false;
+    const target = feedbackItems.find((item) => item.id === normalizedId);
+    if (!target?.isPublic) return false;
+    const existingVote = Number(feedbackVoteMap[normalizedId] || 0);
+    const identityUserId = authUser?.id || null;
+    const identityFingerprint = identityUserId ? null : anonymousFeedbackFingerprint || null;
+    if (!identityUserId && !identityFingerprint) return false;
+    try {
+      let nextScore = target.voteScore;
+      let nextCount = target.voteCount;
+      if (existingVote === nextVote) {
+        let query = supabase.from("feedback_votes").delete().eq("feedback_id", normalizedId);
+        query = identityUserId ? query.eq("user_id", identityUserId) : query.eq("fingerprint", identityFingerprint);
+        const { error } = await query;
+        if (error) throw error;
+        nextScore -= existingVote;
+        nextCount = Math.max(0, nextCount - 1);
+        setFeedbackVoteMap((prev) => {
+          const next = { ...(prev || {}) };
+          delete next[normalizedId];
+          return next;
+        });
+      } else {
+        let selectQuery = supabase.from("feedback_votes").select("id,vote").eq("feedback_id", normalizedId).limit(1);
+        selectQuery = identityUserId
+          ? selectQuery.eq("user_id", identityUserId)
+          : selectQuery.eq("fingerprint", identityFingerprint);
+        const { data: existingRows, error: selectError } = await selectQuery;
+        if (selectError) throw selectError;
+        const existingRow = Array.isArray(existingRows) ? existingRows[0] || null : null;
+        if (existingRow?.id) {
+          const { error: updateVoteError } = await supabase
+            .from("feedback_votes")
+            .update({ vote: nextVote })
+            .eq("id", existingRow.id);
+          if (updateVoteError) throw updateVoteError;
+          nextScore = nextScore - (Number(existingRow.vote) || 0) + nextVote;
+        } else {
+          const { error: insertVoteError } = await supabase.from("feedback_votes").insert({
+            feedback_id: normalizedId,
+            user_id: identityUserId,
+            fingerprint: identityFingerprint,
+            vote: nextVote,
+          });
+          if (insertVoteError) throw insertVoteError;
+          nextScore += nextVote;
+          nextCount += 1;
+        }
+        setFeedbackVoteMap((prev) => ({ ...(prev || {}), [normalizedId]: nextVote }));
+      }
+      const { error: updateItemError } = await supabase
+        .from("feedback_items")
+        .update({
+          vote_score: nextScore,
+          vote_count: nextCount,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", normalizedId);
+      if (updateItemError) throw updateItemError;
+      setFeedbackItems((prev) =>
+        prev.map((item) =>
+          item.id === normalizedId
+            ? {
+                ...item,
+                voteScore: nextScore,
+                voteCount: nextCount,
+              }
+            : item
+        )
+      );
+      return true;
+    } catch (error) {
+      setFeedbackError(error?.message || "Failed to vote on feedback.");
+      return false;
+    }
+  }, [anonymousFeedbackFingerprint, authUser?.id, feedbackItems, feedbackVoteMap]);
+  React.useEffect(() => {
+    refreshFeedbackItems();
+  }, [refreshFeedbackItems]);
   const refreshPublicArrangementLibrary = React.useCallback(async () => {
     setPublicArrangementLibraryLoading(true);
     setPublicLibraryError("");
@@ -7522,6 +7812,8 @@ useEffect(() => {
   // Grid-only undo/redo (minimal): tracks baseGrid snapshots only.
   const [gridPast, setGridPast] = useState([]);
   const [gridFuture, setGridFuture] = useState([]);
+  const [unifiedPast, setUnifiedPast] = useState([]);
+  const [unifiedFuture, setUnifiedFuture] = useState([]);
 
   const localBeatsRef = React.useRef(localBeats);
   const arrangementItemsRef = React.useRef(arrangementItems);
@@ -7545,6 +7837,9 @@ useEffect(() => {
   const localBeatFutureRef = React.useRef([]);
   const gridPastRef = React.useRef([]);
   const gridFutureRef = React.useRef([]);
+  const unifiedPastRef = React.useRef([]);
+  const unifiedFutureRef = React.useRef([]);
+  const pushUnifiedHistoryRef = React.useRef(() => {});
   const baseGridRef = React.useRef(null);
   const tupletOverridesRef = React.useRef(tupletOverridesByBar);
 
@@ -7664,6 +7959,7 @@ useEffect(() => {
   }, []);
 
   const pushGridHistory = React.useCallback(() => {
+    pushUnifiedHistoryRef.current("editor");
     gridPastRef.current = [
       ...gridPastRef.current,
       snapshotEditorState(baseGridRef.current, tupletOverridesRef.current),
@@ -7818,6 +8114,46 @@ useEffect(() => {
     setBeatCategoryDraft(String(snapshot.beatCategoryDraft || "all"));
     setBeatStyleDraft(String(snapshot.beatStyleDraft || "all"));
   }, [cloneBeatLibraryContainerList, cloneLocalBeatList, cloneSavedArrangementList]);
+  const syncUnifiedHistoryState = React.useCallback(() => {
+    setUnifiedPast([...unifiedPastRef.current]);
+    setUnifiedFuture([...unifiedFutureRef.current]);
+  }, []);
+  const snapshotUnifiedHistoryEntry = React.useCallback(
+    (kind) => {
+      const includeEditor = kind === "editor" || kind === "both";
+      const includeLibrary = kind === "library" || kind === "both";
+      return {
+        kind,
+        ...(includeEditor
+          ? { editor: snapshotEditorState(baseGridRef.current, tupletOverridesRef.current) }
+          : {}),
+        ...(includeLibrary ? { library: snapshotLibraryState() } : {}),
+      };
+    },
+    [snapshotEditorState, snapshotLibraryState]
+  );
+  const applyCombinedHistoryState = React.useCallback(
+    (snapshot) => {
+      if (!snapshot || typeof snapshot !== "object") return;
+      if (snapshot.editor) {
+        setBaseGrid(snapshot.editor.grid || {});
+        if (Array.isArray(snapshot.editor.tuplets)) setTupletOverridesByBar(snapshot.editor.tuplets);
+      }
+      if (snapshot.library) applyLibraryState(snapshot.library);
+    },
+    [applyLibraryState]
+  );
+  const pushUnifiedHistory = React.useCallback((kind) => {
+    unifiedPastRef.current = [...unifiedPastRef.current, snapshotUnifiedHistoryEntry(kind)];
+    unifiedFutureRef.current = [];
+    if (unifiedPastRef.current.length > 200) {
+      unifiedPastRef.current = unifiedPastRef.current.slice(unifiedPastRef.current.length - 200);
+    }
+    syncUnifiedHistoryState();
+  }, [snapshotUnifiedHistoryEntry, syncUnifiedHistoryState]);
+  React.useEffect(() => {
+    pushUnifiedHistoryRef.current = pushUnifiedHistory;
+  }, [pushUnifiedHistory]);
 
   const syncLocalBeatHistoryState = React.useCallback(() => {
     setLocalBeatPast([...localBeatPastRef.current]);
@@ -7825,6 +8161,7 @@ useEffect(() => {
   }, []);
 
   const pushLocalBeatHistory = React.useCallback(() => {
+    pushUnifiedHistoryRef.current("library");
     localBeatPastRef.current = [
       ...localBeatPastRef.current,
       snapshotLibraryState(),
@@ -8040,9 +8377,12 @@ useEffect(() => {
 
       gridPastRef.current = [];
       gridFutureRef.current = [];
+      unifiedPastRef.current = [];
+      unifiedFutureRef.current = [];
       setBaseGrid(nextGrid);
       setNotationStickingSelection(shared.notationStickingSelection || {});
       syncHistoryState();
+      syncUnifiedHistoryState();
       pendingSharedLoadRef.current = null;
       importedBeatLoadInProgressRef.current = false;
       return;
@@ -8092,8 +8432,11 @@ useEffect(() => {
 
     gridPastRef.current = [];
     gridFutureRef.current = [];
+    unifiedPastRef.current = [];
+    unifiedFutureRef.current = [];
     setBaseGrid(nextGrid);
     syncHistoryState();
+    syncUnifiedHistoryState();
     pendingExampleLoadRef.current = null;
   }, [
     bars,
@@ -8104,6 +8447,7 @@ useEffect(() => {
     stepsPerBarByBar,
     normalizedTupletOverridesByBar,
     syncHistoryState,
+    syncUnifiedHistoryState,
   ]);
 
   const arraysEqual = (a, b) => a.length === b.length && a.every((v, i) => v === b[i]);
@@ -9509,6 +9853,139 @@ useEffect(() => {
     }
     return path;
   }, [beatLibraryContainers, selectedBeatLibraryContainer]);
+  const beatLibraryImmediateParentEntry = React.useMemo(() => {
+    if (selectedBeatLibraryContainerPath.length < 2) return null;
+    return selectedBeatLibraryContainerPath[selectedBeatLibraryContainerPath.length - 2] || null;
+  }, [selectedBeatLibraryContainerPath]);
+  const beatLibraryCurrentEntry = React.useMemo(() => {
+    if (!selectedBeatLibraryContainerPath.length) return null;
+    return selectedBeatLibraryContainerPath[selectedBeatLibraryContainerPath.length - 1] || null;
+  }, [selectedBeatLibraryContainerPath]);
+  const renderBeatLibraryBreadcrumb = React.useCallback((variant = "docked") => {
+    const isFloatingVariant = variant === "floating";
+    const currentName = String(beatLibraryCurrentEntry?.name || "");
+    const currentLabel = beatLibraryCurrentEntry
+      ? truncatePrefixToLastText(currentName, isFloatingVariant ? 10 : 9, 3, 3)
+      : "All beats";
+    const currentFitsFully = !beatLibraryCurrentEntry || currentLabel === currentName;
+    const parentMaxWidthClass = currentFitsFully
+      ? isFloatingVariant
+        ? "max-w-[5rem]"
+        : "max-w-[4.1rem]"
+      : isFloatingVariant
+        ? "max-w-[3.5rem]"
+        : "max-w-[2.85rem]";
+    const parentLabel = truncateToLastText(
+      beatLibraryImmediateParentEntry ? beatLibraryImmediateParentEntry.name : "All beats",
+      currentFitsFully ? (isFloatingVariant ? 11 : 10) : isFloatingVariant ? 9 : 8,
+      currentFitsFully ? (isFloatingVariant ? 7 : 6) : isFloatingVariant ? 5 : 4
+    );
+    const parentDropId = beatLibraryImmediateParentEntry ? String(beatLibraryImmediateParentEntry.id) : "all";
+    return (
+      <div className="min-w-0 overflow-hidden text-[11px] text-neutral-500">
+        <div className="flex min-w-0 items-center gap-0.5 whitespace-nowrap">
+          {!beatLibraryCurrentEntry ? (
+            <button
+              type="button"
+              onClick={() => selectBeatLibraryContainer("all")}
+              onDragOver={(e) => {
+                if (beatLibraryTreeDragRef.current?.kind === "container") return;
+                e.preventDefault();
+                setBeatLibraryDropTargetId("all");
+                if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+              }}
+              onDragLeave={() => {
+                if (beatLibraryTreeDragRef.current?.kind === "container") return;
+                setBeatLibraryDropTargetId((prev) => (prev === "all" ? null : prev));
+              }}
+              onDrop={(e) => {
+                if (beatLibraryTreeDragRef.current?.kind === "container") return;
+                e.preventDefault();
+                e.stopPropagation();
+                handleBeatLibraryTreeDrop(null);
+              }}
+              className={`min-w-0 flex-1 overflow-hidden whitespace-nowrap rounded-sm px-0 py-0 text-left hover:text-neutral-300 ${
+                beatLibraryDropTargetId === "all"
+                  ? "text-cyan-100 border-b border-cyan-400/70"
+                  : selectedBeatLibraryContainerId === "all"
+                    ? "text-neutral-400"
+                    : ""
+              }`}
+              title="All beats"
+            >
+              <span className="block truncate">All beats</span>
+            </button>
+          ) : (
+            <>
+              <button
+                type="button"
+                onClick={() => selectBeatLibraryContainer(parentDropId)}
+                onDragOver={(e) => {
+                  if (beatLibraryTreeDragRef.current?.kind === "container") return;
+                  e.preventDefault();
+                  setBeatLibraryDropTargetId(parentDropId);
+                  if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+                }}
+                onDragLeave={() => {
+                  if (beatLibraryTreeDragRef.current?.kind === "container") return;
+                  setBeatLibraryDropTargetId((prev) => (prev === parentDropId ? null : prev));
+                }}
+                onDrop={(e) => {
+                  if (beatLibraryTreeDragRef.current?.kind === "container") return;
+                  e.preventDefault();
+                  e.stopPropagation();
+                  handleBeatLibraryTreeDrop(beatLibraryImmediateParentEntry ? beatLibraryImmediateParentEntry.id : null);
+                }}
+                title={String(beatLibraryImmediateParentEntry?.name || "All beats")}
+                className={`${parentMaxWidthClass} min-w-0 shrink overflow-hidden whitespace-nowrap rounded-sm px-0 py-0 text-left hover:text-neutral-300 ${
+                  beatLibraryDropTargetId === parentDropId
+                    ? "bg-cyan-900/25 text-cyan-50 shadow-[0_0_0_1px_rgba(34,211,238,0.35)]"
+                    : ""
+                }`}
+              >
+                <span className="block overflow-hidden text-clip whitespace-nowrap">{parentLabel}</span>
+              </button>
+              <span className="shrink-0 px-0.5 text-neutral-600">/</span>
+              <button
+                type="button"
+                onClick={() => selectBeatLibraryContainer(beatLibraryCurrentEntry.id)}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  setBeatLibraryDropTargetId(String(beatLibraryCurrentEntry.id));
+                  if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+                }}
+                onDragLeave={() =>
+                  setBeatLibraryDropTargetId((prev) =>
+                    prev === String(beatLibraryCurrentEntry.id) ? null : prev
+                  )
+                }
+                onDrop={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  handleBeatLibraryTreeDrop(beatLibraryCurrentEntry.id);
+                }}
+                title={String(beatLibraryCurrentEntry.name || "")}
+                className={`min-w-0 flex-1 overflow-hidden whitespace-nowrap rounded-sm px-0 py-0 text-left hover:text-neutral-300 ${
+                  beatLibraryDropTargetId === String(beatLibraryCurrentEntry.id)
+                    ? "bg-cyan-900/25 text-cyan-50 shadow-[0_0_0_1px_rgba(34,211,238,0.35)]"
+                    : "text-neutral-400"
+                }`}
+              >
+                <span className="block overflow-hidden pr-0.5 text-clip whitespace-nowrap">{currentLabel}</span>
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+    );
+  }, [
+    beatLibraryCurrentEntry,
+    beatLibraryDropTargetId,
+    beatLibraryImmediateParentEntry,
+    handleBeatLibraryTreeDrop,
+    selectBeatLibraryContainer,
+    selectedBeatLibraryContainerId,
+  ]);
   const beatLibraryContainerChildren = React.useMemo(() => {
     const byParent = new Map();
     [...beatLibraryContainers]
@@ -11757,41 +12234,58 @@ useEffect(() => {
       setArrangementBarSelectionAnchor(null);
     }
   }, [arrangementBarSelection, arrangementTotals.totalBars]);
-  const isLibraryHistoryActive = isArrangementOpen;
-  const canUndoTop = isLibraryHistoryActive ? localBeatPast.length > 0 : gridPast.length > 0;
-  const canRedoTop = isLibraryHistoryActive ? localBeatFuture.length > 0 : gridFuture.length > 0;
+  const canUndoTop = unifiedPast.length > 0;
+  const canRedoTop = unifiedFuture.length > 0;
   const handleTopUndo = React.useCallback(() => {
-    if (isLibraryHistoryActive) {
-      undoLocalBeatHistory();
-      return;
-    }
-    undoGrid();
-  }, [isLibraryHistoryActive, undoLocalBeatHistory, undoGrid]);
+    if (unifiedPastRef.current.length === 0) return;
+    const prev = unifiedPastRef.current[unifiedPastRef.current.length - 1];
+    unifiedPastRef.current = unifiedPastRef.current.slice(0, -1);
+    const inverseKind =
+      prev?.editor && prev?.library ? "both" : prev?.editor ? "editor" : prev?.library ? "library" : "both";
+    unifiedFutureRef.current = [
+      snapshotUnifiedHistoryEntry(inverseKind),
+      ...unifiedFutureRef.current,
+    ];
+    applyCombinedHistoryState(prev);
+    syncUnifiedHistoryState();
+  }, [applyCombinedHistoryState, snapshotUnifiedHistoryEntry, syncUnifiedHistoryState]);
   const handleTopRedo = React.useCallback(() => {
-    if (isLibraryHistoryActive) {
-      redoLocalBeatHistory();
-      return;
-    }
-    redoGrid();
-  }, [isLibraryHistoryActive, redoLocalBeatHistory, redoGrid]);
+    if (unifiedFutureRef.current.length === 0) return;
+    const next = unifiedFutureRef.current[0];
+    unifiedFutureRef.current = unifiedFutureRef.current.slice(1);
+    const inverseKind =
+      next?.editor && next?.library ? "both" : next?.editor ? "editor" : next?.library ? "library" : "both";
+    unifiedPastRef.current = [
+      ...unifiedPastRef.current,
+      snapshotUnifiedHistoryEntry(inverseKind),
+    ];
+    applyCombinedHistoryState(next);
+    syncUnifiedHistoryState();
+  }, [applyCombinedHistoryState, snapshotUnifiedHistoryEntry, syncUnifiedHistoryState]);
   useEffect(() => {
     const onKeyDown = (e) => {
       const el = e.target;
       const tag = (el?.tagName || "").toLowerCase();
       const isTyping = tag === "input" || tag === "textarea" || el?.isContentEditable;
       if (isTyping) return;
-      if (matchesShortcut(e, "redo")) {
+      const isModKey = e.metaKey || e.ctrlKey;
+      const key = String(e.key || "").toLowerCase();
+      const isDirectUndo = isModKey && !e.altKey && key === "z" && !e.shiftKey;
+      const isDirectRedo = isModKey && !e.altKey && key === "z" && e.shiftKey;
+      if (isDirectRedo || matchesShortcut(e, "redo")) {
         e.preventDefault();
+        e.stopPropagation();
         handleTopRedo();
         return;
       }
-      if (matchesShortcut(e, "undo")) {
+      if (isDirectUndo || matchesShortcut(e, "undo")) {
         e.preventDefault();
+        e.stopPropagation();
         handleTopUndo();
       }
     };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
   }, [handleTopUndo, handleTopRedo, matchesShortcut]);
 
   useEffect(() => {
@@ -16962,10 +17456,10 @@ useEffect(() => {
       data-loopui="1"
     >
       <div className="flex h-full flex-col">
-        <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
           <div
             ref={arrangementSourceTab === "local" ? beatLibraryMoveUpTargetRef : null}
-            className={`min-w-0 flex items-center gap-2 rounded select-none ${
+            className={`min-w-0 flex flex-1 items-center gap-2 rounded select-none ${
               beatLibraryDropTargetId === "__up__" ? "bg-cyan-900/15 text-cyan-50" : ""
             }`}
             onDragOver={(e) => {
@@ -16993,77 +17487,7 @@ useEffect(() => {
             <div className="text-sm text-neutral-200">
               {arrangementSourceTab === "presets" ? "Presets" : "Beats"}
             </div>
-            {arrangementSourceTab === "local" && (
-              <div
-                className="min-w-0 overflow-hidden text-[11px] text-neutral-500 whitespace-nowrap text-ellipsis"
-                style={{ direction: "rtl", textAlign: "left" }}
-              >
-                <div className="inline-flex min-w-max items-center whitespace-nowrap" style={{ direction: "ltr" }}>
-                  <button
-                    type="button"
-                    onClick={() => selectBeatLibraryContainer("all")}
-                    onDragOver={(e) => {
-                      if (beatLibraryTreeDragRef.current?.kind === "container") return;
-                      e.preventDefault();
-                      setBeatLibraryDropTargetId("all");
-                      if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
-                    }}
-                    onDragLeave={() => {
-                      if (beatLibraryTreeDragRef.current?.kind === "container") return;
-                      setBeatLibraryDropTargetId((prev) => (prev === "all" ? null : prev));
-                    }}
-                    onDrop={(e) => {
-                      if (beatLibraryTreeDragRef.current?.kind === "container") return;
-                      e.preventDefault();
-                      e.stopPropagation();
-                      handleBeatLibraryTreeDrop(null);
-                    }}
-                    className={`px-1 hover:text-neutral-300 ${
-                      beatLibraryDropTargetId === "all"
-                        ? "text-cyan-100 border-b border-cyan-400/70"
-                        : selectedBeatLibraryContainerId === "all"
-                          ? "text-neutral-400"
-                          : ""
-                    }`}
-                  >
-                    All beats
-                  </button>
-                  {selectedBeatLibraryContainerPath.map((entry) => (
-                    <React.Fragment key={`beatlib-path-docked-${entry.id}`}>
-                      <span className="px-1 text-neutral-600">/</span>
-                      <button
-                        type="button"
-                        onClick={() => selectBeatLibraryContainer(entry.id)}
-                        onDragOver={(e) => {
-                          e.preventDefault();
-                          setBeatLibraryDropTargetId(String(entry.id));
-                          if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
-                        }}
-                        onDragLeave={() =>
-                          setBeatLibraryDropTargetId((prev) =>
-                            prev === String(entry.id) ? null : prev
-                          )
-                        }
-                        onDrop={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          handleBeatLibraryTreeDrop(entry.id);
-                        }}
-                        className={`rounded px-1 truncate hover:text-neutral-300 ${
-                          beatLibraryDropTargetId === String(entry.id)
-                            ? "bg-cyan-900/25 text-cyan-50 shadow-[0_0_0_1px_rgba(34,211,238,0.35)]"
-                            : String(selectedBeatLibraryContainerId) === String(entry.id)
-                              ? "text-neutral-400"
-                              : ""
-                        }`}
-                      >
-                        {entry.name}
-                      </button>
-                    </React.Fragment>
-                  ))}
-                </div>
-              </div>
-            )}
+            {arrangementSourceTab === "local" && renderBeatLibraryBreadcrumb("docked")}
           </div>
           <div className="ml-auto flex items-center gap-2">
             <div className="relative">
@@ -17272,6 +17696,19 @@ useEffect(() => {
                                 </button>
                               </div>
                             )}
+                            {arrangementSourceTab === "local" && isAdminUser && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setLibraryFiltersOpen(false);
+                                  openPublicSubmitDialog();
+                                }}
+                                className="inline-flex h-[1.625rem] items-center justify-center rounded border border-neutral-800 bg-neutral-900/60 px-1.5 text-xs text-neutral-400 hover:bg-neutral-800/60"
+                                title="Publish to public beat library"
+                              >
+                                Publish public
+                              </button>
+                            )}
                           </>
                         ) : null}
                       </div>
@@ -17370,45 +17807,6 @@ useEffect(() => {
                 >
                   Save as new
                 </button>
-                {isAdminUser && (
-                  <div className="relative">
-                    <button
-                      ref={beatLibraryActionsMenuButtonRef}
-                      type="button"
-                      onClick={() => setIsBeatLibraryActionsMenuOpen((v) => !v)}
-                      className={`h-7 rounded border px-2 text-sm leading-none ${
-                        isBeatLibraryActionsMenuOpen
-                          ? "border-neutral-700 text-white bg-neutral-800"
-                          : "border-neutral-800 text-neutral-400 bg-neutral-900/60 hover:bg-neutral-800/60"
-                      }`}
-                      title="More beat library actions"
-                    >
-                      ...
-                    </button>
-                    {isBeatLibraryActionsMenuOpen && beatLibraryActionsMenuStyle
-                      ? createPortal(
-                          <div
-                            ref={beatLibraryActionsMenuRef}
-                            style={beatLibraryActionsMenuStyle}
-                            className="min-w-[11rem] rounded-lg border border-neutral-700 bg-neutral-900 p-2 shadow-xl"
-                          >
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setIsBeatLibraryActionsMenuOpen(false);
-                                openPublicSubmitDialog();
-                              }}
-                              className="w-full rounded px-3 py-2 text-left text-sm text-white hover:bg-neutral-800/60"
-                              title="Publish to public beat library"
-                            >
-                              Publish public
-                            </button>
-                          </div>,
-                          document.body
-                        )
-                      : null}
-                  </div>
-                )}
                 <BeatLibraryDropTarget id="__trash__">
                   <button
                     ref={beatLibraryTrashTargetRef}
@@ -18529,7 +18927,7 @@ useEffect(() => {
               className={`touch-none select-none inline-flex h-[2.125rem] w-[2.125rem] items-center justify-center rounded border text-sm bg-black border-neutral-900 text-neutral-400 hover:bg-neutral-950/80 hover:text-neutral-300 ${
                 !canUndoTop ? "opacity-40 cursor-not-allowed" : ""
               }`}
-              title={isLibraryHistoryActive ? "Undo library change" : "Undo (grid only)"}
+              title="Undo"
             >
               ←
             </button>
@@ -18540,7 +18938,7 @@ useEffect(() => {
               className={`touch-none select-none inline-flex h-[2.125rem] w-[2.125rem] items-center justify-center rounded border text-sm bg-black border-neutral-900 text-neutral-400 hover:bg-neutral-950/80 hover:text-neutral-300 ${
                 !canRedoTop ? "opacity-40 cursor-not-allowed" : ""
               }`}
-              title={isLibraryHistoryActive ? "Redo library change" : "Redo (grid only)"}
+              title="Redo"
             >
               →
             </button>
@@ -19012,6 +19410,208 @@ useEffect(() => {
           </div>,
           document.body
         )}
+      {feedbackPortalTarget &&
+        createPortal(
+          <div className="space-y-3">
+            <div className="text-center text-xs text-neutral-500">
+              Share ideas, bugs, and requests. Feedback is private by default and can be made public by admin.
+            </div>
+            {!hasSupabaseEnabled ? (
+              <div className="px-3 py-2 text-xs text-neutral-500">
+                Feedback is not configured yet.
+              </div>
+            ) : (
+              <>
+                <div className="bg-black p-3">
+                  <div className="mb-2 flex items-center justify-between gap-3">
+                    <span className="text-xs text-neutral-400">
+                      {authUser?.id ? "Posting as signed-in user" : "Posting anonymously"}
+                    </span>
+                    {feedbackSuccessMessage ? (
+                      <span className="text-xs text-sky-300">{feedbackSuccessMessage}</span>
+                    ) : null}
+                  </div>
+                  <textarea
+                    value={feedbackBody}
+                    onChange={(e) => {
+                      setFeedbackBody(e.target.value);
+                      if (feedbackError) setFeedbackError("");
+                      if (feedbackSuccessMessage) setFeedbackSuccessMessage("");
+                    }}
+                    rows={4}
+                    maxLength={2000}
+                    placeholder="Share a bug, feature request, or workflow idea..."
+                    className="w-full resize-y rounded bg-neutral-900/80 px-3 py-2 text-sm text-neutral-200 outline-none ring-0 placeholder:text-neutral-600 focus:outline-none focus:ring-0"
+                  />
+                  <div className="mt-2 flex items-center justify-between gap-3">
+                    <span className="text-[11px] text-neutral-500">
+                      {String(feedbackBody || "").length >= 2000 ? "Character limit reached" : ""}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={submitFeedback}
+                      disabled={feedbackSubmitting}
+                      className={`rounded px-3 py-1.5 text-xs ${
+                        feedbackSubmitting
+                          ? "bg-neutral-900/60 text-neutral-500 cursor-not-allowed"
+                          : "bg-neutral-800 text-neutral-200 hover:bg-neutral-700/60"
+                      }`}
+                    >
+                      {feedbackSubmitting ? "Sending..." : "Send feedback"}
+                    </button>
+                  </div>
+                  {feedbackError ? (
+                    <div className="mt-2 text-xs text-amber-300">{feedbackError}</div>
+                  ) : null}
+                </div>
+
+                {isAdminUser ? (
+                  <div className="flex flex-wrap items-center gap-2 text-xs">
+                    {["pending", "public", "hidden", "all"].map((filterId) => (
+                      <button
+                        key={`feedback-filter-${filterId}`}
+                        type="button"
+                        onClick={() => setFeedbackAdminFilter(filterId)}
+                        className={`rounded border px-2 py-1 ${
+                          feedbackAdminFilter === filterId
+                            ? "border-neutral-700 bg-neutral-800 text-white"
+                            : "border-neutral-800 bg-neutral-950/40 text-neutral-500 hover:bg-neutral-900/60"
+                        }`}
+                      >
+                        {filterId === "all"
+                          ? "All"
+                          : filterId.charAt(0).toUpperCase() + filterId.slice(1)}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+
+                <div className="space-y-2">
+                  {feedbackLoading ? (
+                    <div className="px-3 py-2 text-xs text-neutral-500">
+                      Loading feedback...
+                    </div>
+                  ) : (isAdminUser
+                      ? feedbackItems.filter((item) =>
+                          feedbackAdminFilter === "all"
+                            ? true
+                            : feedbackAdminFilter === "public"
+                              ? item.isPublic
+                              : item.status === feedbackAdminFilter
+                        )
+                      : feedbackItems.filter((item) => item.isPublic)
+                    ).length < 1 ? (
+                    <div className="px-3 py-2 text-xs text-neutral-500">
+                      No feedback yet.
+                    </div>
+                  ) : (
+                    (isAdminUser
+                      ? feedbackItems.filter((item) =>
+                          feedbackAdminFilter === "all"
+                            ? true
+                            : feedbackAdminFilter === "public"
+                              ? item.isPublic
+                              : item.status === feedbackAdminFilter
+                        )
+                      : feedbackItems.filter((item) => item.isPublic)
+                    ).map((item) => {
+                      const currentVote = Number(feedbackVoteMap[item.id] || 0);
+                      return (
+                        <div
+                          key={`feedback-item-${item.id}`}
+                          className="bg-black p-3"
+                        >
+                          <div className="flex items-start gap-3">
+                            <div className="flex shrink-0 flex-col items-center gap-1">
+                              <button
+                                type="button"
+                                onClick={() => voteOnFeedbackItem(item.id, 1)}
+                                disabled={!item.isPublic}
+                                className={`h-6 w-6 rounded border text-xs ${
+                                  !item.isPublic
+                                    ? "border-neutral-900 bg-neutral-950 text-neutral-700 cursor-not-allowed"
+                                    : currentVote === 1
+                                      ? "border-sky-600 bg-sky-900/30 text-sky-100"
+                                      : "border-neutral-800 bg-neutral-900/70 text-neutral-400 hover:bg-neutral-800/60"
+                                }`}
+                                title={item.isPublic ? "Upvote" : "Voting is only available on public feedback"}
+                              >
+                                +
+                              </button>
+                              <div className="min-w-[2rem] text-center text-xs text-neutral-300">
+                                {item.voteScore}
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => voteOnFeedbackItem(item.id, -1)}
+                                disabled={!item.isPublic}
+                                className={`h-6 w-6 rounded border text-xs ${
+                                  !item.isPublic
+                                    ? "border-neutral-900 bg-neutral-950 text-neutral-700 cursor-not-allowed"
+                                    : currentVote === -1
+                                      ? "border-sky-600 bg-sky-900/30 text-sky-100"
+                                      : "border-neutral-800 bg-neutral-900/70 text-neutral-400 hover:bg-neutral-800/60"
+                                }`}
+                                title={item.isPublic ? "Downvote" : "Voting is only available on public feedback"}
+                              >
+                                −
+                              </button>
+                            </div>
+                            <div className="min-w-0 flex-1">
+                              <div className="whitespace-pre-wrap text-sm text-neutral-300">{item.body}</div>
+                              <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-neutral-500">
+                                <span>{item.authorLabel || (item.authorKind === "registered" ? "Signed-in user" : "Anonymous")}</span>
+                                <span className="text-neutral-700">·</span>
+                                <span>{formatFeedbackDate(item.createdAt)}</span>
+                                <span className="text-neutral-700">·</span>
+                                <span>{`${item.voteCount} vote${item.voteCount === 1 ? "" : "s"}`}</span>
+                                {isAdminUser ? (
+                                  <>
+                                    <span className="text-neutral-700">·</span>
+                                    <span>{item.isPublic ? "Public" : item.status}</span>
+                                  </>
+                                ) : null}
+                              </div>
+                              {isAdminUser ? (
+                                <div className="mt-3 flex flex-wrap items-center gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => setFeedbackItemVisibility(item.id, true)}
+                                    disabled={item.isPublic}
+                                    className={`rounded border px-2 py-1 text-xs ${
+                                      item.isPublic
+                                        ? "border-neutral-900 bg-neutral-950 text-neutral-700 cursor-not-allowed"
+                                        : "border-neutral-700 bg-neutral-800 text-neutral-200 hover:bg-neutral-700/60"
+                                    }`}
+                                  >
+                                    Make public
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => setFeedbackItemVisibility(item.id, false)}
+                                    disabled={!item.isPublic && item.status === "hidden"}
+                                    className={`rounded border px-2 py-1 text-xs ${
+                                      !item.isPublic && item.status === "hidden"
+                                        ? "border-neutral-900 bg-neutral-950 text-neutral-700 cursor-not-allowed"
+                                        : "border-neutral-800 bg-neutral-900/60 text-neutral-400 hover:bg-neutral-800/60"
+                                    }`}
+                                  >
+                                    Hide
+                                  </button>
+                                </div>
+                              ) : null}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </>
+            )}
+          </div>,
+          feedbackPortalTarget
+        )}
       {!isEmbedMode &&
         createPortal(
           <>
@@ -19299,12 +19899,12 @@ useEffect(() => {
                     : ""
                 } flex h-full flex-col`}
               >
-                <div className="flex items-center justify-between gap-2">
-                  <div
-                    ref={arrangementSourceTab === "local" ? beatLibraryMoveUpTargetRef : null}
-                    className={`min-w-0 flex items-center gap-2 rounded cursor-move select-none ${
-                      beatLibraryDropTargetId === "__up__" ? "bg-cyan-900/15 text-cyan-50" : ""
-                    }`}
+                  <div className="flex items-center gap-2">
+                    <div
+                      ref={arrangementSourceTab === "local" ? beatLibraryMoveUpTargetRef : null}
+                      className={`min-w-0 flex flex-1 items-center gap-2 rounded cursor-move select-none ${
+                        beatLibraryDropTargetId === "__up__" ? "bg-cyan-900/15 text-cyan-50" : ""
+                      }`}
                     onMouseDown={(e) => {
                       if (isMobileFloatingPanels) return;
                       beginFloatingPanelDrag(e, arrangementPanelRef, arrangementDragRef);
@@ -19338,77 +19938,7 @@ useEffect(() => {
                     <div className="text-sm text-neutral-200">
                       {arrangementSourceTab === "presets" ? "Presets" : "Beats"}
                     </div>
-                    {arrangementSourceTab === "local" && (
-                      <div
-                        className="min-w-0 overflow-hidden text-[11px] text-neutral-500 whitespace-nowrap text-ellipsis"
-                        style={{ direction: "rtl", textAlign: "left" }}
-                      >
-                        <div className="inline-flex min-w-max items-center whitespace-nowrap" style={{ direction: "ltr" }}>
-                        <button
-                          type="button"
-                          onClick={() => selectBeatLibraryContainer("all")}
-                          onDragOver={(e) => {
-                            if (beatLibraryTreeDragRef.current?.kind === "container") return;
-                            e.preventDefault();
-                            setBeatLibraryDropTargetId("all");
-                            if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
-                          }}
-                          onDragLeave={() => {
-                            if (beatLibraryTreeDragRef.current?.kind === "container") return;
-                            setBeatLibraryDropTargetId((prev) => (prev === "all" ? null : prev));
-                          }}
-                          onDrop={(e) => {
-                            if (beatLibraryTreeDragRef.current?.kind === "container") return;
-                            e.preventDefault();
-                            e.stopPropagation();
-                            handleBeatLibraryTreeDrop(null);
-                          }}
-                          className={`px-1 hover:text-neutral-300 ${
-                            beatLibraryDropTargetId === "all"
-                              ? "text-cyan-100 border-b border-cyan-400/70"
-                              : selectedBeatLibraryContainerId === "all"
-                                ? "text-neutral-400"
-                                : ""
-                          }`}
-                        >
-                          All beats
-                        </button>
-                        {selectedBeatLibraryContainerPath.map((entry) => (
-                          <React.Fragment key={`beatlib-path-${entry.id}`}>
-                            <span className="px-1 text-neutral-600">/</span>
-                            <button
-                              type="button"
-                              onClick={() => selectBeatLibraryContainer(entry.id)}
-                              onDragOver={(e) => {
-                                e.preventDefault();
-                                setBeatLibraryDropTargetId(String(entry.id));
-                                if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
-                              }}
-                              onDragLeave={() =>
-                                setBeatLibraryDropTargetId((prev) =>
-                                  prev === String(entry.id) ? null : prev
-                                )
-                              }
-                              onDrop={(e) => {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                handleBeatLibraryTreeDrop(entry.id);
-                              }}
-                              className={`rounded px-1 truncate hover:text-neutral-300 ${
-                                beatLibraryDropTargetId === String(entry.id)
-                                  ? "bg-cyan-900/25 text-cyan-50 shadow-[0_0_0_1px_rgba(34,211,238,0.35)]"
-                                  : String(selectedBeatLibraryContainerId) === String(entry.id)
-                                    ? "text-neutral-400"
-                                    : ""
-                              }`}
-                            >
-                              {entry.name}
-                            </button>
-                          </React.Fragment>
-                        ))}
-                        </div>
-                      </div>
-                    )}
+                    {arrangementSourceTab === "local" && renderBeatLibraryBreadcrumb("floating")}
                   </div>
                   <div className="ml-auto flex items-center gap-2">
 	                    {isMobileFloatingPanels && (
@@ -19645,6 +20175,19 @@ useEffect(() => {
                                 </button>
                               </div>
                             )}
+                            {arrangementSourceTab === "local" && isAdminUser && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setLibraryFiltersOpen(false);
+                                  openPublicSubmitDialog();
+                                }}
+                                className="inline-flex h-[1.625rem] items-center justify-center rounded border border-neutral-800 bg-neutral-900/60 px-1.5 text-xs text-neutral-400 hover:bg-neutral-800/60"
+                                title="Publish to public beat library"
+                              >
+                                Publish public
+                              </button>
+                            )}
                               </>
                             ) : null}
                           </div>
@@ -19753,44 +20296,6 @@ useEffect(() => {
                             >
                               Save as new
                             </button>
-                            {isAdminUser && (
-                              <div className="relative">
-                                <button
-                                  ref={beatLibraryActionsMenuButtonRef}
-                                  type="button"
-                                  onClick={() => setIsBeatLibraryActionsMenuOpen((v) => !v)}
-                                  className={`h-7 rounded border px-2 text-sm leading-none ${
-                                    isBeatLibraryActionsMenuOpen
-                                      ? "border-neutral-700 text-white bg-neutral-800"
-                                      : "border-neutral-800 text-neutral-400 bg-neutral-900/60 hover:bg-neutral-800/60"
-                                  }`}
-                                  title="More beat library actions"
-                                >
-                                  ...
-                                </button>
-                                {isBeatLibraryActionsMenuOpen && beatLibraryActionsMenuStyle
-                                  ? createPortal(
-                                  <div
-                                    ref={beatLibraryActionsMenuRef}
-                                    style={beatLibraryActionsMenuStyle}
-                                    className="min-w-[11rem] rounded-lg border border-neutral-700 bg-neutral-900 p-2 shadow-xl"
-                                  >
-                                    <button
-                                      type="button"
-                                      onClick={() => {
-                                        setIsBeatLibraryActionsMenuOpen(false);
-                                        openPublicSubmitDialog();
-                                      }}
-                                      className="w-full rounded px-3 py-2 text-left text-sm text-white hover:bg-neutral-800/60"
-                                      title="Publish to public beat library"
-                                    >
-                                      Publish public
-                                    </button>
-                                  </div>
-                                  , document.body)
-                                  : null}
-                              </div>
-                            )}
                             <BeatLibraryDropTarget id="__trash__">
                             <button
                               ref={beatLibraryTrashTargetRef}
@@ -21140,6 +21645,11 @@ useEffect(() => {
                     : undefined,
                 }}
               >
+                {arrangementNotationPages.length < 1 ? (
+                  <div className="px-3 py-4 text-sm text-neutral-500">
+                    No arrangement notation to render.
+                  </div>
+                ) : null}
                 <div
                   ref={arrangementNotationPreviewInnerRef}
                   className="max-w-none overflow-visible p-0"
@@ -21161,11 +21671,6 @@ useEffect(() => {
                     shouldRenderNotation:
                       !arrangementNotationVirtualize || arrangementVisiblePageSet.has(pageIdx),
                   })
-                )}
-                {arrangementNotationPages.length < 1 && (
-                  <div className="text-xs text-neutral-500">
-                    No arrangement notation to render.
-                  </div>
                 )}
               </div>
               {arrangementNotationRowMenuState && arrangementRows[arrangementNotationRowMenuState.rowIndex]

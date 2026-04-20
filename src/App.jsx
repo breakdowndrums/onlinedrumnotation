@@ -280,13 +280,13 @@ function HelpHotspot({ tip, className = "", align = "center", widthClass = "w-52
         type="button"
         onClick={() => setOpen((prev) => !prev)}
         onBlur={() => setOpen(false)}
-        className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-neutral-900 text-[10px] leading-none text-neutral-600 hover:border-neutral-700 hover:text-neutral-300"
+        className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-neutral-950 bg-black text-[10px] leading-none text-neutral-600 hover:border-neutral-900 hover:text-neutral-300"
         aria-label="Show help tip"
       >
         ?
       </button>
       {open ? (
-        <div className={`absolute top-full z-[160] mt-2 ${widthClass} ${popupPositionClass} max-w-[calc(100vw-1.5rem)] rounded-md border border-neutral-800 bg-neutral-950/95 px-2.5 py-2 text-[11px] leading-4 text-neutral-400 shadow-xl`}>
+        <div className={`absolute top-full z-[160] mt-2 ${widthClass} ${popupPositionClass} max-w-[calc(100vw-1.5rem)] whitespace-normal break-words rounded-md border border-neutral-800 bg-neutral-950/95 px-2.5 py-2 text-[11px] leading-4 text-neutral-400 shadow-xl`}>
           {tip}
         </div>
       ) : null}
@@ -800,6 +800,7 @@ const STICKING_KEEP_QUARTER_LEAD_HAND_STORAGE_KEY =
   "drum-grid-sticking-keep-quarter-lead-hand-v1";
 const SHOW_EDITED_STICKING_STORAGE_KEY = "drum-grid-show-edited-sticking-v1";
 const SHOW_NOTATION_STICKING_STORAGE_KEY = "drum-grid-show-notation-sticking-v1";
+const AUTO_PRINT_NEW_BEAT_STICKING_STORAGE_KEY = "drum-grid-auto-print-new-beat-sticking-v1";
 const NOTATION_STICKING_VIEW_STORAGE_KEY = "drum-grid-notation-sticking-view-v2";
 const NOTATION_STICKING_SELECTION_STORAGE_KEY = "drum-grid-notation-sticking-selection-v1";
 const ARRANGEMENT_NOTATION_BARS_PER_ROW_STORAGE_KEY =
@@ -833,7 +834,7 @@ const TEMPORARY_SHARE_LINK_CLEANUP_INTERVAL_MS = 1000 * 60 * 60 * 24;
 const BEAT_LIBRARY_SELECTED_CONTAINER_STORAGE_KEY = "drum-grid-beat-library-selected-container-v1";
 const BEAT_LIBRARY_ROOT_COLLAPSED_STORAGE_KEY = "drum-grid-beat-library-root-collapsed-v1";
 const GRID_SETTINGS_PRESET_LIBRARY_STORAGE_KEY = "drum-grid-grid-settings-presets-v1";
-const APP_VERSION = "0.1.319";
+const APP_VERSION = "0.1.364";
 const BEAT_CATEGORY_OPTIONS = [
   "Groove",
   "Fill",
@@ -1820,10 +1821,116 @@ function truncateMiddleText(value, maxLength = 22, edgeLength = 7) {
 function truncatePrefixToLastText(value, maxLength = 12, prefixLength = 3, minTailLength = 3) {
   const text = String(value || "");
   if (text.length <= maxLength) return text;
-  const safePrefix = Math.max(1, Math.min(prefixLength, Math.max(1, maxLength - 4)));
-  const availableTail = Math.max(1, maxLength - safePrefix - 1);
-  const safeTail = Math.max(1, Math.min(text.length - safePrefix, Math.max(minTailLength, availableTail)));
+  const tailFloor = Math.max(3, Number(minTailLength) || 3);
+  const safePrefix = Math.max(1, Math.min(prefixLength, Math.max(1, maxLength - tailFloor - 1)));
+  const availableTail = Math.max(tailFloor, maxLength - safePrefix - 1);
+  const safeTail = Math.max(
+    tailFloor,
+    Math.min(text.length - safePrefix, Math.max(tailFloor, availableTail))
+  );
   return `${text.slice(0, safePrefix)}…${text.slice(-safeTail)}`;
+}
+
+function fitPrefixToLastTextByWidth(value, maxWidth, measureTextWidth, prefixLength = 3, minTailLength = 3) {
+  const text = String(value || "");
+  if (!text) return "";
+  if (!Number.isFinite(maxWidth) || maxWidth <= 0) return text;
+  if (measureTextWidth(text) <= maxWidth) return text;
+
+  const safePrefix = Math.max(1, Number(prefixLength) || 3);
+  const tailFloor = Math.max(3, Number(minTailLength) || 3);
+  const prefix = text.slice(0, Math.min(safePrefix, text.length));
+
+  const minCandidate = `${prefix}…${text.slice(-Math.min(tailFloor, text.length))}`;
+  if (measureTextWidth(minCandidate) > maxWidth) {
+    const fallbackTail = text.slice(-Math.min(tailFloor, text.length));
+    const fallback = `…${fallbackTail}`;
+    if (measureTextWidth(fallback) <= maxWidth) return fallback;
+    return fallbackTail;
+  }
+
+  let low = tailFloor;
+  let high = Math.max(tailFloor, text.length - prefix.length);
+  let best = minCandidate;
+  while (low <= high) {
+    const mid = Math.floor((low + high) / 2);
+    const candidate = `${prefix}…${text.slice(-mid)}`;
+    if (measureTextWidth(candidate) <= maxWidth) {
+      best = candidate;
+      low = mid + 1;
+    } else {
+      high = mid - 1;
+    }
+  }
+  return best;
+}
+
+function MeasuredTailText({
+  text,
+  className = "",
+  prefixLength = 3,
+  minTailLength = 3,
+  widthSafetyPx = 12,
+}) {
+  const containerRef = React.useRef(null);
+  const [displayText, setDisplayText] = React.useState(() => String(text || ""));
+
+  React.useLayoutEffect(() => {
+    const node = containerRef.current;
+    if (!(node instanceof HTMLElement)) return undefined;
+
+    const canvas = document.createElement("canvas");
+    const context = canvas.getContext("2d");
+    if (!context) {
+      setDisplayText(String(text || ""));
+      return undefined;
+    }
+
+    let frameId = 0;
+    const measure = () => {
+      const computed = window.getComputedStyle(node);
+      context.font = [
+        computed.fontStyle,
+        computed.fontVariant,
+        computed.fontWeight,
+        computed.fontStretch,
+        computed.fontSize,
+        computed.lineHeight === "normal" ? "" : `/${computed.lineHeight}`,
+        computed.fontFamily,
+      ]
+        .filter(Boolean)
+        .join(" ");
+      const availableWidth = Math.max(0, node.clientWidth - Math.max(0, Number(widthSafetyPx) || 0));
+      const next = fitPrefixToLastTextByWidth(
+        text,
+        availableWidth,
+        (value) => context.measureText(String(value || "")).width,
+        prefixLength,
+        minTailLength
+      );
+      setDisplayText((prev) => (prev === next ? prev : next));
+    };
+    const scheduleMeasure = () => {
+      if (frameId) window.cancelAnimationFrame(frameId);
+      frameId = window.requestAnimationFrame(measure);
+    };
+
+    scheduleMeasure();
+    const observer = new ResizeObserver(scheduleMeasure);
+    observer.observe(node);
+    window.addEventListener("resize", scheduleMeasure);
+    return () => {
+      if (frameId) window.cancelAnimationFrame(frameId);
+      observer.disconnect();
+      window.removeEventListener("resize", scheduleMeasure);
+    };
+  }, [text, prefixLength, minTailLength, widthSafetyPx]);
+
+  return (
+    <span ref={containerRef} className={className} title={String(text || "")}>
+      {displayText}
+    </span>
+  );
 }
 
 function truncateToLastText(value, maxLength = 14, tailLength = 8) {
@@ -3246,12 +3353,8 @@ export default function App() {
     [kitInstrumentIds]
   );
   const currentGridLabelGutterWidth = React.useMemo(() => {
-    const longestInstrumentLabelLength = Math.max(
-      0,
-      ...instruments.map((inst) => String(inst?.label || "").length)
-    );
-    return `calc(${longestInstrumentLabelLength}ch + 0.75rem)`;
-  }, [instruments]);
+    return "calc(8ch + 0.2rem)";
+  }, []);
   const [isKitEditorOpen, setIsKitEditorOpen] = useState(false);
   const [pendingRemoval, setPendingRemoval] = useState(null); // { instId, moveTargetId }
   const [pendingPresetChange, setPendingPresetChange] = useState(null); // { presetName, targetIds, removedWithNotes }
@@ -3279,6 +3382,7 @@ export default function App() {
   const [authMessage, setAuthMessage] = useState("");
   const [authError, setAuthError] = useState("");
   const [authSession, setAuthSession] = useState(null);
+  const [isAuthButtonUnlocked, setIsAuthButtonUnlocked] = useState(false);
   const [pendingPersonalCloudImport, setPendingPersonalCloudImport] = useState(null);
   const [personalCloudImportPending, setPersonalCloudImportPending] = useState(false);
   const [selectedPersonalCloudImportBeatIds, setSelectedPersonalCloudImportBeatIds] = useState([]);
@@ -3451,6 +3555,15 @@ export default function App() {
   const [showNotationSticking, setShowNotationSticking] = useState(() => {
     try {
       const raw = window.localStorage.getItem(SHOW_NOTATION_STICKING_STORAGE_KEY);
+      if (raw == null) return false;
+      return raw === "1";
+    } catch (_) {
+      return false;
+    }
+  });
+  const [autoPrintNewBeatStickingEnabled, setAutoPrintNewBeatStickingEnabled] = useState(() => {
+    try {
+      const raw = window.localStorage.getItem(AUTO_PRINT_NEW_BEAT_STICKING_STORAGE_KEY);
       if (raw == null) return false;
       return raw === "1";
     } catch (_) {
@@ -3780,7 +3893,7 @@ export default function App() {
   const [libraryBpmFilterMode, setLibraryBpmFilterMode] = useState("any"); // any | exact | pm5 | pm10
   const [libraryBpmTarget, setLibraryBpmTarget] = useState(120);
   const [midiImportSplitBars, setMidiImportSplitBars] = useState(1);
-  const [midiArrangementImportMode, setMidiArrangementImportMode] = useState("new-arrangement");
+  const [midiArrangementImportMode, setMidiArrangementImportMode] = useState("override-current-arrangement");
   const [localBeats, setLocalBeats] = useState(() => {
     return readStoredLocalBeats();
   });
@@ -4243,8 +4356,8 @@ export default function App() {
   const [shareCopied, setShareCopied] = useState(false);
   const [shareLinkType, setShareLinkType] = useState("");
   const [shareLinkMode, setShareLinkMode] = useState({
-    beat: "short",
-    arrangement: "short",
+    beat: "long",
+    arrangement: "long",
   });
   const [shareLinkRetention, setShareLinkRetention] = useState({
     beat: "temporary",
@@ -4460,6 +4573,46 @@ export default function App() {
       if (!silent) setUsageLimitsLoading(false);
     }
   }, [callUsageLimitsApi]);
+  const ensureShortShareQuotaAvailable = React.useCallback(async () => {
+    const snapshot = (await refreshUsageLimits({ silent: true })) || usageLimits;
+    const shortLinks = snapshot?.shortLinks;
+    if (!shortLinks || typeof shortLinks !== "object") return true;
+    if (snapshot?.isSignedIn) {
+      const remaining = Math.max(0, Number(shortLinks?.remaining?.month) || 0);
+      if (remaining < 1) {
+        throw new Error("Monthly short-link limit reached for this account. Use a long link instead.");
+      }
+      return true;
+    }
+    const remainingDay = Math.max(0, Number(shortLinks?.remaining?.day) || 0);
+    const remainingMonth = Math.max(0, Number(shortLinks?.remaining?.month) || 0);
+    if (remainingDay < 1) {
+      throw new Error("Daily short-link limit reached for this browser. Use a long link instead.");
+    }
+    if (remainingMonth < 1) {
+      throw new Error("Monthly short-link limit reached for this browser. Use a long link instead.");
+    }
+    return true;
+  }, [refreshUsageLimits, usageLimits]);
+  const ensureCloudBeatQuotaAvailable = React.useCallback(async () => {
+    if (!authUser?.id || !hasSupabaseEnabled || !supabase) return true;
+    const snapshot = (await refreshUsageLimits({ silent: true })) || usageLimits;
+    const cloudLibrary = snapshot?.cloudLibrary;
+    const remaining = Math.max(0, Number(cloudLibrary?.remaining?.beats) || 0);
+    if (remaining < 1) {
+      throw new Error("Personal cloud beat limit reached. Delete beats or keep working locally.");
+    }
+    return true;
+  }, [authUser?.id, hasSupabaseEnabled, refreshUsageLimits, supabase, usageLimits]);
+  const ensureCloudArrangementQuotaAvailable = React.useCallback(async (extraNeeded = 1) => {
+    if (!authUser?.id || !hasSupabaseEnabled || !supabase) return true;
+    const snapshot = (await refreshUsageLimits({ silent: true })) || usageLimits;
+    const remaining = Math.max(0, Number(snapshot?.cloudLibrary?.remaining?.arrangements) || 0);
+    if (remaining < Math.max(1, Number(extraNeeded) || 1)) {
+      throw new Error("Personal cloud arrangement limit reached. Delete arrangements or keep working locally.");
+    }
+    return true;
+  }, [authUser?.id, hasSupabaseEnabled, refreshUsageLimits, supabase, usageLimits]);
   const normalizeFeedbackItem = React.useCallback((row) => {
     if (!row || typeof row !== "object") return null;
     const body = String(row.body || "").trim();
@@ -4621,6 +4774,34 @@ export default function App() {
     setAuthPasswordInput("");
     setIsAuthDialogOpen(true);
   }, [authUserEmail, authEmailInput]);
+  const legalRevealCountRef = React.useRef(0);
+  const legalRevealTimerRef = React.useRef(null);
+  const handleLegalButtonClick = React.useCallback(() => {
+    setLegalTab("impressum");
+    setIsLegalDialogOpen(true);
+    if (authUser?.id) return;
+    legalRevealCountRef.current += 1;
+    if (legalRevealTimerRef.current) {
+      window.clearTimeout(legalRevealTimerRef.current);
+    }
+    if (legalRevealCountRef.current >= 3) {
+      legalRevealCountRef.current = 0;
+      setIsAuthButtonUnlocked(true);
+      legalRevealTimerRef.current = null;
+      return;
+    }
+    legalRevealTimerRef.current = window.setTimeout(() => {
+      legalRevealCountRef.current = 0;
+      legalRevealTimerRef.current = null;
+    }, 1200);
+  }, [authUser?.id]);
+  useEffect(() => {
+    return () => {
+      if (legalRevealTimerRef.current) {
+        window.clearTimeout(legalRevealTimerRef.current);
+      }
+    };
+  }, []);
   const dismissPendingPersonalCloudImport = React.useCallback(() => {
     if (authUser?.id && pendingPersonalCloudImport?.fingerprint) {
       writePersonalCloudImportDecision(authUser.id, pendingPersonalCloudImport.fingerprint, "cloud-only");
@@ -6029,6 +6210,14 @@ export default function App() {
   useEffect(() => {
     try {
       window.localStorage.setItem(
+        AUTO_PRINT_NEW_BEAT_STICKING_STORAGE_KEY,
+        autoPrintNewBeatStickingEnabled ? "1" : "0"
+      );
+    } catch (_) {}
+  }, [autoPrintNewBeatStickingEnabled]);
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
         BEAT_AUTO_UPDATE_ENABLED_STORAGE_KEY,
         beatAutoUpdateEnabled ? "1" : "0"
       );
@@ -6286,7 +6475,7 @@ export default function App() {
       const rect = button.getBoundingClientRect();
       const menuWidth = 248;
       const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
-      const left = Math.max(8, Math.min(rect.right - menuWidth, viewportWidth - menuWidth - 8));
+      const left = Math.max(8, Math.min(rect.right - menuWidth - 24, viewportWidth - menuWidth - 8));
       const top = Math.max(8, rect.bottom + 8);
       setFileMenuPosition({ top, left });
     };
@@ -8428,6 +8617,137 @@ useEffect(() => {
     setArrangementPlaybackEnabled(false);
     setArrangementPlaybackIndex(0);
   }, [pushLocalBeatHistory]);
+  const cleanupArrangementsForDeletedLocalBeatIds = React.useCallback(async (beatIds) => {
+    const deletedIds = Array.from(
+      new Set((Array.isArray(beatIds) ? beatIds : []).map((id) => String(id || "")).filter(Boolean))
+    );
+    if (!deletedIds.length) return;
+    const deletedIdSet = new Set(deletedIds);
+    const now = new Date().toISOString();
+    const currentSaved = savedArrangementsRef.current || [];
+    const nextSaved = [];
+    const deletedArrangementIds = new Set();
+    const updatedArrangementRowsById = new Map();
+
+    currentSaved.forEach((entry) => {
+      const existingItems = normalizeArrangementItems(entry?.items);
+      const nextItems = existingItems.filter(
+        (item) => !(item?.source === "local" && deletedIdSet.has(String(item?.beatId || "")))
+      );
+      if (!nextItems.length) {
+        deletedArrangementIds.add(String(entry?.id || ""));
+        return;
+      }
+      if (nextItems.length !== existingItems.length) {
+        updatedArrangementRowsById.set(String(entry?.id || ""), nextItems);
+        nextSaved.push({
+          ...entry,
+          items: nextItems,
+          updatedAt: now,
+        });
+        return;
+      }
+      nextSaved.push(entry);
+    });
+
+    if (authUser?.id && hasSupabaseEnabled && supabase) {
+      const updates = [];
+      updatedArrangementRowsById.forEach((rows, arrangementId) => {
+        if (!isUuidLike(arrangementId)) return;
+        updates.push(
+          supabase
+            .from("arrangements")
+            .update({
+              rows,
+              updated_at: now,
+            })
+            .eq("id", arrangementId)
+            .eq("user_id", authUser.id)
+        );
+      });
+      Array.from(deletedArrangementIds).forEach((arrangementId) => {
+        if (!isUuidLike(arrangementId)) return;
+        updates.push(
+          supabase
+            .from("arrangements")
+            .delete()
+            .eq("id", arrangementId)
+            .eq("user_id", authUser.id)
+        );
+      });
+      if (updates.length) {
+        const results = await Promise.all(updates);
+        const failed = results.find((result) => result?.error);
+        if (failed?.error) {
+          alert(failed.error.message || "Failed to update arrangements after beat deletion");
+          return;
+        }
+      }
+    }
+
+    savedArrangementsRef.current = nextSaved;
+    setSavedArrangements(nextSaved);
+
+    setArrangementItems((prev) => {
+      const next = normalizeArrangementItems(prev).filter(
+        (item) => !(item?.source === "local" && deletedIdSet.has(String(item?.beatId || "")))
+      );
+      arrangementItemsRef.current = next;
+      return next;
+    });
+
+    if (deletedArrangementIds.has(String(loadedArrangementIdRef.current || ""))) {
+      const nextSelectedEntry = sortSavedArrangementsMostRecent(nextSaved)[0] || null;
+      if (arrangementPlaybackEnabled) {
+        setArrangementPlaybackEnabled(false);
+        setArrangementPlaybackIndex(0);
+      }
+      if (nextSelectedEntry) {
+        const nextItems = normalizeArrangementItems(nextSelectedEntry.items);
+        arrangementItemsRef.current = nextItems;
+        loadedArrangementIdRef.current = nextSelectedEntry.id || null;
+        setArrangementItems(nextItems);
+        setArrangementSelection(null);
+        setArrangementSelectionAnchor(null);
+        setArrangementBarSelection(null);
+        setArrangementBarSelectionAnchor(null);
+        setArrangementNameDraft(
+          getArrangementNameFromTitles(
+            nextSelectedEntry.titleLine1,
+            nextSelectedEntry.titleLine2,
+            String(nextSelectedEntry.name || "")
+          )
+        );
+        setArrangementTitleLine1Draft(String(nextSelectedEntry.titleLine1 || ""));
+        setArrangementTitleLine2Draft(String(nextSelectedEntry.titleLine2 || ""));
+        setArrangementComposerDraft(String(nextSelectedEntry.composer || ""));
+        setLoadedArrangementId(nextSelectedEntry.id || null);
+        selectArrangementPickerId(nextSelectedEntry.id || null);
+      } else {
+        arrangementItemsRef.current = [];
+        loadedArrangementIdRef.current = null;
+        setArrangementItems([]);
+        setArrangementSelection(null);
+        setArrangementSelectionAnchor(null);
+        setArrangementBarSelection(null);
+        setArrangementBarSelectionAnchor(null);
+        setArrangementNameDraft("");
+        setArrangementTitleLine1Draft("");
+        setArrangementTitleLine2Draft("");
+        setArrangementComposerDraft("");
+        setLoadedArrangementId(null);
+        selectArrangementPickerId("");
+      }
+      return;
+    }
+
+    if (updatedArrangementRowsById.has(String(loadedArrangementIdRef.current || ""))) {
+      setArrangementSelection(null);
+      setArrangementSelectionAnchor(null);
+      setArrangementBarSelection(null);
+      setArrangementBarSelectionAnchor(null);
+    }
+  }, [authUser?.id, arrangementPlaybackEnabled, selectArrangementPickerId]);
   const clearAllLocalLibrary = React.useCallback(() => {
     pushLocalBeatHistory();
     localBeatsRef.current = [];
@@ -8471,8 +8791,9 @@ useEffect(() => {
       }
     }
     setLocalBeatsWithUndo((prev) => prev.filter((beat) => String(beat?.id) !== key));
+    await cleanupArrangementsForDeletedLocalBeatIds([key]);
     return true;
-  }, [authUser?.id, setLocalBeatsWithUndo]);
+  }, [authUser?.id, cleanupArrangementsForDeletedLocalBeatIds, setLocalBeatsWithUndo]);
   const deleteLocalBeatsByIds = React.useCallback(async (beatIds) => {
     const ids = Array.from(new Set((Array.isArray(beatIds) ? beatIds : []).map((id) => String(id || "")).filter(Boolean)));
     if (!ids.length) return true;
@@ -8496,8 +8817,9 @@ useEffect(() => {
     }
     const idSet = new Set(ids);
     setLocalBeatsWithUndo((prev) => prev.filter((beat) => !idSet.has(String(beat?.id || ""))));
+    await cleanupArrangementsForDeletedLocalBeatIds(ids);
     return true;
-  }, [authUser?.id, setLocalBeatsWithUndo]);
+  }, [authUser?.id, cleanupArrangementsForDeletedLocalBeatIds, setLocalBeatsWithUndo]);
   const handleDeleteLocalBeatClick = React.useCallback(async (event, beatId) => {
     event.stopPropagation();
     if (event.metaKey || event.ctrlKey) {
@@ -11278,12 +11600,12 @@ useEffect(() => {
     );
     if (normalizedSource === "local") {
       setLoadedLocalBeatId(freshestBeat.id);
-      setBeatNameDraft(String(freshestBeat.name || ""));
-      setBeatCategoryDraft(String(freshestBeat.category || "Groove"));
-      setBeatStyleDraft(String(freshestBeat.style || "all"));
     } else {
       setLoadedLocalBeatId(null);
     }
+    setBeatNameDraft(String(freshestBeat.name || ""));
+    setBeatCategoryDraft(String(freshestBeat.category || "Groove"));
+    setBeatStyleDraft(String(freshestBeat.style || "all"));
   }, []);
   useEffect(() => {
     loadBeatIntoEditorRef.current = loadBeatIntoEditor;
@@ -11494,12 +11816,14 @@ useEffect(() => {
     setPendingMidiImportMapping(null);
     setPendingMidiTempoPrompt(null);
   }, [clearMidiImportPreviewSession, restoreMidiImportPreviewSnapshot]);
+  const normalizeMidiArrangementImportMode = React.useCallback((value) => {
+    return value === "override-current-arrangement" || value === "current-arrangement"
+      ? "override-current-arrangement"
+      : "new-arrangement";
+  }, []);
   const applyImportedMidiResult = React.useCallback((imported, fileMeta, bpmOverride = null, options = {}) => {
     const replaceLastImport = options?.replaceLastImport === true;
-    const arrangementImportMode =
-      options?.arrangementImportMode === "current-arrangement"
-        ? "current-arrangement"
-        : "new-arrangement";
+    const arrangementImportMode = normalizeMidiArrangementImportMode(options?.arrangementImportMode);
     const importedTitleLine1 = String(options?.titleLine1 || "").trim();
     const importedTitleLine2 = String(options?.titleLine2 || "").trim();
     const importedAuthor = String(options?.author || "").trim();
@@ -11580,19 +11904,12 @@ useEffect(() => {
         const base = previousImportedBeatIds ? prev.filter((beat) => !previousImportedBeatIds.has(beat.id)) : prev;
         return [...sectionBeats, ...base].slice(0, 500);
       });
-      if (arrangementImportMode === "current-arrangement") {
-        setArrangementItemsWithUndo((prev) => {
-          if (!replaceLastImport || !Array.isArray(lastMidiImportSession?.generatedArrangementRowIds)) {
-            return [...prev, ...nextArrangementRows];
-          }
-          const rowIdsToReplace = new Set(lastMidiImportSession.generatedArrangementRowIds);
-          const firstMatchIndex = prev.findIndex((row) => rowIdsToReplace.has(row.id));
-          const base = prev.filter((row) => !rowIdsToReplace.has(row.id));
-          if (firstMatchIndex < 0) return [...base, ...nextArrangementRows];
-          const out = [...base];
-          out.splice(firstMatchIndex, 0, ...nextArrangementRows);
-          return out;
-        });
+      if (arrangementImportMode === "override-current-arrangement") {
+        setArrangementItemsWithUndo(() => nextArrangementRows);
+        setArrangementSelection(null);
+        setArrangementSelectionAnchor(null);
+        setArrangementBarSelection(null);
+        setArrangementBarSelectionAnchor(null);
       } else {
         const existingArrangement =
           replaceLastImport && lastMidiImportSession?.generatedArrangementId
@@ -11720,7 +12037,7 @@ useEffect(() => {
     setPendingMidiImportMapping(null);
     setPendingMidiTempoPrompt(null);
     setIsShareActionsDialogOpen(false);
-  }, [buildPreparedImportedMidiResult, clearMidiImportPreviewSession, lastMidiImportSession, midiImportSplitBars, pushLocalBeatHistory, roundTempoForImport, savedArrangements, setArrangementItemsWithUndo]);
+  }, [buildPreparedImportedMidiResult, clearMidiImportPreviewSession, lastMidiImportSession, midiImportSplitBars, normalizeMidiArrangementImportMode, pushLocalBeatHistory, roundTempoForImport, savedArrangements, setArrangementItemsWithUndo]);
   const buildPendingMidiImportMappingState = React.useCallback((session, imported) => {
     const assignments = {};
     const velocityModes = {};
@@ -11770,7 +12087,7 @@ useEffect(() => {
           : String(imported.composer || session?.composer || ""),
       composer: imported.composer || session?.composer || "",
       applyMode: session?.applyMode || "new",
-      arrangementImportMode: session?.arrangementImportMode || "new-arrangement",
+      arrangementImportMode: normalizeMidiArrangementImportMode(session?.arrangementImportMode),
       bpm: session?.bpm || "",
       timingShiftSixteenths: Math.max(-15, Math.min(15, Math.round(Number(session?.timingShiftSixteenths) || 0))),
       suggestedShiftSixteenths: Math.max(-15, Math.min(15, Math.round(Number(imported?.suggestedShiftSixteenths) || 0))),
@@ -11785,7 +12102,7 @@ useEffect(() => {
       noteAssignments: assignments,
       noteVelocityModes: velocityModes,
     };
-  }, []);
+  }, [normalizeMidiArrangementImportMode]);
   const reopenLastMidiImportMapping = React.useCallback(() => {
     if (!lastMidiImportSession?.arrayBuffer) return;
     const imported = importDrumMidi({
@@ -11808,6 +12125,76 @@ useEffect(() => {
     lastMidiImportSession,
     midiImportSplitBars,
     midiImportVelocityThresholds,
+  ]);
+  const reopenLastMidiImportSettings = React.useCallback(() => {
+    if (!lastMidiImportSession?.arrayBuffer) return;
+    const imported = importDrumMidi({
+      arrayBuffer: lastMidiImportSession.arrayBuffer,
+      instruments: ALL_INSTRUMENTS,
+      arrangementSplitBars: lastMidiImportSession.splitBars || midiImportSplitBars,
+      noteAssignments: lastMidiImportSession.noteAssignments || {},
+      noteVelocityModes: lastMidiImportSession.noteVelocityModes || {},
+      timingShiftSixteenths: lastMidiImportSession.timingShiftSixteenths || 0,
+      velocityThresholds: midiImportVelocityThresholds,
+    });
+    if (imported.kind === "needs-mapping") {
+      setPendingMidiImportMapping(
+        buildPendingMidiImportMappingState(
+          {
+            ...lastMidiImportSession,
+            applyMode: "update-last",
+            arrangementImportMode: normalizeMidiArrangementImportMode(
+              lastMidiImportSession.arrangementImportMode
+            ),
+          },
+          imported
+        )
+      );
+      setPendingMidiTempoPrompt(null);
+      setIsShareActionsDialogOpen(false);
+      return;
+    }
+    setPendingMidiImportMapping(null);
+    setPendingMidiTempoPrompt({
+      imported,
+      arrayBuffer: lastMidiImportSession.arrayBuffer,
+      noteAssignments: lastMidiImportSession.noteAssignments || {},
+      noteVelocityModes: lastMidiImportSession.noteVelocityModes || {},
+      previewBarNumber: 1,
+      timingShiftSixteenths: lastMidiImportSession.timingShiftSixteenths || 0,
+      applyMode: "update-last",
+      arrangementImportMode: normalizeMidiArrangementImportMode(
+        lastMidiImportSession.arrangementImportMode
+      ),
+      titleLine1: lastMidiImportSession.titleLine1 || imported.title || "",
+      titleLine2: lastMidiImportSession.titleLine2 || "",
+      author: lastMidiImportSession.author || imported.composer || "",
+      splitBars: Math.max(
+        1,
+        Math.min(8, Math.round(Number(lastMidiImportSession.splitBars) || midiImportSplitBars))
+      ),
+      fileMeta: {
+        fileName: lastMidiImportSession.fileName || "import.mid",
+        lastModified: lastMidiImportSession.lastModified || "",
+      },
+      tempoMultiplier: Math.max(0.25, Math.min(4, Number(lastMidiImportSession.tempoMultiplier) || 1)),
+      bpm:
+        Number(lastMidiImportSession.bpm) ||
+        getSuggestedImportedMidiBpm(
+          imported,
+          bpm,
+          Math.max(0.25, Math.min(4, Number(lastMidiImportSession.tempoMultiplier) || 1))
+        ),
+    });
+    setIsShareActionsDialogOpen(false);
+  }, [
+    bpm,
+    buildPendingMidiImportMappingState,
+    getSuggestedImportedMidiBpm,
+    lastMidiImportSession,
+    midiImportSplitBars,
+    midiImportVelocityThresholds,
+    normalizeMidiArrangementImportMode,
   ]);
   const pendingMidiImportMappingLooksReady = React.useMemo(() => {
     if (!pendingMidiImportMapping) return false;
@@ -11898,8 +12285,9 @@ useEffect(() => {
         bpm: nextBpm,
         noteAssignments: pendingMidiImportMapping.noteAssignments || {},
         noteVelocityModes: pendingMidiImportMapping.noteVelocityModes || {},
-        arrangementImportMode:
-          pendingMidiImportMapping.arrangementImportMode || prev?.arrangementImportMode || "new-arrangement",
+        arrangementImportMode: normalizeMidiArrangementImportMode(
+          pendingMidiImportMapping.arrangementImportMode || prev?.arrangementImportMode
+        ),
         kind: imported.kind === "arrangement" ? "arrangement" : "beat",
         generatedBeatIds: prev?.generatedBeatIds || [],
         generatedArrangementId: prev?.generatedArrangementId || null,
@@ -11915,8 +12303,9 @@ useEffect(() => {
         nextBpm,
         {
           replaceLastImport: true,
-          arrangementImportMode:
-            pendingMidiImportMapping.arrangementImportMode || "new-arrangement",
+          arrangementImportMode: normalizeMidiArrangementImportMode(
+            pendingMidiImportMapping.arrangementImportMode
+          ),
           titleLine1: pendingMidiImportMapping.titleLine1 || "",
           titleLine2: pendingMidiImportMapping.titleLine2 || "",
           author: pendingMidiImportMapping.author || "",
@@ -11933,8 +12322,9 @@ useEffect(() => {
         previewBarNumber: Math.max(1, Math.round(Number(pendingMidiImportMapping.previewBarNumber) || 1)),
         timingShiftSixteenths: pendingMidiImportMapping.timingShiftSixteenths || 0,
         applyMode: pendingMidiImportMapping.applyMode || "new",
-        arrangementImportMode:
-          pendingMidiImportMapping.arrangementImportMode || "new-arrangement",
+        arrangementImportMode: normalizeMidiArrangementImportMode(
+          pendingMidiImportMapping.arrangementImportMode
+        ),
         titleLine1: pendingMidiImportMapping.titleLine1 || imported.title || "",
         titleLine2: pendingMidiImportMapping.titleLine2 || "",
         author: pendingMidiImportMapping.author || imported.composer || "",
@@ -11999,8 +12389,9 @@ useEffect(() => {
       bpm: nextBpm,
       noteAssignments: pendingMidiTempoPrompt.noteAssignments || {},
       noteVelocityModes: pendingMidiTempoPrompt.noteVelocityModes || {},
-      arrangementImportMode:
-        pendingMidiTempoPrompt.arrangementImportMode || "new-arrangement",
+      arrangementImportMode: normalizeMidiArrangementImportMode(
+        pendingMidiTempoPrompt.arrangementImportMode
+      ),
     });
     setLastMidiImportSession((prev) => ({
       ...(prev || {}),
@@ -12018,8 +12409,9 @@ useEffect(() => {
       bpm: nextBpm,
       noteAssignments: pendingMidiTempoPrompt.noteAssignments || {},
       noteVelocityModes: pendingMidiTempoPrompt.noteVelocityModes || {},
-      arrangementImportMode:
-        pendingMidiTempoPrompt.arrangementImportMode || "new-arrangement",
+      arrangementImportMode: normalizeMidiArrangementImportMode(
+        pendingMidiTempoPrompt.arrangementImportMode
+      ),
       kind: prev?.kind || "beat",
       generatedBeatIds: prev?.generatedBeatIds || [],
       generatedArrangementId: prev?.generatedArrangementId || null,
@@ -12031,8 +12423,9 @@ useEffect(() => {
       bpmOverride,
       {
         replaceLastImport: pendingMidiTempoPrompt.applyMode === "update-last",
-        arrangementImportMode:
-          pendingMidiTempoPrompt.arrangementImportMode || "new-arrangement",
+        arrangementImportMode: normalizeMidiArrangementImportMode(
+          pendingMidiTempoPrompt.arrangementImportMode
+        ),
         titleLine1: pendingMidiTempoPrompt.titleLine1 || "",
         titleLine2: pendingMidiTempoPrompt.titleLine2 || "",
         author: pendingMidiTempoPrompt.author || "",
@@ -12977,6 +13370,18 @@ useEffect(() => {
     }
     return applyLoopWrites(baseGrid, loopRule, loopRepeats, loopOverlapMode, loopRespectPlayability);
   }, [baseGrid, loopRule, loopRepeats, loopOverlapMode, loopRespectPlayability, applyLoopWrites, instruments]);
+  function buildAllNotationStickingSelection() {
+    const next = {};
+    instruments.forEach((inst) => {
+      const instId = inst?.id;
+      if (!instId || FOOT_INSTRUMENTS.has(instId)) return;
+      const row = computedGrid[instId] || [];
+      row.forEach((value, idx) => {
+        if (value !== CELL.OFF) next[`${instId}:${idx}`] = true;
+      });
+    });
+    return next;
+  }
   useEffect(() => {
     if (importedBeatLoadInProgressRef.current) return;
     setNotationStickingSelection((prev) => {
@@ -13003,6 +13408,27 @@ useEffect(() => {
       return changed ? next : prev;
     });
   }, [computedGrid]);
+  useEffect(() => {
+    if (importedBeatLoadInProgressRef.current) return;
+    if (!autoPrintNewBeatStickingEnabled) return;
+    if (loadedLocalBeatId) return;
+    const next = buildAllNotationStickingSelection();
+    setNotationStickingSelection((prev) => {
+      const prevJson = JSON.stringify(
+        Object.fromEntries(Object.entries(prev || {}).filter(([, value]) => value === true))
+      );
+      const nextJson = JSON.stringify(next);
+      return prevJson === nextJson ? prev : next;
+    });
+    if (Object.keys(next).length > 0) {
+      setShowNotationSticking(true);
+    }
+  }, [
+    autoPrintNewBeatStickingEnabled,
+    computedGrid,
+    instruments,
+    loadedLocalBeatId,
+  ]);
   useEffect(() => {
     if (!notationStickingSelectionModeEnabled) return;
     if (!selection) return;
@@ -14831,46 +15257,6 @@ useEffect(() => {
       shareKind: effectiveSharedState.kind === "arrangement" ? "arrangement" : "beat",
     });
   }, [requestedSharedState, resolvedSharedState, routeOptions.shared, routeOptions.shareId, trackStatsEvent]);
-  const ensureShortShareQuotaAvailable = React.useCallback(async () => {
-    const snapshot = (await refreshUsageLimits({ silent: true })) || usageLimits;
-    const shortLinks = snapshot?.shortLinks;
-    if (!shortLinks || typeof shortLinks !== "object") return true;
-    if (snapshot?.isSignedIn) {
-      const remaining = Math.max(0, Number(shortLinks?.remaining?.month) || 0);
-      if (remaining < 1) {
-        throw new Error("Monthly short-link limit reached for this account. Use a long link instead.");
-      }
-      return true;
-    }
-    const remainingDay = Math.max(0, Number(shortLinks?.remaining?.day) || 0);
-    const remainingMonth = Math.max(0, Number(shortLinks?.remaining?.month) || 0);
-    if (remainingDay < 1) {
-      throw new Error("Daily short-link limit reached for this browser. Use a long link instead.");
-    }
-    if (remainingMonth < 1) {
-      throw new Error("Monthly short-link limit reached for this browser. Use a long link instead.");
-    }
-    return true;
-  }, [refreshUsageLimits, usageLimits]);
-  const ensureCloudBeatQuotaAvailable = React.useCallback(async () => {
-    if (!authUser?.id || !hasSupabaseEnabled || !supabase) return true;
-    const snapshot = (await refreshUsageLimits({ silent: true })) || usageLimits;
-    const cloudLibrary = snapshot?.cloudLibrary;
-    const remaining = Math.max(0, Number(cloudLibrary?.remaining?.beats) || 0);
-    if (remaining < 1) {
-      throw new Error("Personal cloud beat limit reached. Delete beats or keep working locally.");
-    }
-    return true;
-  }, [authUser?.id, hasSupabaseEnabled, refreshUsageLimits, supabase, usageLimits]);
-  const ensureCloudArrangementQuotaAvailable = React.useCallback(async (extraNeeded = 1) => {
-    if (!authUser?.id || !hasSupabaseEnabled || !supabase) return true;
-    const snapshot = (await refreshUsageLimits({ silent: true })) || usageLimits;
-    const remaining = Math.max(0, Number(snapshot?.cloudLibrary?.remaining?.arrangements) || 0);
-    if (remaining < Math.max(1, Number(extraNeeded) || 1)) {
-      throw new Error("Personal cloud arrangement limit reached. Delete arrangements or keep working locally.");
-    }
-    return true;
-  }, [authUser?.id, hasSupabaseEnabled, refreshUsageLimits, supabase, usageLimits]);
   const saveCurrentBeatLocal = React.useCallback(async () => {
     const name = getUniqueBeatName(beatNameDraft);
     const now = new Date().toISOString();
@@ -15039,6 +15425,14 @@ useEffect(() => {
     if (loadedLocalBeat?.name) return String(loadedLocalBeat.name);
     return "Untitled beat";
   }, [beatNameDraft, loadedLocalBeat]);
+  const currentBeatStripSource = React.useMemo(() => {
+    if (loadedLocalBeatId) return "local";
+    const editorKey = String(currentEditorBeatKey || "");
+    if (editorKey.startsWith("public:")) return "public";
+    if (editorKey.startsWith("shared:")) return "shared";
+    if (editorKey.startsWith("local:")) return "local";
+    return "";
+  }, [currentEditorBeatKey, loadedLocalBeatId]);
   const isUnsavedBeatStripDraftActive = React.useMemo(
     () =>
       !loadedLocalBeatId &&
@@ -15086,6 +15480,14 @@ useEffect(() => {
     if (isUnsavedBeatStripDraftActive) {
       return "__unsaved__";
     }
+    if (String(currentEditorBeatKey || "").startsWith("public:")) {
+      const id = String(currentEditorBeatKey || "").slice("public:".length);
+      if (id) return id;
+    }
+    if (String(currentEditorBeatKey || "").startsWith("shared:")) {
+      const id = String(currentEditorBeatKey || "").slice("shared:".length);
+      if (id) return id;
+    }
     if (loadedLocalBeatId) return String(loadedLocalBeatId);
     if (String(currentEditorBeatKey || "").startsWith("local:")) {
       const id = String(currentEditorBeatKey || "").slice("local:".length);
@@ -15109,28 +15511,49 @@ useEffect(() => {
   ]);
   const effectiveCurrentBeatStripBeat = React.useMemo(() => {
     if (!effectiveCurrentBeatStripBeatId || effectiveCurrentBeatStripBeatId === "__unsaved__") return null;
+    const sourceList =
+      currentBeatStripSource === "public"
+        ? publicBeats
+        : currentBeatStripSource === "shared"
+          ? sharedArrangementBeats
+          : localBeats;
     return (
-      localBeats.find((entry) => String(entry?.id || "") === effectiveCurrentBeatStripBeatId) || null
+      sourceList.find((entry) => String(entry?.id || "") === effectiveCurrentBeatStripBeatId) || null
     );
-  }, [effectiveCurrentBeatStripBeatId, localBeats]);
+  }, [currentBeatStripSource, effectiveCurrentBeatStripBeatId, localBeats, publicBeats, sharedArrangementBeats]);
+  const currentBeatStripResolvedName = React.useMemo(() => {
+    const draft = String(beatNameDraft || "").trim();
+    if (draft) return draft;
+    if (effectiveCurrentBeatStripBeat?.name) return String(effectiveCurrentBeatStripBeat.name);
+    if (loadedLocalBeat?.name) return String(loadedLocalBeat.name);
+    return "Untitled beat";
+  }, [beatNameDraft, effectiveCurrentBeatStripBeat, loadedLocalBeat]);
   const currentBeatStripNavigationIds = React.useMemo(() => {
-    const ids = [...allLocalBeatIdsInLibraryOrder];
+    const ids =
+      currentBeatStripSource === "public"
+        ? publicBeats.map((entry) => String(entry?.id || "")).filter(Boolean)
+        : currentBeatStripSource === "shared"
+          ? sharedArrangementBeats.map((entry) => String(entry?.id || "")).filter(Boolean)
+          : [...allLocalBeatIdsInLibraryOrder];
     if (isUnsavedBeatStripDraftActive || unsavedBeatStripSnapshot) {
       return [...ids, "__unsaved__"];
     }
     return ids;
-  }, [allLocalBeatIdsInLibraryOrder, isUnsavedBeatStripDraftActive, unsavedBeatStripSnapshot]);
+  }, [allLocalBeatIdsInLibraryOrder, currentBeatStripSource, isUnsavedBeatStripDraftActive, publicBeats, sharedArrangementBeats, unsavedBeatStripSnapshot]);
   const currentBeatStripParentContainer = React.useMemo(() => {
+    if (currentBeatStripSource !== "local") return null;
     const parentId = String(getBeatLibraryMeta(effectiveCurrentBeatStripBeat).parentId || "");
     if (!parentId) return null;
     return beatLibraryContainers.find((entry) => String(entry?.id || "") === parentId) || null;
-  }, [beatLibraryContainers, effectiveCurrentBeatStripBeat]);
+  }, [beatLibraryContainers, currentBeatStripSource, effectiveCurrentBeatStripBeat]);
   const currentBeatStripScopeLabel = React.useMemo(() => {
+    if (currentBeatStripSource === "public") return "Public beats";
+    if (currentBeatStripSource === "shared") return "Arrangement beats";
     if (!currentBeatStripParentContainer) {
       return "All beats";
     }
     return String(currentBeatStripParentContainer.name || "Current folder");
-  }, [currentBeatStripParentContainer]);
+  }, [currentBeatStripParentContainer, currentBeatStripSource]);
   const currentBeatStripPosition = React.useMemo(() => {
     if (!effectiveCurrentBeatStripBeatId) {
       return { index: -1, total: currentBeatStripNavigationIds.length };
@@ -15170,7 +15593,7 @@ useEffect(() => {
     return currentBeatEditorStripOffset;
   }, [currentBeatEditorStripOffset, hasDesktopSidebarColumn]);
   const currentBeatEditorStripMainPaddingLeft = React.useMemo(
-    () => `calc((${currentBeatEditorStripPaddingLeft}) - 4.5rem)`,
+    () => `calc((${currentBeatEditorStripPaddingLeft}) - 4rem)`,
     [currentBeatEditorStripPaddingLeft]
   );
   const isBeatLibraryPanelActive =
@@ -15207,23 +15630,34 @@ useEffect(() => {
         return;
       }
       if (!nextId) return;
+      const sourceList =
+        currentBeatStripSource === "public"
+          ? publicBeats
+          : currentBeatStripSource === "shared"
+            ? sharedArrangementBeats
+            : localBeats;
       const nextBeat =
-        localBeats.find((entry) => String(entry?.id || "") === nextId) || null;
+        sourceList.find((entry) => String(entry?.id || "") === nextId) || null;
       if (!nextBeat) return;
-      const nextParentId = String(getBeatLibraryMeta(nextBeat).parentId || "");
-      selectBeatLibraryContainer(nextParentId || "all");
-      setSelectedBeatLibraryBeatIds([nextId]);
-      setBeatLibraryBeatSelectionAnchorId(nextId);
+      if (currentBeatStripSource === "local") {
+        const nextParentId = String(getBeatLibraryMeta(nextBeat).parentId || "");
+        selectBeatLibraryContainer(nextParentId || "all");
+        setSelectedBeatLibraryBeatIds([nextId]);
+        setBeatLibraryBeatSelectionAnchorId(nextId);
+      }
       setIsCurrentBeatStripRenaming(false);
-      await loadBeatIntoEditorRef.current?.("local", nextBeat);
+      await loadBeatIntoEditorRef.current?.(currentBeatStripSource || "local", nextBeat);
     },
     [
       captureCurrentUnsavedBeatStripSnapshot,
+      currentBeatStripSource,
       effectiveCurrentBeatStripBeatId,
       currentBeatStripNavigationIds,
       localBeats,
+      publicBeats,
       restoreUnsavedBeatStripSnapshot,
       selectBeatLibraryContainer,
+      sharedArrangementBeats,
     ]
   );
   const cancelCurrentBeatStripRename = React.useCallback(() => {
@@ -15889,12 +16323,22 @@ useEffect(() => {
                               <button
                                 type="button"
                                 onClick={() => {
-                                  selectAllNotationSticking();
-                                  setNotationStickingSelectionModeEnabled(true);
+                                  setAutoPrintNewBeatStickingEnabled((prev) => {
+                                    const next = !prev;
+                                    if (next) {
+                                      selectAllNotationSticking();
+                                      setNotationStickingSelectionModeEnabled(true);
+                                    }
+                                    return next;
+                                  });
                                   setIsNotationStickingMenuOpen(false);
                                 }}
-                                className="w-fit whitespace-nowrap touch-none select-none px-3 py-[5px] rounded border border-neutral-800 bg-neutral-900 text-neutral-300 hover:bg-neutral-800/60"
-                                title="Select all active hand hits for notation"
+                                className={`w-fit whitespace-nowrap touch-none select-none px-3 py-[5px] rounded border ${
+                                  autoPrintNewBeatStickingEnabled
+                                    ? "border-neutral-700 bg-neutral-800 text-white"
+                                    : "border-neutral-800 bg-neutral-900 text-neutral-300 hover:bg-neutral-800/60"
+                                }`}
+                                title="When enabled, new beats automatically print sticking for all active hand hits"
                               >
                                 All
                               </button>
@@ -16061,10 +16505,10 @@ useEffect(() => {
                     ? "Rename current beat"
                     : canSaveCurrentBeatFromStrip
                       ? "Save as new beat"
-                      : currentBeatStripName
+                      : currentBeatStripResolvedName
                 }
               >
-                {currentBeatStripName}
+                {currentBeatStripResolvedName}
               </button>
             </div>
             <button
@@ -17376,15 +17820,7 @@ useEffect(() => {
   }, []);
 
   const selectAllNotationSticking = React.useCallback(() => {
-    const next = {};
-    instruments.forEach((inst) => {
-      const instId = inst?.id;
-      if (!instId || FOOT_INSTRUMENTS.has(instId)) return;
-      const row = computedGrid[instId] || [];
-      row.forEach((value, idx) => {
-        if (value !== CELL.OFF) next[`${instId}:${idx}`] = true;
-      });
-    });
+    const next = buildAllNotationStickingSelection();
     setNotationStickingSelection(next);
     setShowNotationSticking(true);
   }, [computedGrid, instruments]);
@@ -17564,7 +18000,7 @@ useEffect(() => {
     );
   }, [arrangementAddBeatEntries, collectBeatLibraryFolderBeatsInOrder]);
 
-  const renderArrangementSourceFolderRow = React.useCallback((entry, depth = 0) => {
+  const renderArrangementSourceFolderRow = React.useCallback((entry, depth = 0, variant = "docked") => {
     const hasChildren = true;
     const folderBeatCount = countBeatLibraryFolderBeats(entry.id);
     const isSelected = String(selectedBeatLibraryContainerId) === String(entry.id);
@@ -17628,7 +18064,7 @@ useEffect(() => {
                 : "text-neutral-400 hover:bg-neutral-900/40 hover:text-neutral-200"
           }`}
         >
-          <div className="flex min-w-0 items-center gap-2">
+          <div className="flex min-w-0 flex-1 basis-0 items-center gap-2 overflow-hidden">
             <span
               className={`inline-flex h-6 min-w-6 items-center justify-center ${
                 hasChildren ? "text-neutral-500" : "text-neutral-800"
@@ -17680,14 +18116,20 @@ useEffect(() => {
                   clearBeatLibraryBeatSelection();
                   selectBeatLibraryContainer(entry.id);
                 }}
-                className="inline-flex min-w-0 max-w-full items-center rounded px-1 py-0.5 text-left hover:bg-neutral-800/40"
-                title="Open folder"
+                className="flex min-w-0 flex-1 basis-0 items-center rounded px-1 py-0.5 text-left hover:bg-neutral-800/40"
+                title={String(entry.name || "Open folder")}
               >
-                <span className="min-w-0 truncate">{entry.name}</span>
+                <MeasuredTailText
+                  text={entry.name}
+                  prefixLength={3}
+                  minTailLength={3}
+                  widthSafetyPx={variant === "docked" ? 6 : 12}
+                  className="block w-full min-w-0 overflow-hidden pr-1 text-clip whitespace-nowrap"
+                />
               </button>
             )}
           </div>
-          <div className="ml-auto flex items-center gap-1.5 pr-1">
+          <div className="ml-auto flex shrink-0 items-center gap-1.5 pr-1">
             <span className="min-w-[15px] text-right text-[10px] text-neutral-600">
               {folderBeatCount > 0 ? folderBeatCount : ""}
             </span>
@@ -17770,7 +18212,7 @@ useEffect(() => {
     toggleBeatLibraryContainerCollapsed,
   ]);
 
-  const renderArrangementSourceFolderContents = React.useCallback((parentId, depth = 0) => {
+  const renderArrangementSourceFolderContents = React.useCallback((parentId, depth = 0, variant = "docked") => {
     const childBeats = filteredLocalBeats
       .filter((beat) => {
         const direct = beat?.libraryMeta && typeof beat.libraryMeta === "object" ? beat.libraryMeta : null;
@@ -17822,8 +18264,8 @@ useEffect(() => {
       );
     }
     childFolders.forEach((entry) => {
-      nodes.push(renderArrangementSourceFolderRow(entry, depth));
-      if (!entry.collapsed) nodes.push(...renderArrangementSourceFolderContents(entry.id, depth + 1));
+      nodes.push(renderArrangementSourceFolderRow(entry, depth, variant));
+      if (!entry.collapsed) nodes.push(...renderArrangementSourceFolderContents(entry.id, depth + 1, variant));
     });
     return nodes;
   }, [
@@ -18151,7 +18593,7 @@ useEffect(() => {
                   <BeatLibraryDropTarget id="__up__" className="absolute h-0 w-0 overflow-hidden opacity-0 pointer-events-none" />
                   <BeatLibraryDropTarget id="__trash__" className="absolute h-0 w-0 overflow-hidden opacity-0 pointer-events-none" />
                   <div className={selectedBeatLibraryContainerId !== "all" ? "pt-1" : ""}>
-                    {renderArrangementSourceFolderContents(currentBeatLibraryParentId, 0)}
+                    {renderArrangementSourceFolderContents(currentBeatLibraryParentId, 0, "docked")}
                   </div>
                   {currentBeatLibraryFolders.length === 0 &&
                     currentBeatLibraryBeats.length === 0 && (
@@ -19051,12 +19493,22 @@ useEffect(() => {
                       <button
                         type="button"
                         onClick={() => {
-                          selectAllNotationSticking();
-                          setNotationStickingSelectionModeEnabled(true);
+                          setAutoPrintNewBeatStickingEnabled((prev) => {
+                            const next = !prev;
+                            if (next) {
+                              selectAllNotationSticking();
+                              setNotationStickingSelectionModeEnabled(true);
+                            }
+                            return next;
+                          });
                           setIsNotationStickingMenuOpen(false);
                         }}
-                        className="w-fit whitespace-nowrap touch-none select-none px-3 py-[5px] rounded border border-neutral-800 bg-neutral-900 text-neutral-300 hover:bg-neutral-800/60"
-                        title="Select all active hand hits for notation"
+                        className={`w-fit whitespace-nowrap touch-none select-none px-3 py-[5px] rounded border ${
+                          autoPrintNewBeatStickingEnabled
+                            ? "border-neutral-700 bg-neutral-800 text-white"
+                            : "border-neutral-800 bg-neutral-900 text-neutral-300 hover:bg-neutral-800/60"
+                        }`}
+                        title="When enabled, new beats automatically print sticking for all active hand hits"
                       >
                         All
                       </button>
@@ -19292,7 +19744,7 @@ useEffect(() => {
                   <div className="mt-1">Tuplets: press the count numbers above the grid to cycle tuplets.</div>
                 </>
               }
-              align="left"
+              align="right"
               widthClass="w-72"
             />
             <button
@@ -19435,7 +19887,7 @@ useEffect(() => {
 	                ) : null}
 	              </>
 	            ) : null}
-	            {hasSupabaseEnabled && (
+	            {hasSupabaseEnabled && (authUser || isAuthButtonUnlocked) && (
 	              <button
 	                type="button"
 	                onClick={openAuthDialog}
@@ -19454,11 +19906,14 @@ useEffect(() => {
 	          </div>
         </div>
 
-        <div className="flex max-w-full items-center gap-4">
+        <div className="ml-[0.15rem] flex max-w-full items-center gap-4">
           <div className="-ml-2 shrink-0">
             {currentBeatEditorStripLeadingControls}
           </div>
-          <div className="min-w-0 max-w-full" style={{ paddingLeft: currentBeatEditorStripMainPaddingLeft }}>
+          <div
+            className={`min-w-0 max-w-full ${hasDesktopSidebarColumn ? "" : "-ml-[0.55rem]"}`}
+            style={{ paddingLeft: currentBeatEditorStripMainPaddingLeft }}
+          >
             {currentBeatEditorStripMainControls}
           </div>
         </div>
@@ -19548,7 +20003,7 @@ useEffect(() => {
                     : undefined
                 }
               >
-	              <div className="inline-block align-top pr-4">
+	              <div className="inline-block align-top pr-4 -ml-[0.9rem]">
                 <Grid
                 instruments={instruments}
                 grid={computedGrid}
@@ -19590,6 +20045,7 @@ useEffect(() => {
                 onDisableStickingEditMode={() => setStickingEditModeEnabled(false)}
                 bakeLoopPreview={bakeLoopPreview}
                 hoveredGridCellRef={hoveredGridCellRef}
+                labelGutterWidth={currentGridLabelGutterWidth}
       />
             </div>
             </div>
@@ -19597,7 +20053,7 @@ useEffect(() => {
         ) : (
           <>
 	            <div className="w-full overflow-visible">
-	              <div className="inline-block align-top pr-4">
+	              <div className="inline-block align-top pr-4 -ml-[0.9rem]">
                 <Grid
                 instruments={instruments}
                 grid={computedGrid}
@@ -19639,6 +20095,7 @@ useEffect(() => {
                 onDisableStickingEditMode={() => setStickingEditModeEnabled(false)}
                 bakeLoopPreview={bakeLoopPreview}
                 hoveredGridCellRef={hoveredGridCellRef}
+                labelGutterWidth={currentGridLabelGutterWidth}
               />
             </div>
             </div>
@@ -19697,10 +20154,7 @@ useEffect(() => {
                 <span className="text-neutral-700">·</span>
                 <button
                   type="button"
-                  onClick={() => {
-                    setLegalTab("impressum");
-                    setIsLegalDialogOpen(true);
-                  }}
+                  onClick={handleLegalButtonClick}
                   className="text-xs text-neutral-500 hover:text-neutral-300 underline underline-offset-2"
                   title="Legal information"
                 >
@@ -19751,10 +20205,7 @@ useEffect(() => {
                   <span className="text-neutral-700">·</span>
                   <button
                     type="button"
-                    onClick={() => {
-                      setLegalTab("impressum");
-                      setIsLegalDialogOpen(true);
-                    }}
+                    onClick={handleLegalButtonClick}
                     className="text-xs text-neutral-500 hover:text-neutral-300 underline underline-offset-2"
                     title="Legal information"
                   >
@@ -19788,9 +20239,6 @@ useEffect(() => {
       {feedbackPortalTarget &&
         createPortal(
           <div className="space-y-3">
-            <div className="text-center text-xs text-neutral-500">
-              Share ideas, bugs, and requests. Feedback is private by default and can be made public by admin.
-            </div>
             {!hasSupabaseEnabled ? (
               <div className="px-3 py-2 text-xs text-neutral-500">
                 Feedback is not configured yet.
@@ -19807,12 +20255,9 @@ useEffect(() => {
                     }}
                     rows={4}
                     maxLength={2000}
-                    placeholder="Share a bug, feature idea, or workflow request..."
+                    placeholder="Share ideas, bugs, and requests. Feedback is private by default and can be made public by admin."
                     className="w-full resize-y rounded bg-neutral-900/80 px-3 py-2 text-sm text-neutral-200 outline-none ring-0 placeholder:text-neutral-600 focus:outline-none focus:ring-0"
                   />
-                  <div className="mt-2 text-xs text-neutral-400">
-                    {authUser?.id ? "Posting as signed-in user" : "Posting anonymously"}
-                  </div>
                   <div className="mt-2 flex flex-wrap items-center justify-between gap-3">
                     <div className="flex min-w-0 flex-wrap items-center gap-2">
                       {["bug", "feature_idea"].map((typeId) => (
@@ -19867,7 +20312,7 @@ useEffect(() => {
                       onClick={() => setFeedbackSort(sortId)}
                       className={`rounded px-2 py-1 ${
                         feedbackSort === sortId
-                          ? "bg-neutral-900/70 text-neutral-300"
+                          ? "bg-neutral-900/70 text-neutral-400 hover:bg-neutral-800/60 hover:text-neutral-300"
                           : "bg-neutral-950/30 text-neutral-600 hover:bg-neutral-900/50 hover:text-neutral-400"
                       }`}
                     >
@@ -20812,7 +21257,7 @@ useEffect(() => {
                               </>
                             )}
                             <div className={selectedBeatLibraryContainerId !== "all" ? "pt-1" : ""}>
-                              {renderArrangementSourceFolderContents(currentBeatLibraryParentId, 0)}
+                              {renderArrangementSourceFolderContents(currentBeatLibraryParentId, 0, "floating")}
                             </div>
                             {currentBeatLibraryFolders.length === 0 &&
                               currentBeatLibraryBeats.length === 0 && (
@@ -22652,9 +23097,7 @@ useEffect(() => {
                   <div className="mt-1">
                     Short links need database storage. Long links always work without share storage, but they are much longer.
                   </div>
-                  <div className="mt-1">
-                    Temporary short links may be cleaned later if unused. Permanent short links are reserved for future paid storage.
-                  </div>
+                  <div className="mt-1">Temporary short links may be cleaned later if unused.</div>
                 </div>
 	              <div className="px-1 pb-2 text-sm text-neutral-300">Beat</div>
 	              <div className="grid grid-cols-1 gap-1.5">
@@ -22704,28 +23147,30 @@ useEffect(() => {
 	                    </button>
 	                  </div>
 	                </div>
-                  <div className="inline-flex w-fit rounded-lg border border-neutral-800 bg-neutral-900/60 p-0.5">
-                    <button
-                      type="button"
-                      onClick={() => setShareLinkRetention((prev) => ({ ...prev, beat: "temporary" }))}
-                      className={`rounded-md px-2 py-1 text-xs ${
-                        shareLinkRetention.beat === "temporary"
-                          ? "bg-neutral-800 text-white"
-                          : "text-neutral-400 hover:bg-neutral-800/40"
-                      }`}
-                      title="Temporary short link"
-                    >
-                      Temporary
-                    </button>
-                    <button
-                      type="button"
-                      disabled
-                      className="rounded-md px-2 py-1 text-xs text-neutral-600 cursor-not-allowed"
-                      title="Permanent short links are reserved for future paid storage."
-                    >
-                      Permanent
-                    </button>
-                  </div>
+                  {authUser?.id ? (
+                    <div className="inline-flex w-fit rounded-lg border border-neutral-800 bg-neutral-900/60 p-0.5">
+                      <button
+                        type="button"
+                        onClick={() => setShareLinkRetention((prev) => ({ ...prev, beat: "temporary" }))}
+                        className={`rounded-md px-2 py-1 text-xs ${
+                          shareLinkRetention.beat === "temporary"
+                            ? "bg-neutral-800 text-white"
+                            : "text-neutral-400 hover:bg-neutral-800/40"
+                        }`}
+                        title="Temporary short link"
+                      >
+                        Temporary
+                      </button>
+                      <button
+                        type="button"
+                        disabled
+                        className="rounded-md px-2 py-1 text-xs text-neutral-600 cursor-not-allowed"
+                        title="Permanent short links are reserved for future paid storage."
+                      >
+                        Permanent
+                      </button>
+                    </div>
+                  ) : null}
                 <button
                   type="button"
 	                  onClick={() => {
@@ -22813,28 +23258,30 @@ useEffect(() => {
 	                    </button>
 	                  </div>
 	                </div>
-                  <div className="inline-flex w-fit rounded-lg border border-neutral-800 bg-neutral-900/60 p-0.5">
-                    <button
-                      type="button"
-                      onClick={() => setShareLinkRetention((prev) => ({ ...prev, arrangement: "temporary" }))}
-                      className={`rounded-md px-2 py-1 text-xs ${
-                        shareLinkRetention.arrangement === "temporary"
-                          ? "bg-neutral-800 text-white"
-                          : "text-neutral-400 hover:bg-neutral-800/40"
-                      }`}
-                      title="Temporary short link"
-                    >
-                      Temporary
-                    </button>
-                    <button
-                      type="button"
-                      disabled
-                      className="rounded-md px-2 py-1 text-xs text-neutral-600 cursor-not-allowed"
-                      title="Permanent short links are reserved for future paid storage."
-                    >
-                      Permanent
-                    </button>
-                  </div>
+                  {authUser?.id ? (
+                    <div className="inline-flex w-fit rounded-lg border border-neutral-800 bg-neutral-900/60 p-0.5">
+                      <button
+                        type="button"
+                        onClick={() => setShareLinkRetention((prev) => ({ ...prev, arrangement: "temporary" }))}
+                        className={`rounded-md px-2 py-1 text-xs ${
+                          shareLinkRetention.arrangement === "temporary"
+                            ? "bg-neutral-800 text-white"
+                            : "text-neutral-400 hover:bg-neutral-800/40"
+                        }`}
+                        title="Temporary short link"
+                      >
+                        Temporary
+                      </button>
+                      <button
+                        type="button"
+                        disabled
+                        className="rounded-md px-2 py-1 text-xs text-neutral-600 cursor-not-allowed"
+                        title="Permanent short links are reserved for future paid storage."
+                      >
+                        Permanent
+                      </button>
+                    </div>
+                  ) : null}
                 <button
                   type="button"
                   onClick={() => {
@@ -22874,7 +23321,7 @@ useEffect(() => {
 	              <div className="my-3 border-t border-neutral-800" />
 	              <div className="px-1 pb-2 text-sm text-neutral-300">Import</div>
 	              <div className="grid grid-cols-1 gap-1.5">
-	                <button
+                <button
 	                  type="button"
 	                  onClick={() => {
 	                    setIsShareActionsDialogOpen(false);
@@ -22885,19 +23332,26 @@ useEffect(() => {
 	                >
 	                  MIDI
                 </button>
-                <button
-                  type="button"
-	                  onClick={reopenLastMidiImportMapping}
-	                  disabled={!lastMidiImportSession?.arrayBuffer}
-	                  className={`rounded-lg border px-3 py-2 text-left text-sm ${
-	                    lastMidiImportSession?.arrayBuffer
-	                      ? "border-neutral-800 bg-neutral-900/60 text-neutral-200 hover:bg-neutral-800/60"
-	                      : "border-neutral-800 text-neutral-500 bg-neutral-900/60 cursor-not-allowed"
-	                  }`}
-	                  title="Reopen mapping for the last imported MIDI file"
-                >
-                  Edit Last MIDI Mapping
-                </button>
+                {lastMidiImportSession?.arrayBuffer ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={reopenLastMidiImportSettings}
+                      className="rounded-lg border border-neutral-800 bg-neutral-900/60 px-3 py-2 text-left text-sm text-neutral-200 hover:bg-neutral-800/60"
+                      title="Reopen MIDI import settings"
+                    >
+                      Edit MIDI Import
+                    </button>
+                    <button
+                      type="button"
+                      onClick={reopenLastMidiImportMapping}
+                      className="rounded-lg border border-neutral-800 bg-neutral-900/60 px-3 py-2 text-left text-sm text-neutral-200 hover:bg-neutral-800/60"
+                      title="Reopen mapping for the last imported MIDI file"
+                    >
+                      Edit MIDI Mapping
+                    </button>
+                  </>
+                ) : null}
               </div>
             </div>,
             document.body
@@ -23749,12 +24203,9 @@ useEffect(() => {
                 <label className="text-sm text-neutral-300 flex flex-col gap-1">
                   <span>Import into</span>
                   <select
-                    value={pendingMidiTempoPrompt.arrangementImportMode || "new-arrangement"}
+                    value={normalizeMidiArrangementImportMode(pendingMidiTempoPrompt.arrangementImportMode)}
                     onChange={(e) => {
-                      const nextValue =
-                        e.target.value === "current-arrangement"
-                          ? "current-arrangement"
-                          : "new-arrangement";
+                      const nextValue = normalizeMidiArrangementImportMode(e.target.value);
                       setMidiArrangementImportMode(nextValue);
                       setPendingMidiTempoPrompt((prev) => (
                         prev ? { ...prev, arrangementImportMode: nextValue } : prev
@@ -23763,7 +24214,7 @@ useEffect(() => {
                     className="bg-neutral-800 border border-neutral-700 rounded px-2 py-1.5 text-sm text-white"
                   >
                     <option value="new-arrangement">New saved arrangement</option>
-                    <option value="current-arrangement">Current arrangement</option>
+                    <option value="override-current-arrangement">Override current arrangement</option>
                   </select>
                 </label>
                 <div className="flex items-center justify-between rounded border border-neutral-800 bg-neutral-950/40 px-3 py-2 text-sm">
@@ -24068,6 +24519,7 @@ useEffect(() => {
         legalTab={legalTab}
         onClose={() => setIsLegalDialogOpen(false)}
         onSetLegalTab={setLegalTab}
+        onImpressumPress={handleLegalButtonClick}
         showLegalEmail={showLegalEmail}
         onRevealEmail={() => setShowLegalEmail(true)}
       />
@@ -24108,6 +24560,10 @@ useEffect(() => {
         onDeleteShareLink={deleteProfileShareLink}
         lastSyncAt={authProfileLastSyncLabel}
         statsPending={profileStatsLoading || personalLibraryRefreshing}
+        shortLinksMonthUsed={Math.max(0, Number(usageLimits?.shortLinks?.counts?.month) || 0)}
+        shortLinksMonthLimit={Math.max(0, Number(usageLimits?.shortLinks?.limits?.month) || 60)}
+        cloudBeatLimit={Math.max(0, Number(usageLimits?.cloudLibrary?.limits?.beats) || 1000)}
+        cloudArrangementLimit={Math.max(0, Number(usageLimits?.cloudLibrary?.limits?.arrangements) || 100)}
       />
       {pendingPersonalCloudImport ? (
         (() => {
@@ -25509,8 +25965,12 @@ function Grid({
   grid, columns, bars, stepsPerBar, resolution, timeSig, quarterSubdivisionsByBar, normalizedTupletOverridesByBar, barStepOffsets, cycleTupletAt, gridBarsPerLine,
   cycleVelocity, toggleGhost, selection, setSelection, loopRule,
     loopRepeats,
-  setLoopRule, wrappedSelectionCells, playhead, moveSelectionByDelta, playabilityWarningsEnabled, playabilityWarningStepSet, stickingConflictStepSet, stickingGuideEnabled, showEditedSticking, notationStickingSelection, stickingAssignmentsByStep, stickingEditModeEnabled, notationStickingSelectionModeEnabled, stickingOverrides, onCycleStickingOverride, onToggleNotationStickingSelection, onDisableNotationStickingSelectionMode, onDisableStickingEditMode, bakeLoopPreview, hoveredGridCellRef
+  setLoopRule, wrappedSelectionCells, playhead, moveSelectionByDelta, playabilityWarningsEnabled, playabilityWarningStepSet, stickingConflictStepSet, stickingGuideEnabled, showEditedSticking, notationStickingSelection, stickingAssignmentsByStep, stickingEditModeEnabled, notationStickingSelectionModeEnabled, stickingOverrides, onCycleStickingOverride, onToggleNotationStickingSelection, onDisableNotationStickingSelectionMode, onDisableStickingEditMode, bakeLoopPreview, hoveredGridCellRef, labelGutterWidth = "calc(8ch + 0.75rem)"
 }) {
+  const gridContentOffsetStyle = React.useMemo(
+    () => ({ transform: "translateX(-0.6rem)" }),
+    []
+  );
   const notifySelectionFinalized = React.useCallback(() => {
     try {
       window.dispatchEvent(new CustomEvent("dg-selection-finalized"));
@@ -25943,8 +26403,8 @@ function Grid({
         }
 
         return (
-          <div key={`gridline-${lineIdx}`} className="grid gap-1" style={{ gridTemplateColumns: `auto repeat(${timeline.length}, 28px)` }}>
-            <div className="flex h-6 items-end justify-end pr-2" />
+          <div key={`gridline-${lineIdx}`} className="grid gap-1" style={{ gridTemplateColumns: `${labelGutterWidth} repeat(${timeline.length}, 28px)` }}>
+            <div className="flex h-6 items-end justify-end pr-0" style={{ width: labelGutterWidth }} />
             {timeline.map((t, i) => {
               if (t.type === "gap") return <div key={t.key} />;
               const label = labelFor(t.stepMeta || { quarterIndex: 0, subIndex: 0, subdiv: 1 });
@@ -25952,6 +26412,7 @@ function Grid({
                 <div
                   key={`h-${t.stepIndex}`}
                   className={`relative h-6 text-xs text-center text-neutral-400 select-none overflow-visible cursor-pointer hover:text-neutral-200 rounded-sm ${getQuarterBandClass(t.bar, t.stepMeta)}`}
+                  style={gridContentOffsetStyle}
                   onMouseDown={(e) => {
                     e.stopPropagation();
                     if (e.button !== 0) return;
@@ -25979,7 +26440,8 @@ function Grid({
             {instruments.map((inst) => (
               <React.Fragment key={`${inst.id}-${lineIdx}`}>
                 <div
-                  className="pr-2 text-xs text-right whitespace-nowrap select-none cursor-pointer hover:text-neutral-200"
+                  className="pr-0 text-xs text-right whitespace-nowrap select-none cursor-pointer hover:text-neutral-200"
+                  style={{ width: labelGutterWidth }}
                   onMouseDown={(e) => {
                     e.stopPropagation();
                     if (e.button !== 0) return;
@@ -25998,7 +26460,7 @@ function Grid({
                   {inst.label}
                 </div>
                 {timeline.map((t, i) => {
-                  if (t.type === "gap") return <div key={`g-${inst.id}-${lineIdx}-${i}`} />;
+                  if (t.type === "gap") return <div key={`g-${inst.id}-${lineIdx}-${i}`} style={gridContentOffsetStyle} />;
                   const val = grid[inst.id]?.[t.stepIndex] ?? CELL.OFF;
                   const quarterBandClass = getQuarterBandClass(t.bar, t.stepMeta);
                   const isUnplayableStep = !!playabilityWarningStepSet?.has(t.stepIndex);
@@ -26024,6 +26486,7 @@ function Grid({
                   return (
                     <div
                       key={`${inst.id}-${t.stepIndex}`}
+                      style={gridContentOffsetStyle}
                       data-gridcell="1"
                       data-row={instruments.findIndex((x) => x.id === inst.id)}
                       data-col={t.stepIndex}

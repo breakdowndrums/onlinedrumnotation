@@ -28,6 +28,10 @@ export default function AuthDialog({
   onDeleteShareLink = null,
   lastSyncAt = "",
   statsPending = false,
+  shortLinksMonthUsed = 0,
+  shortLinksMonthLimit = 60,
+  cloudBeatLimit = 1000,
+  cloudArrangementLimit = 100,
 }) {
   if (!isOpen) return null;
   const isSignedIn = Boolean(String(signedInEmail || "").trim());
@@ -121,6 +125,23 @@ export default function AuthDialog({
               {statsPending
                 ? "Temporary share links: loading…"
                 : `Temporary share links: ${temporaryShareCount} · Cleaned old unused links: ${cleanedShareCount}`}
+            </div>
+            <div className="mt-4 rounded-xl border border-neutral-800 bg-neutral-950/40 px-3.5 py-3">
+              <div className="text-[11px] uppercase tracking-[0.16em] text-neutral-500">Cloud quotas</div>
+              <div className="mt-2 grid grid-cols-1 gap-1.5 text-sm text-neutral-300">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-neutral-500">Short links this month</span>
+                  <span className="tabular-nums">{`${shortLinksMonthUsed} / ${shortLinksMonthLimit}`}</span>
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-neutral-500">Beats</span>
+                  <span className="tabular-nums">{`${beatsCount} / ${cloudBeatLimit}`}</span>
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-neutral-500">Arrangements</span>
+                  <span className="tabular-nums">{`${arrangementsCount} / ${cloudArrangementLimit}`}</span>
+                </div>
+              </div>
             </div>
             <div className="mt-3 flex justify-start">
               <button

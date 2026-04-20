@@ -5,6 +5,7 @@ export default function LegalDialog({
   legalTab,
   onClose,
   onSetLegalTab,
+  onImpressumPress,
   showLegalEmail,
   onRevealEmail,
 }) {
@@ -31,7 +32,10 @@ export default function LegalDialog({
         <div className="mt-3 flex items-center gap-2">
           <button
             type="button"
-            onClick={() => onSetLegalTab("impressum")}
+            onClick={() => {
+              onSetLegalTab("impressum");
+              onImpressumPress?.();
+            }}
             className={`px-2.5 py-1 rounded border text-sm ${
               legalTab === "impressum"
                 ? "border-neutral-600 bg-neutral-800 text-white"

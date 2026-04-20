@@ -3,8 +3,8 @@ import { getRequestUser, hasSupabaseAdmin, supabaseAdmin } from "./_supabaseAdmi
 const ANON_SHORT_LINK_DAY_LIMIT = 15;
 const ANON_SHORT_LINK_MONTH_LIMIT = 30;
 const SIGNED_IN_SHORT_LINK_MONTH_LIMIT = 60;
-const SIGNED_IN_BEAT_LIMIT = 500;
-const SIGNED_IN_ARRANGEMENT_LIMIT = 150;
+const SIGNED_IN_BEAT_LIMIT = 1000;
+const SIGNED_IN_ARRANGEMENT_LIMIT = 100;
 
 function getSinceIso(days) {
   return new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();

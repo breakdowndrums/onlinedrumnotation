@@ -834,7 +834,7 @@ const TEMPORARY_SHARE_LINK_CLEANUP_INTERVAL_MS = 1000 * 60 * 60 * 24;
 const BEAT_LIBRARY_SELECTED_CONTAINER_STORAGE_KEY = "drum-grid-beat-library-selected-container-v1";
 const BEAT_LIBRARY_ROOT_COLLAPSED_STORAGE_KEY = "drum-grid-beat-library-root-collapsed-v1";
 const GRID_SETTINGS_PRESET_LIBRARY_STORAGE_KEY = "drum-grid-grid-settings-presets-v1";
-const APP_VERSION = "0.1.370";
+const APP_VERSION = "0.1.372";
 const BEAT_CATEGORY_OPTIONS = [
   "Groove",
   "Fill",
@@ -1962,6 +1962,12 @@ function normalizePublishedBeatEntry(row) {
   const payload = row?.payload;
   if (!payload || payload.kind !== "beat-default" || !payload.beatPayload) return null;
   const beatPayload = payload.beatPayload;
+  const notationStickingSelection =
+    beatPayload?.notationStickingSelection && typeof beatPayload.notationStickingSelection === "object"
+      ? Object.fromEntries(
+          Object.entries(beatPayload.notationStickingSelection).filter(([, value]) => value === true)
+        )
+      : {};
   return {
     id: String(row.id || ""),
     name: String(payload.name || "").trim() || "Untitled Beat",
@@ -1972,6 +1978,7 @@ function normalizePublishedBeatEntry(row) {
     bpm: Math.max(20, Math.min(400, Number(beatPayload?.bpm) || 120)),
     createdAt: String(row.created_at || payload.createdAt || ""),
     payload: beatPayload,
+    notationStickingSelection,
     source: "public",
     publishedShareId: String(row.id || ""),
   };
@@ -1985,6 +1992,13 @@ function normalizePublishedArrangementEntry(row) {
         .map((beat, idx) => {
           const nextPayload = beat?.payload && typeof beat.payload === "object" ? beat.payload : null;
           if (!nextPayload) return null;
+          const notationStickingSelection =
+            nextPayload?.notationStickingSelection &&
+            typeof nextPayload.notationStickingSelection === "object"
+              ? Object.fromEntries(
+                  Object.entries(nextPayload.notationStickingSelection).filter(([, value]) => value === true)
+                )
+              : {};
           return {
             id: String(beat?.id || `shared-${idx + 1}`),
             name: String(beat?.name || `Beat ${idx + 1}`),
@@ -1998,6 +2012,7 @@ function normalizePublishedArrangementEntry(row) {
               ? Math.round(Number(beat.bpm))
               : Number(nextPayload.bpm) || 120,
             payload: nextPayload,
+            notationStickingSelection,
             source: "shared",
           };
         })
@@ -3582,9 +3597,9 @@ export default function App() {
   const [notationStickingView, setNotationStickingView] = useState(() => {
     try {
       const raw = window.localStorage.getItem(NOTATION_STICKING_VIEW_STORAGE_KEY);
-      return raw === "split-rows" ? "split-rows" : "stacked";
+      return raw === "split-rows" ? "split-rows" : "above";
     } catch (_) {
-      return "stacked";
+      return "above";
     }
   });
   const [notationStickingSelection, setNotationStickingSelection] = useState(() => {
@@ -25184,7 +25199,7 @@ useEffect(() => {
                       <button
                         type="button"
                         onClick={() =>
-                          setNotationStickingView((v) => (v === "stacked" ? "split-rows" : "stacked"))
+                          setNotationStickingView((v) => (v === "split-rows" ? "above" : "split-rows"))
                         }
                         className={`touch-none select-none px-3 py-[5px] rounded border text-sm ${
                           notationStickingView === "split-rows"

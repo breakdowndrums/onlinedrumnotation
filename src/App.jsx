@@ -834,7 +834,7 @@ const TEMPORARY_SHARE_LINK_CLEANUP_INTERVAL_MS = 1000 * 60 * 60 * 24;
 const BEAT_LIBRARY_SELECTED_CONTAINER_STORAGE_KEY = "drum-grid-beat-library-selected-container-v1";
 const BEAT_LIBRARY_ROOT_COLLAPSED_STORAGE_KEY = "drum-grid-beat-library-root-collapsed-v1";
 const GRID_SETTINGS_PRESET_LIBRARY_STORAGE_KEY = "drum-grid-grid-settings-presets-v1";
-const APP_VERSION = "0.1.376";
+const APP_VERSION = "0.1.377";
 const BEAT_CATEGORY_OPTIONS = [
   "Groove",
   "Fill",
@@ -1511,6 +1511,8 @@ function getComparableBeatPayload(payload) {
       payload?.layout === "notation-top"
         ? payload.layout
         : "grid-top",
+    showNotationSticking: payload?.showNotationSticking !== false,
+    notationStickingView: payload?.notationStickingView === "split-rows" ? "split-rows" : "above",
     tupletsByBar: nextTupletsByBar,
     grid: nextGrid,
     stickingHandedness: payload?.stickingHandedness === "left" ? "left" : "right",
@@ -14811,6 +14813,8 @@ useEffect(() => {
       stickingHandedness: stickingHandedness === "left" ? "left" : "right",
       stickingLeadHand: stickingLeadHand === "left" ? "left" : "right",
       stickingKeepQuarterLeadHand: stickingKeepQuarterLeadHand !== false,
+      showNotationSticking: showNotationSticking !== false,
+      notationStickingView: notationStickingView === "split-rows" ? "split-rows" : "above",
       ...(Object.keys(compactStickingOverrides).length > 0
         ? { stickingOverrides: compactStickingOverrides }
         : {}),
@@ -14831,6 +14835,8 @@ useEffect(() => {
     stickingHandedness,
     stickingLeadHand,
     stickingKeepQuarterLeadHand,
+    showNotationSticking,
+    notationStickingView,
     stickingOverrides,
     notationStickingSelection,
   ]);
@@ -15063,6 +15069,12 @@ useEffect(() => {
       }
       if (typeof payload.stickingKeepQuarterLeadHand === "boolean") {
         setStickingKeepQuarterLeadHand(payload.stickingKeepQuarterLeadHand);
+      }
+      if (typeof payload.showNotationSticking === "boolean") {
+        setShowNotationSticking(payload.showNotationSticking);
+      }
+      if (payload.notationStickingView === "split-rows" || payload.notationStickingView === "above") {
+        setNotationStickingView(payload.notationStickingView);
       }
 
       const nextLayout = payload.layout;

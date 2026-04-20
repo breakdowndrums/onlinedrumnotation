@@ -96,6 +96,8 @@ function buildCanonicalBeatPayload(payload) {
       payload.layout === "notation-top"
         ? payload.layout
         : "grid-top",
+    showNotationSticking: payload.showNotationSticking !== false,
+    notationStickingView: payload.notationStickingView === "split-rows" ? "split-rows" : "above",
     tupletsByBar,
     grid,
     stickingHandedness: payload.stickingHandedness === "left" ? "left" : "right",

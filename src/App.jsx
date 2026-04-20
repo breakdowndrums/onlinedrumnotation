@@ -834,7 +834,7 @@ const TEMPORARY_SHARE_LINK_CLEANUP_INTERVAL_MS = 1000 * 60 * 60 * 24;
 const BEAT_LIBRARY_SELECTED_CONTAINER_STORAGE_KEY = "drum-grid-beat-library-selected-container-v1";
 const BEAT_LIBRARY_ROOT_COLLAPSED_STORAGE_KEY = "drum-grid-beat-library-root-collapsed-v1";
 const GRID_SETTINGS_PRESET_LIBRARY_STORAGE_KEY = "drum-grid-grid-settings-presets-v1";
-const APP_VERSION = "0.1.372";
+const APP_VERSION = "0.1.375";
 const BEAT_CATEGORY_OPTIONS = [
   "Groove",
   "Fill",
@@ -1484,6 +1484,17 @@ function getComparableBeatPayload(payload) {
           Object.entries(payload.notationStickingSelection).filter(([, value]) => value === true)
         )
       : {};
+  const nextStickingOverrides =
+    payload?.stickingOverrides && typeof payload.stickingOverrides === "object"
+      ? Object.fromEntries(
+          Object.entries(payload.stickingOverrides).filter(
+            ([key, value]) =>
+              typeof key === "string" &&
+              key.includes(":") &&
+              (value === "L" || value === "R")
+          )
+        )
+      : {};
   const next = {
     v: Number(payload?.v) || 1,
     kitInstrumentIds:
@@ -1502,6 +1513,12 @@ function getComparableBeatPayload(payload) {
         : "grid-top",
     tupletsByBar: nextTupletsByBar,
     grid: nextGrid,
+    stickingHandedness: payload?.stickingHandedness === "left" ? "left" : "right",
+    stickingLeadHand: payload?.stickingLeadHand === "left" ? "left" : "right",
+    stickingKeepQuarterLeadHand: payload?.stickingKeepQuarterLeadHand !== false,
+    ...(Object.keys(nextStickingOverrides).length > 0
+      ? { stickingOverrides: nextStickingOverrides }
+      : {}),
     ...(Object.keys(nextNotationStickingSelection).length > 0
       ? { notationStickingSelection: nextNotationStickingSelection }
       : {}),
@@ -8943,6 +8960,7 @@ useEffect(() => {
       unifiedPastRef.current = [];
       unifiedFutureRef.current = [];
       setBaseGrid(nextGrid);
+      setStickingOverrides(shared.stickingOverrides || {});
       setNotationStickingSelection(shared.notationStickingSelection || {});
       syncHistoryState();
       syncUnifiedHistoryState();
@@ -14772,6 +14790,14 @@ useEffect(() => {
     const compactNotationStickingSelection = Object.fromEntries(
       Object.entries(notationStickingSelection || {}).filter(([, value]) => value === true)
     );
+    const compactStickingOverrides = Object.fromEntries(
+      Object.entries(stickingOverrides || {}).filter(
+        ([key, value]) =>
+          typeof key === "string" &&
+          key.includes(":") &&
+          (value === "L" || value === "R")
+      )
+    );
     return {
       v: 1,
       kitInstrumentIds,
@@ -14782,6 +14808,12 @@ useEffect(() => {
       layout,
       tupletsByBar: normalizedTupletOverridesByBar,
       grid,
+      stickingHandedness: stickingHandedness === "left" ? "left" : "right",
+      stickingLeadHand: stickingLeadHand === "left" ? "left" : "right",
+      stickingKeepQuarterLeadHand: stickingKeepQuarterLeadHand !== false,
+      ...(Object.keys(compactStickingOverrides).length > 0
+        ? { stickingOverrides: compactStickingOverrides }
+        : {}),
       ...(Object.keys(compactNotationStickingSelection).length > 0
         ? { notationStickingSelection: compactNotationStickingSelection }
         : {}),
@@ -14796,6 +14828,10 @@ useEffect(() => {
     bpm,
     layout,
     normalizedTupletOverridesByBar,
+    stickingHandedness,
+    stickingLeadHand,
+    stickingKeepQuarterLeadHand,
+    stickingOverrides,
     notationStickingSelection,
   ]);
   const loadedLocalBeat = React.useMemo(
@@ -14982,6 +15018,17 @@ useEffect(() => {
         ? [...new Set(payload.kitInstrumentIds.filter((id) => INSTRUMENT_BY_ID[id]))]
         : [];
       if (!nextKitIds.length) nextKitIds.push(...DRUMKIT_PRESETS.standard);
+      const nextStickingOverrides =
+        payload?.stickingOverrides && typeof payload.stickingOverrides === "object"
+          ? Object.fromEntries(
+              Object.entries(payload.stickingOverrides).filter(
+                ([key, value]) =>
+                  typeof key === "string" &&
+                  key.includes(":") &&
+                  (value === "L" || value === "R")
+              )
+            )
+          : {};
 
       pendingSharedLoadRef.current = {
         bars: nextBars,
@@ -14989,6 +15036,7 @@ useEffect(() => {
         timeSig: nextTimeSig,
         tupletsByBar,
         grid: payload.grid && typeof payload.grid === "object" ? payload.grid : {},
+        stickingOverrides: nextStickingOverrides,
         notationStickingSelection:
           payload.notationStickingSelection && typeof payload.notationStickingSelection === "object"
             ? Object.fromEntries(
@@ -15006,6 +15054,16 @@ useEffect(() => {
             )
           : {}
       );
+      setStickingOverrides(nextStickingOverrides);
+      if (payload.stickingHandedness === "left" || payload.stickingHandedness === "right") {
+        setStickingHandedness(payload.stickingHandedness);
+      }
+      if (payload.stickingLeadHand === "left" || payload.stickingLeadHand === "right") {
+        setStickingLeadHand(payload.stickingLeadHand);
+      }
+      if (typeof payload.stickingKeepQuarterLeadHand === "boolean") {
+        setStickingKeepQuarterLeadHand(payload.stickingKeepQuarterLeadHand);
+      }
 
       const nextLayout = payload.layout;
       const layoutOptions = ["grid-top", "notation-top", "grid-right", "notation-right"];
@@ -23125,17 +23183,6 @@ useEffect(() => {
 	              onMouseDown={(e) => e.stopPropagation()}
 	            >
                 <div className="mb-3 rounded-lg border border-neutral-800 bg-neutral-900/40 px-3 py-2 text-xs text-neutral-500">
-                  {usageLimitsLoading ? (
-                    <div>Loading short-link limits…</div>
-                  ) : usageLimitsError ? (
-                    <div>{usageLimitsError}</div>
-                  ) : usageLimits?.shortLinks ? (
-                    usageLimits.isSignedIn ? (
-                      <div>{`Short links this month: ${usageLimits.shortLinks.counts?.month || 0} / ${usageLimits.shortLinks.limits?.month || 60}`}</div>
-                    ) : (
-                      <div>{`Short links today: ${usageLimits.shortLinks.counts?.day || 0} / ${usageLimits.shortLinks.limits?.day || 15} · month: ${usageLimits.shortLinks.counts?.month || 0} / ${usageLimits.shortLinks.limits?.month || 30}`}</div>
-                    )
-                  ) : null}
                   <div className="mt-1">
                     Short links need database storage. Long links always work without share storage, but they are much longer.
                   </div>
@@ -23171,7 +23218,17 @@ useEffect(() => {
 	                          ? "bg-neutral-800 text-white"
 	                          : "text-neutral-400 hover:bg-neutral-800/40"
 	                      }`}
-	                      title="Short share link"
+	                      title={
+	                        usageLimitsLoading
+	                          ? "Short share link. Loading short-link limits…"
+	                          : usageLimitsError
+	                            ? `Short share link. ${usageLimitsError}`
+	                            : usageLimits?.shortLinks
+	                              ? usageLimits.isSignedIn
+	                                ? `Short share link. Short links this month: ${usageLimits.shortLinks.counts?.month || 0} / ${usageLimits.shortLinks.limits?.month || 60}`
+	                                : `Short share link. Short links today: ${usageLimits.shortLinks.counts?.day || 0} / ${usageLimits.shortLinks.limits?.day || 15} · month: ${usageLimits.shortLinks.counts?.month || 0} / ${usageLimits.shortLinks.limits?.month || 50}`
+	                              : "Short share link"
+	                      }
 	                    >
 	                      Short
 	                    </button>

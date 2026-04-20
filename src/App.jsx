@@ -834,7 +834,7 @@ const TEMPORARY_SHARE_LINK_CLEANUP_INTERVAL_MS = 1000 * 60 * 60 * 24;
 const BEAT_LIBRARY_SELECTED_CONTAINER_STORAGE_KEY = "drum-grid-beat-library-selected-container-v1";
 const BEAT_LIBRARY_ROOT_COLLAPSED_STORAGE_KEY = "drum-grid-beat-library-root-collapsed-v1";
 const GRID_SETTINGS_PRESET_LIBRARY_STORAGE_KEY = "drum-grid-grid-settings-presets-v1";
-const APP_VERSION = "0.1.364";
+const APP_VERSION = "0.1.370";
 const BEAT_CATEGORY_OPTIONS = [
   "Groove",
   "Fill",
@@ -15717,6 +15717,19 @@ useEffect(() => {
       setKeepBeatLibrarySidebarOpen(false);
     }
   }, [isArrangementOpen]);
+  const closeFloatingArrangementWindow = React.useCallback(() => {
+    setLibraryFiltersOpen(false);
+    setArrangementLibraryMenuOpen(false);
+    if (beatLibraryDockedInSidebar) {
+      setKeepBeatLibrarySidebarOpen(true);
+      setArrangementSourcesCollapsed(false);
+      setArrangementDetailsCollapsed(true);
+      setArrangementSourceTab("local");
+      setIsArrangementOpen(true);
+      return;
+    }
+    setIsArrangementOpen(false);
+  }, [beatLibraryDockedInSidebar]);
   const settingsToolbarButton = (
           <div className="relative flex items-center gap-2">
             <button
@@ -16374,7 +16387,7 @@ useEffect(() => {
         type="button"
         onClick={toggleBeatLibraryPanel}
         className={`inline-flex h-7 w-7 items-center justify-center rounded text-sm transition-colors ${
-          isBeatLibraryPanelActive
+          isBeatLibraryPanelActive || beatLibraryDockedInSidebar
             ? "bg-neutral-900/70 text-neutral-200"
             : "text-neutral-500 hover:bg-neutral-900/70 hover:text-neutral-200"
         }`}
@@ -18123,7 +18136,13 @@ useEffect(() => {
                   text={entry.name}
                   prefixLength={3}
                   minTailLength={3}
-                  widthSafetyPx={variant === "docked" ? 6 : 12}
+                  widthSafetyPx={
+                    variant === "docked"
+                      ? depth > 0
+                        ? 6
+                        : 10
+                      : 12
+                  }
                   className="block w-full min-w-0 overflow-hidden pr-1 text-clip whitespace-nowrap"
                 />
               </button>
@@ -19776,6 +19795,10 @@ useEffect(() => {
               onClick={(e) => {
                 setActiveTab("none");
                 if (beatLibraryDockedInSidebar) {
+                  if (!hideFloatingArrangementWindow) {
+                    closeFloatingArrangementWindow();
+                    return;
+                  }
                   setKeepBeatLibrarySidebarOpen(true);
                   setArrangementSourcesCollapsed(true);
                   setArrangementDetailsCollapsed(false);
@@ -20304,7 +20327,7 @@ useEffect(() => {
                   ) : null}
                 </div>
 
-                <div className="flex flex-wrap items-center gap-2 text-xs">
+                <div className="flex flex-wrap items-center gap-2 pl-3 text-xs">
                   {["newest", "top"].map((sortId) => (
                     <button
                       key={`feedback-sort-${sortId}`}
@@ -21209,10 +21232,14 @@ useEffect(() => {
                       type="button"
                       onClick={() => {
                         if (!arrangementDetailsCollapsed) {
+                          if (beatLibraryDockedInSidebar) {
+                            closeFloatingArrangementWindow();
+                            return;
+                          }
                           setArrangementSourcesCollapsed(true);
                           return;
                         }
-                        setIsArrangementOpen(false);
+                        closeFloatingArrangementWindow();
                       }}
                       className="inline-flex h-[1.625rem] w-[1.625rem] items-center justify-center rounded border border-neutral-800 bg-neutral-900/60 text-xs leading-none text-neutral-400 hover:bg-neutral-800/60"
                       title={!arrangementDetailsCollapsed ? "Close beats" : "Close library"}
@@ -21825,7 +21852,7 @@ useEffect(() => {
                     </div>
                     <button
                       type="button"
-                      onClick={() => setIsArrangementOpen(false)}
+                      onClick={closeFloatingArrangementWindow}
                       className="inline-flex h-[1.625rem] w-[1.625rem] items-center justify-center rounded border border-neutral-800 bg-neutral-900/60 text-xs leading-none text-neutral-400 hover:bg-neutral-800/60"
                       title="Close library"
                       aria-label="Close library"

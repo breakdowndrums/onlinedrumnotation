@@ -834,7 +834,7 @@ const TEMPORARY_SHARE_LINK_CLEANUP_INTERVAL_MS = 1000 * 60 * 60 * 24;
 const BEAT_LIBRARY_SELECTED_CONTAINER_STORAGE_KEY = "drum-grid-beat-library-selected-container-v1";
 const BEAT_LIBRARY_ROOT_COLLAPSED_STORAGE_KEY = "drum-grid-beat-library-root-collapsed-v1";
 const GRID_SETTINGS_PRESET_LIBRARY_STORAGE_KEY = "drum-grid-grid-settings-presets-v1";
-const APP_VERSION = "0.1.377";
+const APP_VERSION = "0.1.378";
 const BEAT_CATEGORY_OPTIONS = [
   "Groove",
   "Fill",
@@ -1497,6 +1497,10 @@ function getComparableBeatPayload(payload) {
       : {};
   const next = {
     v: Number(payload?.v) || 1,
+    name: String(payload?.name || "").trim(),
+    composer: String(payload?.composer || "").trim(),
+    category: String(payload?.category || "").trim(),
+    style: String(payload?.style || "").trim(),
     kitInstrumentIds:
       Array.isArray(payload?.kitInstrumentIds) && payload.kitInstrumentIds.length
         ? [...new Set(payload.kitInstrumentIds.filter((id) => INSTRUMENT_BY_ID[id]))]
@@ -14802,6 +14806,10 @@ useEffect(() => {
     );
     return {
       v: 1,
+      name: String(beatNameDraft || "").trim(),
+      composer: String(printComposer || "").trim(),
+      category: String(beatCategoryDraft || "").trim(),
+      style: String(beatStyleDraft || "").trim(),
       kitInstrumentIds,
       bars,
       resolution,
@@ -14825,6 +14833,10 @@ useEffect(() => {
   }, [
     baseGrid,
     columns,
+    beatNameDraft,
+    printComposer,
+    beatCategoryDraft,
+    beatStyleDraft,
     kitInstrumentIds,
     bars,
     resolution,
@@ -15080,6 +15092,16 @@ useEffect(() => {
       const nextLayout = payload.layout;
       const layoutOptions = ["grid-top", "notation-top", "grid-right", "notation-right"];
       if (layoutOptions.includes(nextLayout)) setLayout(nextLayout);
+      setBeatNameDraft(String(payload?.name || ""));
+      if (typeof payload?.composer === "string") {
+        setPrintComposer(payload.composer);
+      }
+      if (typeof payload?.category === "string") {
+        setBeatCategoryDraft(payload.category);
+      }
+      if (typeof payload?.style === "string") {
+        setBeatStyleDraft(payload.style);
+      }
       const nextBpm = Number(payload.bpm);
       if (Number.isFinite(nextBpm)) {
         const clampedBpm = Math.max(20, Math.min(400, Math.round(nextBpm)));

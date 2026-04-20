@@ -83,6 +83,10 @@ function buildCanonicalBeatPayload(payload) {
       : undefined;
   const next = {
     v: Number(payload.v) || 1,
+    name: String(payload.name || "").trim(),
+    composer: String(payload.composer || "").trim(),
+    category: String(payload.category || "").trim(),
+    style: String(payload.style || "").trim(),
     kitInstrumentIds: Array.isArray(payload.kitInstrumentIds)
       ? [...new Set(payload.kitInstrumentIds.map((id) => String(id || "")).filter(Boolean))]
       : [],

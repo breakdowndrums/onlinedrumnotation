@@ -68,6 +68,19 @@ function buildCanonicalBeatPayload(payload) {
             .sort(([a], [b]) => a.localeCompare(b))
         )
       : undefined;
+  const stickingOverrides =
+    isPlainObjectRecord(payload.stickingOverrides)
+      ? Object.fromEntries(
+          Object.entries(payload.stickingOverrides)
+            .filter(
+              ([key, value]) =>
+                typeof key === "string" &&
+                key.includes(":") &&
+                (value === "L" || value === "R")
+            )
+            .sort(([a], [b]) => a.localeCompare(b))
+        )
+      : undefined;
   const next = {
     v: Number(payload.v) || 1,
     kitInstrumentIds: Array.isArray(payload.kitInstrumentIds)
@@ -85,9 +98,15 @@ function buildCanonicalBeatPayload(payload) {
         : "grid-top",
     tupletsByBar,
     grid,
+    stickingHandedness: payload.stickingHandedness === "left" ? "left" : "right",
+    stickingLeadHand: payload.stickingLeadHand === "left" ? "left" : "right",
+    stickingKeepQuarterLeadHand: payload.stickingKeepQuarterLeadHand !== false,
   };
   if (notationStickingSelection && Object.keys(notationStickingSelection).length) {
     next.notationStickingSelection = notationStickingSelection;
+  }
+  if (stickingOverrides && Object.keys(stickingOverrides).length) {
+    next.stickingOverrides = stickingOverrides;
   }
   return next;
 }

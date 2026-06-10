@@ -12,15 +12,44 @@ function getSinceForRange(range) {
   return "";
 }
 
-async function countEvents({ eventType, shareKind = "", since = "", distinct = false }) {
+function isMissingStatsExclusionColumn(error) {
+  const message = String(error?.message || "").toLowerCase();
+  return message.includes("exclude_from_stats") && message.includes("column");
+}
+
+function buildEventsQuery({ eventType, shareKind = "", since = "", distinct = false, includeStatsFilter = true }) {
   let query = supabaseAdmin
     .from("app_events")
-    .select(distinct ? "visitor_id,user_id" : "id", { count: "exact", head: !distinct })
-    .eq("exclude_from_stats", false);
+    .select(distinct ? "visitor_id,user_id" : "id", { count: "exact", head: !distinct });
+  if (includeStatsFilter) query = query.eq("exclude_from_stats", false);
   query = query.eq("event_type", eventType);
   if (shareKind) query = query.eq("share_kind", shareKind);
   if (since) query = query.gte("created_at", since);
-  const { data, count, error } = await query;
+  return query;
+}
+
+async function countEvents({ eventType, shareKind = "", since = "", distinct = false, warnings = null }) {
+  let { data, count, error } = await buildEventsQuery({
+    eventType,
+    shareKind,
+    since,
+    distinct,
+    includeStatsFilter: true,
+  });
+  if (isMissingStatsExclusionColumn(error)) {
+    if (warnings && !warnings.includes("Stats exclusion column is missing; admin/self usage cannot be filtered until supabase-admin-stats-schema.sql is applied.")) {
+      warnings.push(
+        "Stats exclusion column is missing; admin/self usage cannot be filtered until supabase-admin-stats-schema.sql is applied."
+      );
+    }
+    ({ data, count, error } = await buildEventsQuery({
+      eventType,
+      shareKind,
+      since,
+      distinct,
+      includeStatsFilter: false,
+    }));
+  }
   if (error) throw error;
   if (!distinct) return Math.max(0, Number(count) || 0);
   const rows = Array.isArray(data) ? data : [];
@@ -91,33 +120,33 @@ export default async function handler(req, res) {
     const warnings = [];
     const users = await safeMetric(
       "Users",
-      () => countEvents({ eventType: "site_visit", since, distinct: true }),
+      () => countEvents({ eventType: "site_visit", since, distinct: true, warnings }),
       warnings
     );
     const signedUpUsers = await safeMetric("Signed up users", () => countAuthUsers(since), warnings);
     const siteVisits = await safeMetric(
       "Site visits",
-      () => countEvents({ eventType: "site_visit", since }),
+      () => countEvents({ eventType: "site_visit", since, warnings }),
       warnings
     );
     const beatShareCreates = await safeMetric(
       "Beat share links created",
-      () => countEvents({ eventType: "share_create", shareKind: "beat", since }),
+      () => countEvents({ eventType: "share_create", shareKind: "beat", since, warnings }),
       warnings
     );
     const arrangementShareCreates = await safeMetric(
       "Arrangement share links created",
-      () => countEvents({ eventType: "share_create", shareKind: "arrangement", since }),
+      () => countEvents({ eventType: "share_create", shareKind: "arrangement", since, warnings }),
       warnings
     );
     const beatShareOpens = await safeMetric(
       "Beat opens via link / QR",
-      () => countEvents({ eventType: "share_open", shareKind: "beat", since }),
+      () => countEvents({ eventType: "share_open", shareKind: "beat", since, warnings }),
       warnings
     );
     const arrangementShareOpens = await safeMetric(
       "Arrangement opens via link / QR",
-      () => countEvents({ eventType: "share_open", shareKind: "arrangement", since }),
+      () => countEvents({ eventType: "share_open", shareKind: "arrangement", since, warnings }),
       warnings
     );
 

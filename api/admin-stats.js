@@ -1,4 +1,4 @@
-import { getRequestUser, hasSupabaseAdmin, supabaseAdmin } from "./_supabaseAdmin.js";
+import { getRequestUser, hasSupabaseAdmin, isAdminEmail, supabaseAdmin } from "./_supabaseAdmin.js";
 
 function readRange(value) {
   const normalized = String(value || "").trim().toLowerCase();
@@ -15,7 +15,8 @@ function getSinceForRange(range) {
 async function countEvents({ eventType, shareKind = "", since = "", distinct = false }) {
   let query = supabaseAdmin
     .from("app_events")
-    .select(distinct ? "visitor_id,user_id" : "id", { count: "exact", head: !distinct });
+    .select(distinct ? "visitor_id,user_id" : "id", { count: "exact", head: !distinct })
+    .eq("exclude_from_stats", false);
   query = query.eq("event_type", eventType);
   if (shareKind) query = query.eq("share_kind", shareKind);
   if (since) query = query.gte("created_at", since);
@@ -42,12 +43,13 @@ async function countAuthUsers(since = "") {
     });
     if (error) throw error;
     const users = Array.isArray(data?.users) ? data.users : [];
+    const visibleUsers = users.filter((user) => !isAdminEmail(user?.email));
     total += since
-      ? users.filter((user) => {
+      ? visibleUsers.filter((user) => {
           const createdAt = String(user?.created_at || "").trim();
           return createdAt && createdAt >= since;
         }).length
-      : users.length;
+      : visibleUsers.length;
     if (users.length < perPage) break;
     page += 1;
   }

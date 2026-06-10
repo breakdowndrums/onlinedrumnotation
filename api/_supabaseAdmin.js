@@ -16,6 +16,11 @@ export const supabaseAdmin = hasSupabaseAdmin
     })
   : null;
 
+export function isAdminEmail(email) {
+  const normalizedEmail = String(email || "").trim().toLowerCase();
+  return Boolean(adminEmail && normalizedEmail === adminEmail);
+}
+
 export async function getRequestUser(req) {
   if (!hasSupabaseAdmin || !supabaseAdmin) return { user: null, isAdmin: false };
   const authHeader = String(req.headers.authorization || req.headers.Authorization || "").trim();
@@ -29,7 +34,7 @@ export async function getRequestUser(req) {
     const email = String(user.email || "").trim().toLowerCase();
     return {
       user,
-      isAdmin: Boolean(user.id && adminEmail && email === adminEmail),
+      isAdmin: Boolean(user.id && isAdminEmail(email)),
     };
   } catch (_) {
     return { user: null, isAdmin: false };

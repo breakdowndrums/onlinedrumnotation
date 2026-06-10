@@ -8,14 +8,21 @@ create table if not exists public.app_events (
   visitor_id text not null,
   user_id uuid null references auth.users(id) on delete set null,
   path text null,
+  exclude_from_stats boolean not null default false,
   meta jsonb not null default '{}'::jsonb
 );
+
+alter table public.app_events
+  add column if not exists exclude_from_stats boolean not null default false;
 
 create index if not exists app_events_created_at_idx on public.app_events (created_at desc);
 create index if not exists app_events_event_type_created_at_idx on public.app_events (event_type, created_at desc);
 create index if not exists app_events_share_kind_created_at_idx on public.app_events (share_kind, created_at desc);
 create index if not exists app_events_visitor_id_idx on public.app_events (visitor_id);
 create index if not exists app_events_user_id_idx on public.app_events (user_id);
+create index if not exists app_events_stats_visible_event_created_idx
+  on public.app_events (event_type, created_at desc)
+  where exclude_from_stats = false;
 
 grant usage on schema public to service_role;
 grant all privileges on table public.app_events to service_role;

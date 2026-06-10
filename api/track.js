@@ -2,6 +2,17 @@ import { getRequestUser, hasSupabaseAdmin, supabaseAdmin } from "./_supabaseAdmi
 
 const ALLOWED_EVENT_TYPES = new Set(["site_visit", "share_open", "share_create"]);
 const ALLOWED_SHARE_KINDS = new Set(["", "beat", "arrangement"]);
+const adminVisitorIds = new Set(
+  String(process.env.ADMIN_VISITOR_IDS || process.env.VITE_ADMIN_VISITOR_IDS || "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+);
+
+function isMissingStatsExclusionColumn(error) {
+  const message = String(error?.message || "").toLowerCase();
+  return message.includes("exclude_from_stats") && message.includes("column");
+}
 
 async function readJsonBody(req) {
   if (req.body && typeof req.body === "object") return req.body;
@@ -46,14 +57,25 @@ export default async function handler(req, res) {
     if (!visitorId) {
       return res.status(400).json({ error: "Missing visitor id" });
     }
-    const { user } = await getRequestUser(req);
-    const { error } = await supabaseAdmin.from("app_events").insert({
+    const { user, isAdmin } = await getRequestUser(req);
+    const excludeFromStats = Boolean(isAdmin || adminVisitorIds.has(visitorId));
+    const row = {
       event_type: eventType,
       share_kind: shareKind || null,
       visitor_id: visitorId,
       user_id: user?.id || null,
       path: path || null,
-    });
+      exclude_from_stats: excludeFromStats,
+    };
+    const { error } = await supabaseAdmin.from("app_events").insert(row);
+    if (isMissingStatsExclusionColumn(error)) {
+      const { exclude_from_stats: _excludeFromStats, ...legacyRow } = row;
+      const { error: legacyError } = await supabaseAdmin.from("app_events").insert(legacyRow);
+      if (legacyError) {
+        return res.status(500).json({ error: legacyError.message || "Failed to track event." });
+      }
+      return res.status(200).json({ ok: true, statsExclusionSkipped: true });
+    }
     if (error) return res.status(500).json({ error: error.message || "Failed to track event." });
     return res.status(200).json({ ok: true });
   } catch (error) {

@@ -3489,6 +3489,7 @@ export default function App() {
   const [isNotationStickingMenuOpen, setIsNotationStickingMenuOpen] = useState(false);
   const [isLoopAdvancedMenuOpen, setIsLoopAdvancedMenuOpen] = useState(false);
   const [isSidebarSettingsMenuOpen, setIsSidebarSettingsMenuOpen] = useState(false);
+  const [sidebarChevronHint, setSidebarChevronHint] = useState(null);
   const [legalTab, setLegalTab] = useState("impressum"); // impressum | privacy
   const [showLegalEmail, setShowLegalEmail] = useState(false);
   const [feedbackItems, setFeedbackItems] = useState([]);
@@ -3515,6 +3516,25 @@ export default function App() {
     beatShareOpens: 0,
     arrangementShareOpens: 0,
   });
+  const markSidebarChevronHint = React.useCallback((section) => {
+    setSidebarChevronHint(section);
+  }, []);
+  const clearSidebarChevronHint = React.useCallback(() => {
+    setSidebarChevronHint(null);
+  }, []);
+  const handleSidebarChevronAreaPointerDown = React.useCallback((event) => {
+    if (event.target?.closest?.("[data-sidebar-chevron-control]")) return;
+    setSidebarChevronHint(null);
+  }, []);
+  useEffect(() => {
+    if (!sidebarChevronHint) return undefined;
+    const handlePointerDown = (event) => {
+      if (event.target?.closest?.("[data-sidebar-chevron-area]")) return;
+      setSidebarChevronHint(null);
+    };
+    window.addEventListener("pointerdown", handlePointerDown, true);
+    return () => window.removeEventListener("pointerdown", handlePointerDown, true);
+  }, [sidebarChevronHint]);
   useEffect(() => {
     const onViewportChange = () => {
       setViewportSize({
@@ -11815,15 +11835,16 @@ useEffect(() => {
     setArrangementComposerDraft(nextEntry.composer);
     setLoadedArrangementId(nextId);
   }, [authUser?.id, arrangementItems, arrangementTitleLine1Draft, arrangementTitleLine2Draft, arrangementComposerDraft, savedArrangements, loadedArrangementId, pushLocalBeatHistory, ensureCloudArrangementQuotaAvailable, refreshUsageLimits]);
-  const createNewArrangement = React.useCallback(async () => {
-    const now = new Date().toISOString();
-    const nextId = `arrlib-${Math.random().toString(36).slice(2, 10)}`;
-    const defaultName = getNextNumberedArrangementName("Arrangement", savedArrangements);
-    const nextEntry = {
-      id: nextId,
-      name: defaultName,
-      titleLine1: defaultName,
-      titleLine2: "",
+	  const createNewArrangement = React.useCallback(async () => {
+	    const now = new Date().toISOString();
+	    const nextId = `arrlib-${Math.random().toString(36).slice(2, 10)}`;
+	    const defaultName = getNextNumberedArrangementName("Arrangement", savedArrangements);
+	    const defaultTitleLine1 = "Untitled";
+	    const nextEntry = {
+	      id: nextId,
+	      name: defaultName,
+	      titleLine1: defaultTitleLine1,
+	      titleLine2: "",
       composer: "",
       createdAt: now,
       updatedAt: now,
@@ -11841,10 +11862,10 @@ useEffect(() => {
         data = await insertCloudArrangementRow({
           supabase,
           row: {
-            user_id: authUser.id,
-            name: nextEntry.name,
-            title_line_1: nextEntry.titleLine1,
-            title_line_2: "",
+	            user_id: authUser.id,
+	            name: nextEntry.name,
+	            title_line_1: defaultTitleLine1,
+	            title_line_2: "",
             author: "",
             rows: [],
             settings: {},
@@ -16651,7 +16672,11 @@ useEffect(() => {
     isArrangementOpen,
   ]);
   const renderStickingDisplayControl = () => (
-    <div className="flex w-fit items-stretch overflow-hidden rounded-md border border-neutral-800 bg-neutral-900/60">
+    <div
+      data-sidebar-chevron-control="sticking"
+      onPointerDown={() => markSidebarChevronHint("sticking")}
+      className="flex w-fit items-stretch overflow-hidden rounded-md border border-neutral-800 bg-neutral-900/60"
+    >
       <button
         type="button"
         onClick={() => setNotationStickingView("above")}
@@ -16743,8 +16768,33 @@ useEffect(() => {
       </div>
     ) : null;
 
+  const renderSidebarChevron = (open, visible) => (
+    <span
+      aria-hidden="true"
+      className={`inline-flex h-3 w-2 items-center justify-center text-neutral-500 transition ${
+        visible ? "opacity-100" : "opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100"
+      }`}
+    >
+      <svg
+        viewBox="0 0 8 8"
+        className={`h-2 w-2 transition-transform ${open ? "rotate-180" : ""}`}
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        <path d="M1.5 3 4 5.5 6.5 3" />
+      </svg>
+    </span>
+  );
+
   const renderLoopOverlapStepper = () => (
-    <div className="flex w-fit max-w-full items-stretch overflow-hidden rounded-md border border-neutral-800 bg-neutral-900/60">
+    <div
+      data-sidebar-chevron-control="loop"
+		                        onPointerDownCapture={() => markSidebarChevronHint("loop")}
+      className="flex w-fit max-w-full items-stretch overflow-hidden rounded-md border border-neutral-800 bg-neutral-900/60"
+    >
       <button
         type="button"
         onClick={() =>
@@ -16837,12 +16887,16 @@ useEffect(() => {
             {!showDesktopSettingsSidebar && activeTab === "timing" && (
               <div
                 ref={gridMenuPopupRef}
+                data-sidebar-chevron-area="1"
+                onPointerDown={handleSidebarChevronAreaPointerDown}
                 className="absolute left-0 top-full z-20 mt-2 w-[min(15rem,calc(100vw-2rem))] max-w-[calc(100vw-2rem)] rounded-lg border border-neutral-700 bg-neutral-900 p-3 shadow-xl"
               >
               <div className="flex flex-col gap-3">
                 <div className="flex items-center justify-between gap-2">
                     <button
                       type="button"
+                      data-sidebar-chevron-control="resolution"
+                      onPointerDown={() => markSidebarChevronHint("resolution")}
                       onClick={() => setIsSidebarResolutionOpen((v) => !v)}
                       className="group -ml-1 inline-flex items-center gap-1 rounded px-1 py-0.5 text-sm text-neutral-300 hover:bg-neutral-800/70 hover:text-white"
                       aria-expanded={isSidebarResolutionOpen}
@@ -16850,16 +16904,16 @@ useEffect(() => {
                       title="Show resolution options"
                     >
                       <span className="whitespace-nowrap">Resolution</span>
-                      <span
-                        aria-hidden="true"
-                        className={`-translate-y-0.5 w-2 text-[10px] leading-none text-neutral-500 transition-opacity ${
-                          isSidebarResolutionOpen ? "opacity-100" : "opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100"
-                        }`}
-                      >
-                        ⌄
-                      </span>
+                      {renderSidebarChevron(
+                        isSidebarResolutionOpen,
+                        isSidebarResolutionOpen || sidebarChevronHint === "resolution"
+                      )}
                     </button>
-                    <div className="flex items-stretch overflow-hidden rounded-md border border-neutral-700 bg-neutral-800">
+                    <div
+                      data-sidebar-chevron-control="resolution"
+                      onPointerDown={() => markSidebarChevronHint("resolution")}
+                      className="flex items-stretch overflow-hidden rounded-md border border-neutral-700 bg-neutral-800"
+                    >
                       <button
                         type="button"
                         onClick={() => {
@@ -16926,7 +16980,7 @@ useEffect(() => {
 	                  </div>
 	                ) : null}
 
-	                <div className="flex items-center justify-between gap-2">
+	                <div className="flex items-center justify-between gap-2" onPointerDown={clearSidebarChevronHint}>
                     <span className="text-sm text-neutral-300">Bars</span>
                     <div className="flex items-stretch overflow-hidden rounded-md border border-neutral-700 bg-neutral-800">
                       <button
@@ -16951,7 +17005,7 @@ useEffect(() => {
                     </div>
                 </div>
 
-                <div className="flex items-center justify-between gap-2">
+	                <div className="flex items-center justify-between gap-2" onPointerDown={clearSidebarChevronHint}>
                     <span className="text-sm text-neutral-300 whitespace-nowrap">Time</span>
                     <div className="grid h-10 grid-cols-[1.5rem_3.5rem_1.5rem] grid-rows-2 overflow-hidden rounded-md border border-neutral-700 bg-neutral-800">
                       <div className="row-span-2 grid grid-rows-2 border-r border-neutral-700">
@@ -16998,7 +17052,7 @@ useEffect(() => {
                     </div>
                 </div>
 
-                <div className="flex items-center justify-between gap-2">
+	                <div className="flex items-center justify-between gap-2" onPointerDown={clearSidebarChevronHint}>
                     <span className="text-sm text-neutral-300 whitespace-nowrap">Subdivision</span>
                     <div className="flex items-stretch overflow-hidden rounded-md border border-neutral-700 bg-neutral-800">
                       <button
@@ -17032,7 +17086,7 @@ useEffect(() => {
                     </div>
                 </div>
 
-                <div className="flex items-center justify-between gap-2">
+	                <div className="flex items-center justify-between gap-2" onPointerDown={clearSidebarChevronHint}>
                     <span className="text-sm text-neutral-300">Drumkit</span>
                     <div className="flex items-stretch overflow-hidden rounded-md border border-neutral-700 bg-neutral-800">
                       <button
@@ -17067,34 +17121,36 @@ useEffect(() => {
                       <div className="relative shrink-0">
                         <button
                           type="button"
-                          onClick={() => setIsLoopAdvancedMenuOpen((v) => !v)}
+	                          data-sidebar-chevron-control="loop"
+		                onPointerDownCapture={() => markSidebarChevronHint("loop")}
+	                          onClick={() => setIsLoopAdvancedMenuOpen((v) => !v)}
                           className="group -ml-1 inline-flex items-center gap-1 rounded px-1 py-0.5 text-sm text-neutral-300 hover:bg-neutral-800/70 hover:text-white"
                           title="Loop overlap options"
                           aria-label="Loop overlap options"
                           aria-expanded={isLoopAdvancedMenuOpen}
                         >
                           <span>Selection loop</span>
-                          <span
-                            aria-hidden="true"
-                            className={`-translate-y-0.5 w-2 text-[10px] leading-none text-neutral-500 transition-opacity ${
-                              isLoopAdvancedMenuOpen ? "opacity-100" : "opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100"
-                            }`}
-                          >
-                            ⌄
-                          </span>
+                          {renderSidebarChevron(
+                            isLoopAdvancedMenuOpen,
+                            isLoopAdvancedMenuOpen || sidebarChevronHint === "loop"
+                          )}
                         </button>
                       </div>
-                      <div
-                        className={`ml-auto flex items-stretch overflow-hidden rounded-md border ${
+	                      <div
+	                        data-sidebar-chevron-control="loop"
+		                        onPointerDownCapture={() => markSidebarChevronHint("loop")}
+	                        className={`ml-auto flex items-stretch overflow-hidden rounded-md border ${
                           loopRepeats === "off"
                             ? "border-neutral-800 bg-neutral-900/60"
                             : "border-neutral-800 bg-neutral-900/60"
                         }`}
                       >
-                        <button
-                          type="button"
-                          onMouseDown={(e) => {
-                            e.preventDefault();
+	                        <button
+	                          type="button"
+	                          onPointerDown={() => markSidebarChevronHint("loop")}
+	                          onMouseDown={(e) => {
+	                            markSidebarChevronHint("loop");
+	                            e.preventDefault();
                             const order = ["all", "off", "1", "2", "3", "4", "5", "6", "7", "8"];
                             const stepOnce = () => {
                               setLoopRepeats((prev) => {
@@ -17129,11 +17185,13 @@ useEffect(() => {
                         >
                           –
                         </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setLoopRepeats((prev) => (prev === "all" ? "off" : "all"));
-                          }}
+	                        <button
+	                          type="button"
+	                          onPointerDown={() => markSidebarChevronHint("loop")}
+	                          onClick={() => {
+	                            markSidebarChevronHint("loop");
+	                            setLoopRepeats((prev) => (prev === "all" ? "off" : "all"));
+	                          }}
                           className={`min-w-[44px] px-3 py-1 flex items-center justify-center text-sm border-l border-r capitalize ${
                             loopRepeats === "off"
                               ? "text-neutral-500 bg-neutral-900/60 hover:bg-neutral-800/50 border-neutral-800"
@@ -17143,10 +17201,12 @@ useEffect(() => {
                         >
                           {loopRepeats}
                         </button>
-                        <button
-                          type="button"
-                          onMouseDown={(e) => {
-                            e.preventDefault();
+	                        <button
+	                          type="button"
+	                          onPointerDown={() => markSidebarChevronHint("loop")}
+	                          onMouseDown={(e) => {
+	                            markSidebarChevronHint("loop");
+	                            e.preventDefault();
                             const order = ["all", "off", "1", "2", "3", "4", "5", "6", "7", "8"];
                             const stepOnce = () => {
                               setLoopRepeats((prev) => {
@@ -17194,37 +17254,47 @@ useEffect(() => {
                       <div className="relative shrink-0">
                         <button
                           type="button"
-                          onClick={() => setIsEditingAdvancedMenuOpen((v) => !v)}
+	                          data-sidebar-chevron-control="sticking"
+	                          onPointerDown={() => markSidebarChevronHint("sticking")}
+	                          onClick={() => setIsEditingAdvancedMenuOpen((v) => !v)}
                           className="group -ml-1 inline-flex items-center gap-1 rounded px-1 py-0.5 text-sm text-neutral-300 hover:bg-neutral-800/70 hover:text-white"
                           title="Sticking display options"
                           aria-label="Sticking display options"
                           aria-expanded={isEditingAdvancedMenuOpen}
                         >
                           <span>Sticking</span>
-                          <span
-                            aria-hidden="true"
-                            className={`-translate-y-0.5 w-2 text-[10px] leading-none text-neutral-500 transition-opacity ${
-                              isEditingAdvancedMenuOpen ? "opacity-100" : "opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100"
-                            }`}
-                          >
-                            ⌄
-                          </span>
+                          {renderSidebarChevron(
+                            isEditingAdvancedMenuOpen,
+                            isEditingAdvancedMenuOpen || sidebarChevronHint === "sticking"
+                          )}
                         </button>
                       </div>
-                      <div className="ml-auto flex items-center gap-1.5">
-                        <div className="flex items-stretch overflow-hidden rounded-md border border-neutral-800 bg-neutral-900/60">
-                          <button
-                            type="button"
-                            onClick={() => cycleNotationStickingPrintMode(-1)}
+	                      <div className="ml-auto flex items-center gap-1.5">
+	                        <div
+	                          data-sidebar-chevron-control="sticking"
+	                          onPointerDownCapture={() => markSidebarChevronHint("sticking")}
+	                          className="flex items-stretch overflow-hidden rounded-md border border-neutral-800 bg-neutral-900/60"
+	                        >
+	                          <button
+	                            type="button"
+	                            onPointerDown={() => markSidebarChevronHint("sticking")}
+	                            onClick={() => {
+	                              markSidebarChevronHint("sticking");
+	                              cycleNotationStickingPrintMode(-1);
+	                            }}
                             className="px-2 text-base leading-none text-neutral-500 hover:bg-neutral-800/50 active:bg-neutral-800"
                             title="Previous print sticking mode"
                             aria-label="Previous print sticking mode"
                           >
                             -
                           </button>
-                          <button
-                            type="button"
-                            onClick={() => setNotationStickingPrintMode(notationStickingSelectionStats.mode === "all" ? "off" : "all")}
+	                          <button
+	                            type="button"
+	                            onPointerDown={() => markSidebarChevronHint("sticking")}
+	                            onClick={() => {
+	                              markSidebarChevronHint("sticking");
+	                              setNotationStickingPrintMode(notationStickingSelectionStats.mode === "all" ? "off" : "all");
+	                            }}
                             className="min-w-[72px] px-3 py-1 flex items-center justify-center text-sm border-l border-r border-neutral-800 bg-neutral-900/60 text-neutral-500 hover:bg-neutral-800/50"
                             title={
                               notationStickingSelectionStats.mode === "custom"
@@ -17240,9 +17310,13 @@ useEffect(() => {
                                 ? "Some"
                                 : "None"}
                           </button>
-                          <button
-                            type="button"
-                            onClick={() => cycleNotationStickingPrintMode(1)}
+	                          <button
+	                            type="button"
+	                            onPointerDown={() => markSidebarChevronHint("sticking")}
+	                            onClick={() => {
+	                              markSidebarChevronHint("sticking");
+	                              cycleNotationStickingPrintMode(1);
+	                            }}
                             className="px-2 text-base leading-none text-neutral-500 hover:bg-neutral-800/50 active:bg-neutral-800"
                             title="Next print sticking mode"
                             aria-label="Next print sticking mode"
@@ -17260,10 +17334,12 @@ useEffect(() => {
                     </div>
 
                     <div className="flex items-center justify-between gap-2">
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setStickingEditModeEnabled((v) => {
+	                      <button
+	                        type="button"
+	                        data-sidebar-chevron-control="sticking"
+	                        onPointerDown={() => markSidebarChevronHint("sticking")}
+	                        onClick={() =>
+	                          setStickingEditModeEnabled((v) => {
                             const next = !v;
                             if (next) {
                               setStickingGuideEnabled(true);
@@ -19573,10 +19649,12 @@ useEffect(() => {
 
   const desktopSettingsSidebar = showDesktopSettingsSidebar && !settingsSidebarCollapsed ? (
     <div className="self-start w-[15.5rem] shrink-0">
-    <aside
-      className="sticky top-0 mt-6 z-20 overflow-visible rounded-xl border border-neutral-800 bg-neutral-900 p-4 shadow-xl shadow-black/20"
-      data-loopui="1"
-    >
+	    <aside
+	      data-sidebar-chevron-area="1"
+	      onPointerDown={handleSidebarChevronAreaPointerDown}
+	      className="sticky top-0 mt-6 z-20 overflow-visible rounded-xl border border-neutral-800 bg-neutral-900 p-4 shadow-xl shadow-black/20"
+	      data-loopui="1"
+	    >
       {isSidebarSettingsMenuOpen ? (
         <button
           type="button"
@@ -19607,23 +19685,25 @@ useEffect(() => {
             <div className="flex items-center justify-between gap-2">
               <button
                 type="button"
-                onClick={() => setIsSidebarResolutionOpen((v) => !v)}
+	                data-sidebar-chevron-control="resolution"
+	                onPointerDown={() => markSidebarChevronHint("resolution")}
+	                onClick={() => setIsSidebarResolutionOpen((v) => !v)}
                 className="group -ml-1 inline-flex items-center gap-1 rounded px-1 py-0.5 text-sm text-neutral-300 hover:bg-neutral-800/70 hover:text-white"
                 aria-expanded={isSidebarResolutionOpen}
                 aria-controls="settings-sidebar-resolution-options"
                 title="Show resolution options"
               >
                 <span className="whitespace-nowrap">Resolution</span>
-                <span
-                  aria-hidden="true"
-                  className={`-translate-y-0.5 w-2 text-[10px] leading-none text-neutral-500 transition-opacity ${
-                    isSidebarResolutionOpen ? "opacity-100" : "opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100"
-                  }`}
-                >
-                  ⌄
-                </span>
+                {renderSidebarChevron(
+                  isSidebarResolutionOpen,
+                  isSidebarResolutionOpen || sidebarChevronHint === "resolution"
+                )}
               </button>
-              <div className="flex items-stretch overflow-hidden rounded-md border border-neutral-800 bg-neutral-900/60">
+	              <div
+	                data-sidebar-chevron-control="resolution"
+	                onPointerDown={() => markSidebarChevronHint("resolution")}
+	                className="flex items-stretch overflow-hidden rounded-md border border-neutral-800 bg-neutral-900/60"
+	              >
                 <button
                   type="button"
                   onClick={() => {
@@ -19690,7 +19770,7 @@ useEffect(() => {
               </div>
             ) : null}
 
-            <div className="flex items-center justify-between gap-2">
+	            <div className="flex items-center justify-between gap-2" onPointerDown={clearSidebarChevronHint}>
               <span className="text-sm text-neutral-300">Bars</span>
               <div className="flex items-stretch overflow-hidden rounded-md border border-neutral-800 bg-neutral-900/60">
                 <button
@@ -19715,7 +19795,7 @@ useEffect(() => {
               </div>
             </div>
 
-            <div className="flex items-center justify-between gap-2">
+	            <div className="flex items-center justify-between gap-2" onPointerDown={clearSidebarChevronHint}>
               <span className="text-sm text-neutral-300 whitespace-nowrap">Time</span>
               <div className="grid h-10 grid-cols-[1.5rem_3.5rem_1.5rem] grid-rows-2 overflow-hidden rounded-md border border-neutral-800 bg-neutral-900/60">
                 <div className="row-span-2 grid grid-rows-2 border-r border-neutral-800">
@@ -19762,7 +19842,7 @@ useEffect(() => {
               </div>
             </div>
 
-            <div className="flex items-center justify-between gap-2">
+	            <div className="flex items-center justify-between gap-2" onPointerDown={clearSidebarChevronHint}>
               <span className="text-sm text-neutral-300 whitespace-nowrap">Subdivision</span>
               <div className="flex items-stretch overflow-hidden rounded-md border border-neutral-800 bg-neutral-900/60">
                 <button
@@ -19794,7 +19874,7 @@ useEffect(() => {
               </div>
             </div>
 
-            <div className="flex items-center justify-between gap-2">
+	            <div className="flex items-center justify-between gap-2" onPointerDown={clearSidebarChevronHint}>
               <span className="text-sm text-neutral-300">Drumkit</span>
               <div className="flex items-stretch overflow-hidden rounded-md border border-neutral-800 bg-neutral-900/60">
                 <button
@@ -19831,34 +19911,36 @@ useEffect(() => {
                       <div className="relative shrink-0">
                         <button
                           type="button"
-                          onClick={() => setIsLoopAdvancedMenuOpen((v) => !v)}
+	                          data-sidebar-chevron-control="loop"
+		                onPointerDownCapture={() => markSidebarChevronHint("loop")}
+	                          onClick={() => setIsLoopAdvancedMenuOpen((v) => !v)}
                           className="group -ml-1 inline-flex items-center gap-1 rounded px-1 py-0.5 text-sm text-neutral-300 hover:bg-neutral-800/70 hover:text-white"
                           title="Loop overlap options"
                           aria-label="Loop overlap options"
                           aria-expanded={isLoopAdvancedMenuOpen}
                         >
                           <span>Selection loop</span>
-                          <span
-                            aria-hidden="true"
-                            className={`-translate-y-0.5 w-2 text-[10px] leading-none text-neutral-500 transition-opacity ${
-                              isLoopAdvancedMenuOpen ? "opacity-100" : "opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100"
-                            }`}
-                          >
-                            ⌄
-                          </span>
+                          {renderSidebarChevron(
+                            isLoopAdvancedMenuOpen,
+                            isLoopAdvancedMenuOpen || sidebarChevronHint === "loop"
+                          )}
                         </button>
                       </div>
-              <div
-                className={`ml-auto flex items-stretch overflow-hidden rounded-md border ${
+	              <div
+	                data-sidebar-chevron-control="loop"
+		                onPointerDownCapture={() => markSidebarChevronHint("loop")}
+	                className={`ml-auto flex items-stretch overflow-hidden rounded-md border ${
                   loopRepeats === "off"
                     ? "border-neutral-800 bg-neutral-900/60"
                     : "border-neutral-800 bg-neutral-900/60"
                 }`}
               >
-                <button
-                  type="button"
-                  onMouseDown={(e) => {
-                    e.preventDefault();
+	                <button
+	                  type="button"
+	                  onPointerDown={() => markSidebarChevronHint("loop")}
+	                  onMouseDown={(e) => {
+	                    markSidebarChevronHint("loop");
+	                    e.preventDefault();
                     const order = ["all", "off", "1", "2", "3", "4", "5", "6", "7", "8"];
                     const stepOnce = () => {
                       setLoopRepeats((prev) => {
@@ -19893,11 +19975,13 @@ useEffect(() => {
                 >
                   –
                 </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setLoopRepeats((prev) => (prev === "all" ? "off" : "all"));
-                  }}
+	                <button
+	                  type="button"
+	                  onPointerDown={() => markSidebarChevronHint("loop")}
+	                  onClick={() => {
+	                    markSidebarChevronHint("loop");
+	                    setLoopRepeats((prev) => (prev === "all" ? "off" : "all"));
+	                  }}
                   className={`min-w-[44px] px-3 py-1 flex items-center justify-center text-sm border-l border-r capitalize ${
                     loopRepeats === "off"
                       ? "text-neutral-500 bg-neutral-900/60 hover:bg-neutral-800/50 border-neutral-800"
@@ -19907,10 +19991,12 @@ useEffect(() => {
                 >
                   {loopRepeats}
                 </button>
-                <button
-                  type="button"
-                  onMouseDown={(e) => {
-                    e.preventDefault();
+	                <button
+	                  type="button"
+	                  onPointerDown={() => markSidebarChevronHint("loop")}
+	                  onMouseDown={(e) => {
+	                    markSidebarChevronHint("loop");
+	                    e.preventDefault();
                     const order = ["all", "off", "1", "2", "3", "4", "5", "6", "7", "8"];
                     const stepOnce = () => {
                       setLoopRepeats((prev) => {
@@ -19958,37 +20044,47 @@ useEffect(() => {
                 <div className="relative shrink-0">
                   <button
                     type="button"
-                    onClick={() => setIsEditingAdvancedMenuOpen((v) => !v)}
+	                    data-sidebar-chevron-control="sticking"
+	                    onPointerDown={() => markSidebarChevronHint("sticking")}
+	                    onClick={() => setIsEditingAdvancedMenuOpen((v) => !v)}
                     className="group -ml-1 inline-flex items-center gap-1 rounded px-1 py-0.5 text-sm text-neutral-300 hover:bg-neutral-800/70 hover:text-white"
                     title="Sticking display options"
                     aria-label="Sticking display options"
                     aria-expanded={isEditingAdvancedMenuOpen}
                   >
                     <span>Sticking</span>
-                    <span
-                      aria-hidden="true"
-                      className={`-translate-y-0.5 w-2 text-[10px] leading-none text-neutral-500 transition-opacity ${
-                        isEditingAdvancedMenuOpen ? "opacity-100" : "opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100"
-                      }`}
-                    >
-                      ⌄
-                    </span>
+                    {renderSidebarChevron(
+                      isEditingAdvancedMenuOpen,
+                      isEditingAdvancedMenuOpen || sidebarChevronHint === "sticking"
+                    )}
                   </button>
                 </div>
-                <div className="ml-auto flex items-center gap-1.5">
-                <div className="flex items-stretch overflow-hidden rounded-md border border-neutral-800 bg-neutral-900/60">
-                  <button
-                    type="button"
-                    onClick={() => cycleNotationStickingPrintMode(-1)}
+	                <div className="ml-auto flex items-center gap-1.5">
+	                <div
+	                  data-sidebar-chevron-control="sticking"
+	                  onPointerDownCapture={() => markSidebarChevronHint("sticking")}
+	                  className="flex items-stretch overflow-hidden rounded-md border border-neutral-800 bg-neutral-900/60"
+	                >
+	                  <button
+	                    type="button"
+	                    onPointerDown={() => markSidebarChevronHint("sticking")}
+	                    onClick={() => {
+	                      markSidebarChevronHint("sticking");
+	                      cycleNotationStickingPrintMode(-1);
+	                    }}
                     className="px-2 text-base leading-none text-neutral-500 hover:bg-neutral-800/50 active:bg-neutral-800"
                     title="Previous print sticking mode"
                     aria-label="Previous print sticking mode"
                   >
                     -
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => setNotationStickingPrintMode(notationStickingSelectionStats.mode === "all" ? "off" : "all")}
+	                  <button
+	                    type="button"
+	                    onPointerDown={() => markSidebarChevronHint("sticking")}
+	                    onClick={() => {
+	                      markSidebarChevronHint("sticking");
+	                      setNotationStickingPrintMode(notationStickingSelectionStats.mode === "all" ? "off" : "all");
+	                    }}
                     className="min-w-[72px] px-3 py-1 flex items-center justify-center text-sm border-l border-r border-neutral-800 bg-neutral-900/60 text-neutral-500 hover:bg-neutral-800/50"
                     title={
                       notationStickingSelectionStats.mode === "custom"
@@ -20004,9 +20100,13 @@ useEffect(() => {
                         ? "Some"
                         : "None"}
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => cycleNotationStickingPrintMode(1)}
+	                  <button
+	                    type="button"
+	                    onPointerDown={() => markSidebarChevronHint("sticking")}
+	                    onClick={() => {
+	                      markSidebarChevronHint("sticking");
+	                      cycleNotationStickingPrintMode(1);
+	                    }}
                     className="px-2 text-base leading-none text-neutral-500 hover:bg-neutral-800/50 active:bg-neutral-800"
                     title="Next print sticking mode"
                     aria-label="Next print sticking mode"
@@ -20024,10 +20124,12 @@ useEffect(() => {
             </div>
 
             <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() =>
-                  setStickingEditModeEnabled((v) => {
+	              <button
+	                type="button"
+	                data-sidebar-chevron-control="sticking"
+	                onPointerDown={() => markSidebarChevronHint("sticking")}
+	                onClick={() =>
+	                  setStickingEditModeEnabled((v) => {
                     const next = !v;
                     if (next) {
                       setStickingGuideEnabled(true);

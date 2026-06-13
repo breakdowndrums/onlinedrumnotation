@@ -67,6 +67,36 @@ function MenuActionButton({ disabled = false, onClick, className = "", title, ch
   );
 }
 
+function ShareInfoButton() {
+  const [open, setOpen] = React.useState(false);
+
+  return (
+    <div
+      className="absolute right-3 top-3 z-10 inline-flex"
+      onMouseEnter={() => setOpen(true)}
+      onMouseLeave={() => setOpen(false)}
+    >
+      <button
+        type="button"
+        onClick={() => setOpen((prev) => !prev)}
+        onBlur={() => setOpen(false)}
+        className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-neutral-800 bg-neutral-900/60 text-[10px] leading-none text-neutral-500 hover:border-neutral-700 hover:bg-neutral-800/60 hover:text-neutral-300"
+        aria-label="Show share link info"
+      >
+        ?
+      </button>
+      {open ? (
+        <div className="absolute right-[1.625rem] top-full z-[160] -mt-5 w-60 whitespace-normal break-words rounded-md border border-neutral-800 bg-neutral-950/95 px-2.5 py-2 text-[11px] leading-4 text-neutral-400 shadow-xl">
+          <div>
+            Short links need database storage. Long links always work without share storage, but they are much longer.
+          </div>
+          <div className="mt-1">Temporary short links may be cleaned later if unused.</div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export default function ShareActionsDialog({
   isOpen,
   menuRef,
@@ -120,14 +150,9 @@ export default function ShareActionsDialog({
       onClick={(e) => e.stopPropagation()}
       onMouseDown={(e) => e.stopPropagation()}
     >
-      <div className="mb-3 rounded-lg border border-neutral-800 bg-neutral-900/40 px-3 py-2 text-xs text-neutral-500">
-        <div className="mt-1">
-          Short links need database storage. Long links always work without share storage, but they are much longer.
-        </div>
-        <div className="mt-1">Temporary short links may be cleaned later if unused.</div>
-      </div>
+      <ShareInfoButton />
 
-      <div className="px-1 pb-2 text-sm text-neutral-300">Beat</div>
+      <div className="px-1 pb-2 pr-8 text-sm text-neutral-300">Beat</div>
       <div className="grid grid-cols-1 gap-1.5">
         <div className="grid grid-cols-[1fr_auto] gap-1.5">
           <MenuActionButton

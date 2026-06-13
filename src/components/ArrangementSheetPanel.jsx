@@ -1,5 +1,44 @@
 import React from "react";
 
+function SheetLoopIcon() {
+  return (
+    <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" aria-hidden="true">
+      <path
+        d="M17.5 6.5H8.25A4.25 4.25 0 0 0 4 10.75v.25"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.9"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M14.75 3.75 17.5 6.5l-2.75 2.75"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.9"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M6.5 17.5h9.25A4.25 4.25 0 0 0 20 13.25V13"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.9"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M9.25 20.25 6.5 17.5l2.75-2.75"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.9"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 export default function ArrangementSheetPanel({
   panelRef,
   isMobile,
@@ -11,6 +50,8 @@ export default function ArrangementSheetPanel({
   playbackActive,
   playbackDisabled,
   hasLoopSelection,
+  playbackLoopEnabled,
+  onTogglePlaybackLoop,
   onTogglePlayback,
   clearDisabled,
   clearTitle,
@@ -19,6 +60,7 @@ export default function ArrangementSheetPanel({
   onOpenLibrary,
   onClose,
   LibraryIcon,
+  TrashIcon,
   settingsMenu,
   children,
 }) {
@@ -80,17 +122,46 @@ export default function ArrangementSheetPanel({
                 }}
                 onClick={(e) => {
                   e.stopPropagation();
+                  onTogglePlaybackLoop?.();
+                }}
+                disabled={playbackDisabled}
+                className={`inline-flex h-[1.625rem] w-[1.625rem] items-center justify-center rounded border text-xs leading-none ${
+                  !playbackDisabled
+                    ? playbackLoopEnabled || hasLoopSelection
+                      ? "border-sky-500/70 bg-sky-900/20 text-sky-100 hover:bg-sky-900/30"
+                      : "border-neutral-800 bg-neutral-900/60 text-neutral-400 hover:bg-neutral-800/60 hover:text-neutral-200"
+                    : "border-neutral-800 bg-neutral-900/60 text-neutral-600 cursor-not-allowed"
+                }`}
+                title={
+                  hasLoopSelection
+                    ? "Loop selected sheet range"
+                    : playbackLoopEnabled
+                      ? "Turn off sheet loop"
+                      : "Loop whole sheet"
+                }
+                aria-label={playbackLoopEnabled || hasLoopSelection ? "Sheet loop on" : "Loop whole sheet"}
+              >
+                <SheetLoopIcon />
+              </button>
+              <button
+                type="button"
+                onPointerDown={(e) => {
+                  e.stopPropagation();
+                }}
+                onClick={(e) => {
+                  e.stopPropagation();
                   onClear?.();
                 }}
                 disabled={clearDisabled}
-                className={`inline-flex h-[1.625rem] items-center justify-center rounded border px-2 text-xs leading-none ${
+                className={`inline-flex h-[1.625rem] w-[1.625rem] items-center justify-center rounded border text-xs leading-none ${
                   !clearDisabled
                     ? "border-neutral-800 bg-neutral-900/60 text-neutral-400 hover:bg-neutral-800/60 hover:text-neutral-200"
                     : "border-neutral-800 bg-neutral-900/60 text-neutral-600 cursor-not-allowed"
                 }`}
                 title={clearTitle}
+                aria-label={clearTitle || "Clear sheet"}
               >
-                Clear
+                {TrashIcon ? <TrashIcon /> : "×"}
               </button>
             </div>
             <div className="flex items-center gap-2">

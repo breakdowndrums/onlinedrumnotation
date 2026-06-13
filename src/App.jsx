@@ -3898,6 +3898,7 @@ export default function App() {
   const [arrangementPlaybackEnabled, setArrangementPlaybackEnabled] = useState(false);
   const [arrangementPlaybackUiActive, setArrangementPlaybackUiActive] = useState(false);
   const [arrangementPlaybackIndex, setArrangementPlaybackIndex] = useState(0);
+  const [arrangementPlaybackLoopEnabled, setArrangementPlaybackLoopEnabled] = useState(false);
   const [activeArrangementGlobalBarIndex, setActiveArrangementGlobalBarIndex] = useState(-1);
   const [arrangementSelection, setArrangementSelection] = useState(null); // {start,end} row indices
   const [arrangementSelectionAnchor, setArrangementSelectionAnchor] = useState(null); // row index
@@ -15085,6 +15086,8 @@ useEffect(() => {
           (boundaries[arrangementPlaybackLoopRange.start]?.startSec ?? 0)
       );
       loop = true;
+    } else if (arrangementPlaybackLoopEnabled) {
+      loop = true;
     }
     return {
       events: playbackEvents,
@@ -15093,7 +15096,7 @@ useEffect(() => {
       loop,
       barStartTimes: playbackBarStartTimes,
     };
-  }, [arrangementPlayableEntries, arrangementPlaybackLoopRange, normalizedArrangementBarLoopSelection, bpm, playbackRate, metronomeEnabled, metronomeVolume, buildEffectiveNotationPayloadFromBeat]);
+  }, [arrangementPlayableEntries, arrangementPlaybackLoopRange, normalizedArrangementBarLoopSelection, arrangementPlaybackLoopEnabled, bpm, playbackRate, metronomeEnabled, metronomeVolume, buildEffectiveNotationPayloadFromBeat]);
   useEffect(() => {
     arrangementPlaybackIndexRef.current = arrangementPlaybackIndex;
   }, [arrangementPlaybackIndex]);
@@ -21435,6 +21438,8 @@ useEffect(() => {
           playbackActive={arrangementPlaybackUiActive}
           playbackDisabled={arrangementPlayableEntries.length < 1}
           hasLoopSelection={Boolean(normalizedArrangementBarLoopSelection || normalizedArrangementLoopSelection)}
+          playbackLoopEnabled={arrangementPlaybackLoopEnabled}
+          onTogglePlaybackLoop={() => setArrangementPlaybackLoopEnabled((prev) => !prev)}
           onTogglePlayback={toggleArrangementNotationPlayback}
           clearDisabled={arrangementItems.length < 1}
           clearTitle={
@@ -21447,6 +21452,7 @@ useEffect(() => {
           onOpenLibrary={handleHeaderLibraryButtonClick}
           onClose={() => setIsArrangementNotationOpen(false)}
           LibraryIcon={LibraryIcon}
+          TrashIcon={TrashIcon}
           settingsMenu={
             <ArrangementSheetSettingsMenu
               buttonRef={arrangementNotationMoreMenuButtonRef}

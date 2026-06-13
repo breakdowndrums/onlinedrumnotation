@@ -6745,7 +6745,8 @@ export default function App() {
     const controller = new AbortController();
     const load = async () => {
       try {
-        if (hasSupabaseEnabled && supabase) {
+        const isAnonymousKvShareId = String(routeOptions.shareId || "").startsWith("a-");
+        if (!isAnonymousKvShareId && hasSupabaseEnabled && supabase) {
           const row = await fetchShareLinkRowById({
             supabase,
             shareId: routeOptions.shareId,

@@ -4687,6 +4687,7 @@ export default function App() {
   const pendingSharedLoadRef = React.useRef(null);
   const appliedSharedKeyRef = React.useRef(null);
   const importedBeatLoadInProgressRef = React.useRef(false);
+  const skipNextBaseGridResizeRef = React.useRef(false);
   const gridMenuButtonRef = React.useRef(null);
   const gridMenuPopupRef = React.useRef(null);
   const trackedSharedOpenKeysRef = React.useRef(new Set());
@@ -15737,6 +15738,7 @@ useEffect(() => {
           ? buildNotationStickingSelectionFromGridRows(nextGrid, nextInstrumentDefs, nextColumns)
           : compactImportedNotationStickingSelection;
       importedBeatLoadInProgressRef.current = true;
+      skipNextBaseGridResizeRef.current = true;
       appliedSharedKeyRef.current = shareSourceKey;
       gridPastRef.current = [];
       gridFutureRef.current = [];
@@ -18790,6 +18792,10 @@ useEffect(() => {
 
   // Resize grid when resolution/bars change (preserve existing hits)
   useEffect(() => {
+    if (skipNextBaseGridResizeRef.current) {
+      skipNextBaseGridResizeRef.current = false;
+      return;
+    }
     setBaseGrid((prev) => {
       const needsResize = ALL_INSTRUMENTS.some(
         (i) => (prev[i.id]?.length ?? 0) !== columns

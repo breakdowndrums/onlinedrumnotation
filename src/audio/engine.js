@@ -31,6 +31,8 @@ export function makeAudioEngine() {
   let compiledStartOffsetSec = 0;
   let compiledLoopIteration = 0;
   let playStartTime = 0;
+  let gridLoopStartTime = 0;
+  let gridLoopIteration = 0;
 
   // Lookahead
   const lookaheadMs = 25;
@@ -176,6 +178,18 @@ export function makeAudioEngine() {
       return (60 / bpm) * q;
     }
     return secondsPerStep();
+  }
+
+  function secondsBeforeStep(stepIndex, columns = transportColumns) {
+    const safeColumns = Math.max(1, Math.floor(Number(columns) || 1));
+    const safeStep = Math.max(0, Math.min(safeColumns, Math.floor(Number(stepIndex) || 0)));
+    let total = 0;
+    for (let i = 0; i < safeStep; i++) total += secondsForStep(i);
+    return total;
+  }
+
+  function secondsForLoop(columns = transportColumns) {
+    return secondsBeforeStep(Math.max(1, Math.floor(Number(columns) || 1)), columns);
   }
 
   function triggerMetronome(time, accented = false) {
@@ -393,6 +407,8 @@ function trigger(instId, time, gainValue = 1) {
       }
     } else {
       const { grid, instruments, columns } = getGridSnapshot();
+      const loopColumns = Math.max(1, Math.min(Math.floor(Number(columns) || 1), transportColumns));
+      const loopDurationSec = secondsForLoop(loopColumns);
       while (nextNoteTime < audioCtx.currentTime + scheduleAheadTimeSec) {
         if (stopAtTime != null && nextNoteTime >= stopAtTime - 1e-6) {
           break;
@@ -401,7 +417,13 @@ function trigger(instId, time, gainValue = 1) {
 
         nextNoteTime += secondsForStep(currentStep);
         currentStep += 1;
-        if (currentStep >= columns) currentStep = 0;
+        if (currentStep >= loopColumns) {
+          currentStep = 0;
+          gridLoopIteration += 1;
+          if (loopDurationSec > 0) {
+            nextNoteTime = gridLoopStartTime + gridLoopIteration * loopDurationSec;
+          }
+        }
       }
     }
 
@@ -427,6 +449,8 @@ function trigger(instId, time, gainValue = 1) {
     currentStep = Math.max(0, Math.min(maxStep, startStep));
     const countInDurationSec = scheduleCountIn(countInBeats, countInBeatDurSec);
     playStartTime = audioCtx.currentTime + 0.03 + countInDurationSec;
+    gridLoopStartTime = playStartTime - secondsBeforeStep(currentStep, transportColumns);
+    gridLoopIteration = 0;
     nextNoteTime = playStartTime;
     stopAtTime = null;
 
@@ -482,6 +506,8 @@ function trigger(instId, time, gainValue = 1) {
     currentStep = 0;
     nextNoteTime = 0;
     playStartTime = 0;
+    gridLoopStartTime = 0;
+    gridLoopIteration = 0;
     compiledLoopIteration = 0;
     stopAtTime = null;
   }
@@ -526,6 +552,22 @@ function trigger(instId, time, gainValue = 1) {
     stopAtTime = Number.isFinite(timeSec) && timeSec > 0 ? Number(timeSec) : null;
   }
 
+  function setCompiledLoop(enabled = false) {
+    if (playMode !== "compiled") return;
+    compiledLoop = enabled === true;
+    if (compiledLoop) {
+      stopAtTime = null;
+      return;
+    }
+    if (!audioCtx || compiledDurationSec <= 0) {
+      stopAtTime = null;
+      return;
+    }
+    const elapsedSec = Math.max(0, audioCtx.currentTime - playStartTime);
+    const currentIteration = Math.max(0, Math.floor(elapsedSec / compiledDurationSec));
+    stopAtTime = playStartTime + (currentIteration + 1) * compiledDurationSec;
+  }
+
   return {
     ensureContext,
     getContext,
@@ -539,6 +581,7 @@ function trigger(instId, time, gainValue = 1) {
     getScheduleAheadTimeSec,
     setCurrentStep,
     setStopAtTime,
+    setCompiledLoop,
     play,
     playCompiled,
     stop,

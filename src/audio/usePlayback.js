@@ -219,6 +219,9 @@ export function usePlayback({
   const setStopAtTime = useCallback((timeSec = null) => {
     engine.setStopAtTime(timeSec);
   }, [engine]);
+  const setCompiledLoop = useCallback((enabled = false) => {
+    engine.setCompiledLoop(enabled);
+  }, [engine]);
   const getAudioTime = useCallback(() => engine.getCurrentTime(), [engine]);
   const getScheduleAheadTimeSec = useCallback(() => engine.getScheduleAheadTimeSec(), [engine]);
 
@@ -239,6 +242,7 @@ export function usePlayback({
     setPlayhead,
     setTransportStep,
     setStopAtTime,
+    setCompiledLoop,
     getAudioTime,
     getScheduleAheadTimeSec,
   };

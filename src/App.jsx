@@ -15245,6 +15245,15 @@ useEffect(() => {
     stopArrangementPlayback,
   ]);
   useEffect(() => {
+    if (!arrangementPlaybackEnabled || !playback.isPlaying) return;
+    playback.setCompiledLoop?.(arrangementCompiledPlayback?.loop === true);
+  }, [
+    arrangementPlaybackEnabled,
+    playback.isPlaying,
+    playback.setCompiledLoop,
+    arrangementCompiledPlayback?.loop,
+  ]);
+  useEffect(() => {
     if (isArrangementOpen || isArrangementNotationOpen) return;
     if (normalizedArrangementSelection || normalizedArrangementBarSelection) return;
     if (!arrangementPlaybackEnabled) return;

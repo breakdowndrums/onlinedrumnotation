@@ -99,6 +99,11 @@ export function makeAudioEngine() {
     nextMetronomeVolume,
     nextDrumVolume,
   }) {
+    const transportTimingChanged =
+      typeof nextBpm === "number" ||
+      typeof nextResolution === "number" ||
+      (Array.isArray(nextStepQuarterDurations) && nextStepQuarterDurations.length > 0) ||
+      (typeof nextColumns === "number" && Number.isFinite(nextColumns) && nextColumns > 0);
     if (typeof nextBpm === "number") bpm = nextBpm;
     if (typeof nextResolution === "number") resolution = nextResolution;
     if (nextTimeSig && typeof nextTimeSig === "object") {
@@ -165,6 +170,9 @@ export function makeAudioEngine() {
 
       transportColumns = mappedColumns;
     }
+    if (transportTimingChanged && isPlaying && playMode === "grid") {
+      realignGridLoopTiming();
+    }
   }
 
   function secondsPerStep() {
@@ -190,6 +198,18 @@ export function makeAudioEngine() {
 
   function secondsForLoop(columns = transportColumns) {
     return secondsBeforeStep(Math.max(1, Math.floor(Number(columns) || 1)), columns);
+  }
+
+  function realignGridLoopTiming() {
+    if (!audioCtx) return;
+    const safeColumns = Math.max(1, transportColumns);
+    currentStep = ((currentStep % safeColumns) + safeColumns) % safeColumns;
+    const now = audioCtx.currentTime;
+    if (!Number.isFinite(nextNoteTime) || nextNoteTime < now - 0.01) {
+      nextNoteTime = now + 0.01;
+    }
+    gridLoopStartTime = nextNoteTime - secondsBeforeStep(currentStep, safeColumns);
+    gridLoopIteration = 0;
   }
 
   function triggerMetronome(time, accented = false) {

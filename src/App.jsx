@@ -14392,6 +14392,7 @@ useEffect(() => {
       return;
     }
     setNotationStickingModePreference("custom");
+    setStickingEditModeEnabled(false);
     const rememberedCustomSelection =
       lastCustomNotationStickingSelectionRef.current &&
       typeof lastCustomNotationStickingSelectionRef.current === "object"
@@ -14405,7 +14406,7 @@ useEffect(() => {
       setNotationStickingSelection({});
     }
     setShowNotationSticking(true);
-    setNotationStickingSelectionModeEnabled(false);
+    setNotationStickingSelectionModeEnabled(true);
   }, [
     allNotationStickingSelection,
     notationStickingSelectionStats.selectedCount,

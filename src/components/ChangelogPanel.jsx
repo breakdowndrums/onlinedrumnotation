@@ -90,9 +90,6 @@ export default function ChangelogPanel({
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <h3 className="text-sm font-medium text-neutral-300">{item.title}</h3>
-                  <div className="mt-1 text-[11px] text-neutral-700">
-                    {formatChangelogDate(item.publishedAt || item.createdAt)}
-                  </div>
                 </div>
                 {isAdminUser ? (
                   <button

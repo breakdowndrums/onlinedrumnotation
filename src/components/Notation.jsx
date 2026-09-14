@@ -181,6 +181,7 @@ export default function Notation({
   bars,
   barsPerLine,
   barsPerRow = null,
+  rowGap = 0,
   stepsPerBar,
   timeSig,
   timeSigByBar = null,
@@ -216,6 +217,7 @@ export default function Notation({
   const highlightRectsRef = useRef([]);
   const onBarClickRef = useRef(onBarClick);
   const onBarMenuOpenRef = useRef(onBarMenuOpen);
+  const resolvedRowGap = Math.max(-16, Math.min(80, Math.round(Number(rowGap) || 0)));
   const [hitLayerVersion, setHitLayerVersion] = useState(0);
   onBarClickRef.current = onBarClick;
   onBarMenuOpenRef.current = onBarMenuOpen;
@@ -913,12 +915,12 @@ export default function Notation({
         barEndStep: renderBarStepOffsets[b + 1] ?? renderBarStepOffsets[b] ?? 0,
         quarterSubdivisions: renderQuarterSubsByBar[b],
           minWidth: 130,
-          leadingWidthExtra: (rowStartSet.has(b) ? 30 : 0) + (b === 0 ? 48 : 0),
+          leadingWidthExtra: rowStartSet.has(b) ? 78 : 0,
           spacingPreset: getSpacingPresetForBar(b),
         }))
       );
       const rows = resolvedRowBarCounts.length;
-      const systemHeight = 108;
+      const systemHeight = 108 + resolvedRowGap;
       const height = 47 + rows * systemHeight;
       const naturalRowWidths = Array.from({ length: rows }, (_, rowIdx) => {
         const start = rowStartBars[rowIdx] ?? 0;
@@ -978,12 +980,12 @@ export default function Notation({
         const effectiveMergeNotes = getEffectiveBarBoolean(mergeNotesByBar, b, mergeNotes);
         const effectiveDottedNotes = getEffectiveBarBoolean(dottedNotesByBar, b, dottedNotes);
         const prevBarTimeSig = b > 0 ? (resolvedTimeSigByBar[b - 1] || timeSig || { n: 4, d: 4 }) : null;
-        const showBarTimeSig =
-          b === 0 ||
-          Number(prevBarTimeSig?.n) !== Number(barTimeSig?.n) ||
-          Number(prevBarTimeSig?.d) !== Number(barTimeSig?.d);
         const row = barRowIndices[b] ?? 0;
         const col = barCols[b] ?? 0;
+        const showBarTimeSig =
+          col === 0 ||
+          Number(prevBarTimeSig?.n) !== Number(barTimeSig?.n) ||
+          Number(prevBarTimeSig?.d) !== Number(barTimeSig?.d);
         const rowStartBar = rowStartBars[row] ?? 0;
         let x = 10;
         for (let bi = rowStartBar; bi < rowStartBar + col; bi++) {
@@ -1403,12 +1405,12 @@ export default function Notation({
         barEndStep: renderBarStepOffsets[b + 1] ?? renderBarStepOffsets[b] ?? 0,
         quarterSubdivisions: renderQuarterSubsByBar[b],
         minWidth: 140,
-        leadingWidthExtra: (rowStartSet.has(b) ? 30 : 0) + (b === 0 ? 48 : 0),
+        leadingWidthExtra: rowStartSet.has(b) ? 78 : 0,
         spacingPreset: getSpacingPresetForBar(b),
       }))
     );
     const rows = resolvedRowBarCounts.length;
-    const systemHeight = 108;
+    const systemHeight = 108 + resolvedRowGap;
     const height = 47 + rows * systemHeight;
     const naturalRowWidths = Array.from({ length: rows }, (_, rowIdx) => {
       const start = rowStartBars[rowIdx] ?? 0;
@@ -1493,12 +1495,12 @@ export default function Notation({
       const effectiveMergeNotes = getEffectiveBarBoolean(mergeNotesByBar, b, mergeNotes);
       const effectiveDottedNotes = getEffectiveBarBoolean(dottedNotesByBar, b, dottedNotes);
       const prevBarTimeSig = b > 0 ? (resolvedTimeSigByBar[b - 1] || timeSig || { n: 4, d: 4 }) : null;
-      const showBarTimeSig =
-        b === 0 ||
-        Number(prevBarTimeSig?.n) !== Number(barTimeSig?.n) ||
-        Number(prevBarTimeSig?.d) !== Number(barTimeSig?.d);
       const row = barRowIndices[b] ?? 0;
       const col = barCols[b] ?? 0;
+      const showBarTimeSig =
+        col === 0 ||
+        Number(prevBarTimeSig?.n) !== Number(barTimeSig?.n) ||
+        Number(prevBarTimeSig?.d) !== Number(barTimeSig?.d);
       const rowStartBar = rowStartBars[row] ?? 0;
       let x = 10;
       for (let bi = rowStartBar; bi < rowStartBar + col; bi++) {
@@ -2115,7 +2117,7 @@ for (let i = 0; i < notes.length; i++) {
     return () => {
       window.cancelAnimationFrame(rafId);
     };
-  }, [instruments, grid, stickingAssignmentsByStep, showNotationSticking, notationStickingSelection, notationStickingView, resolution, bars, barsPerLine, barsPerRow, stepsPerBar, timeSig, timeSigByBar, quarterSubdivisionsByBar, barStepOffsets, mergeRests, mergeNotes, dottedNotes, flatBeams, justifySystems, targetContentWidth, sectionMarkers, tempoMarkers, dynamicSpacingByBar, showSystemBarNumbers, barNumberOffset, enableMeasureRepeats, spacingPresetByBar, mergeRestsByBar, mergeNotesByBar, dottedNotesByBar, showNotationStickingByBar, theme]);
+  }, [instruments, grid, stickingAssignmentsByStep, showNotationSticking, notationStickingSelection, notationStickingView, resolution, bars, barsPerLine, barsPerRow, rowGap, stepsPerBar, timeSig, timeSigByBar, quarterSubdivisionsByBar, barStepOffsets, mergeRests, mergeNotes, dottedNotes, flatBeams, justifySystems, targetContentWidth, sectionMarkers, tempoMarkers, dynamicSpacingByBar, showSystemBarNumbers, barNumberOffset, enableMeasureRepeats, spacingPresetByBar, mergeRestsByBar, mergeNotesByBar, dottedNotesByBar, showNotationStickingByBar, theme]);
 
   useEffect(() => {
     const svg = highlightSvgRef.current;

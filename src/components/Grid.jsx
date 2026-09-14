@@ -88,10 +88,10 @@ export default function Grid({
   grid, columns, bars, stepsPerBar, resolution, timeSig, quarterSubdivisionsByBar, normalizedTupletOverridesByBar, barStepOffsets, setTupletAt, resetTupletAt, selectedCountRowSubdivision = 3, onSelectedCountRowSubdivisionChange, gridBarsPerLine,
   cycleVelocity, toggleGhost, selection, setSelection, loopRule,
     loopRepeats,
-  setLoopRule, wrappedSelectionCells, playhead, moveSelectionByDelta, playabilityWarningsEnabled, playabilityWarningStepSet, stickingConflictStepSet, stickingGuideEnabled, showEditedSticking, notationStickingSelection, stickingAssignmentsByStep, stickingEditModeEnabled, notationStickingSelectionModeEnabled, stickingOverrides, onCycleStickingOverride, onToggleNotationStickingSelection, onDisableNotationStickingSelectionMode, onDisableStickingEditMode, bakeLoopPreview, hoveredGridCellRef, labelGutterWidth = "calc(8ch + 0.75rem)", tupletGridAppearanceByValue = DEFAULT_TUPLET_GRID_APPEARANCE_BY_VALUE, darkenCountRowNonQuarters = true
+  setLoopRule, wrappedSelectionCells, playhead, moveSelectionByDelta, playabilityWarningsEnabled, playabilityWarningStepSet, stickingConflictStepSet, stickingGuideEnabled, showEditedSticking, notationStickingSelection, stickingAssignmentsByStep, stickingEditModeEnabled, notationStickingSelectionModeEnabled, stickingOverrides, onCycleStickingOverride, onToggleNotationStickingSelection, onDisableNotationStickingSelectionMode, onDisableStickingEditMode, bakeLoopPreview, hoveredGridCellRef, labelGutterWidth = "calc(8ch + 0.75rem)", countRowCutoffOffsetPx = 0, tupletGridAppearanceByValue = DEFAULT_TUPLET_GRID_APPEARANCE_BY_VALUE, darkenCountRowNonQuarters = true
 }) {
   const gridContentOffsetStyle = React.useMemo(
-    () => ({ transform: "translateX(-0.6rem)" }),
+    () => ({}),
     []
   );
   const notifySelectionFinalized = React.useCallback(() => {
@@ -738,7 +738,10 @@ export default function Grid({
 
         return (
           <div key={`gridline-${lineIdx}`} className="grid gap-1" style={{ gridTemplateColumns: `${labelGutterWidth} repeat(${timeline.length}, 28px)` }}>
-            <div className="flex h-6 items-end justify-end pr-0" style={{ width: labelGutterWidth }} />
+            <div
+              className="pointer-events-none box-border flex h-6 items-end justify-end overflow-hidden bg-neutral-900 pr-3"
+              style={{ width: labelGutterWidth, minWidth: labelGutterWidth, maxWidth: labelGutterWidth }}
+            />
                 {timeline.map((t, i) => {
                   if (t.type === "gap") return <div key={t.key} />;
                   const label = labelFor(t.stepMeta || { quarterIndex: 0, subIndex: 0, subdiv: 1 });
@@ -754,7 +757,10 @@ export default function Grid({
                 <div
                   key={`h-${t.stepIndex}`}
                   data-count-row-cell="1"
-                  className="relative h-6 text-xs text-center select-none overflow-visible cursor-pointer rounded-sm"
+                  data-bar-start={t.stepInBar === 0 ? "1" : undefined}
+                  className={`relative h-6 text-xs text-center select-none overflow-hidden cursor-pointer rounded-sm ${
+                    t.stepInBar === 0 ? "snap-start" : ""
+                  }`}
                   style={gridContentOffsetStyle}
                   onPointerDown={(e) => {
                     e.stopPropagation();
@@ -829,11 +835,11 @@ export default function Grid({
               );
             })}
 
-            {instruments.map((inst) => (
+            {instruments.map((inst, instrumentRowIdx) => (
               <React.Fragment key={`${inst.id}-${lineIdx}`}>
                 <div
-                  className="pr-0 text-xs text-right whitespace-nowrap select-none cursor-pointer hover:text-neutral-200"
-                  style={{ width: labelGutterWidth }}
+                  className={`sticky left-0 z-20 relative box-border flex items-center justify-end ${instrumentRowIdx === 0 ? "overflow-visible" : "overflow-hidden"} bg-transparent pr-1 text-xs text-right whitespace-nowrap select-none cursor-pointer hover:text-neutral-200`}
+                  style={{ width: labelGutterWidth, minWidth: labelGutterWidth, maxWidth: labelGutterWidth }}
                   onMouseDown={(e) => {
                     e.stopPropagation();
                     if (e.button !== 0) return;
@@ -849,7 +855,23 @@ export default function Grid({
                   }}
                   title="Select full row"
                 >
-                  {inst.label}
+                  <span
+                    className="pointer-events-none absolute inset-x-0 bottom-0 bg-neutral-900"
+                    style={{
+                      top: "0px",
+                      width: "calc(100% - 16px)",
+                    }}
+                    aria-hidden="true"
+                  />
+                  <span
+                    className="pointer-events-none absolute left-0 bottom-0 bg-neutral-900"
+                    style={{
+                      top: instrumentRowIdx === 0 ? "-1.75rem" : "0px",
+                      width: `calc(100% + ${countRowCutoffOffsetPx}px)`,
+                    }}
+                    aria-hidden="true"
+                  />
+                  <span className="relative z-10">{inst.label}</span>
                 </div>
                 {timeline.map((t, i) => {
                   if (t.type === "gap") return <div key={`g-${inst.id}-${lineIdx}-${i}`} style={gridContentOffsetStyle} />;

@@ -1,8 +1,8 @@
 import React from "react";
 
 const ADMIN_STATS_RANGE_OPTIONS = [
-  { id: "day", label: "This day" },
-  { id: "week", label: "This week" },
+  { id: "day", label: "Last 24h" },
+  { id: "week", label: "Last 7 days" },
   { id: "all", label: "All" },
 ];
 

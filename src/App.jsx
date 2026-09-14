@@ -481,13 +481,16 @@ const ARRANGEMENT_NOTATION_VIRTUALIZE_STORAGE_KEY =
   "drum-grid-arrangement-notation-virtualize-v1";
 const ARRANGEMENT_NOTATION_PREVIEW_SCALE_STORAGE_KEY =
   "drum-grid-arrangement-notation-preview-scale-v1";
+const NOTATION_ROW_GAP_STORAGE_KEY = "drum-grid-notation-row-gap-v1";
 const ARRANGEMENT_TITLE_LINE1_STORAGE_KEY = "drum-grid-arrangement-title-line1-v1";
 const ARRANGEMENT_TITLE_LINE2_STORAGE_KEY = "drum-grid-arrangement-title-line2-v1";
 const ARRANGEMENT_COMPOSER_STORAGE_KEY = "drum-grid-arrangement-composer-v1";
 const PREFERENCES_CATEGORY_STORAGE_KEY = "drum-grid-preferences-category-v1";
 const GRID_NOTATION_GAP_STORAGE_KEY = "drum-grid-grid-notation-gap-v1";
 const NOTATION_GRID_GAP_OFFSET_STORAGE_KEY = "drum-grid-notation-grid-gap-offset-v1";
+const COUNT_ROW_CUTOFF_OFFSET_STORAGE_KEY = "drum-grid-count-row-cutoff-offset-v1";
 const DEFAULT_LOOP_REPEATS_STORAGE_KEY = "drum-grid-default-loop-repeats-v1";
+const EDITOR_RECOVERY_DRAFT_STORAGE_KEY = "drum-grid-editor-recovery-draft-v1";
 const STARTUP_GRID_SETTINGS_STORAGE_KEY = "drum-grid-startup-grid-settings-v1";
 const BEAT_LIBRARY_CONTAINERS_STORAGE_KEY = "drum-grid-beat-library-containers-v1";
 const DEVICE_LOCAL_BEAT_LIBRARY_CONTAINERS_SNAPSHOT_STORAGE_KEY =
@@ -521,6 +524,99 @@ const CELL = {
   GHOST: "ghost",
   ACCENT: "accent",
 };
+
+function EditorGridScrollArea({
+  children,
+  className = "",
+  style,
+  labelGutterWidth,
+}) {
+  const scrollerRef = React.useRef(null);
+  const contentRef = React.useRef(null);
+  const measureRef = React.useRef(() => {});
+  const [scrollEnabled, setScrollEnabled] = React.useState(false);
+  const [trailingSnapPadding, setTrailingSnapPadding] = React.useState(16);
+
+  measureRef.current = () => {
+    const scroller = scrollerRef.current;
+    const content = contentRef.current;
+    const gridSurface = content?.querySelector?.("[data-gridsurface='1']");
+    if (!(scroller instanceof HTMLElement) || !(gridSurface instanceof HTMLElement)) return;
+    const gridSurfaceWidth = Math.max(
+      gridSurface.scrollWidth,
+      gridSurface.getBoundingClientRect().width
+    );
+    const nextScrollEnabled = gridSurfaceWidth > scroller.clientWidth + 1;
+    const barStartCells = Array.from(content.querySelectorAll("[data-bar-start='1']"));
+    const lastBarStartCell = barStartCells[barStartCells.length - 1];
+    if (lastBarStartCell instanceof HTMLElement) {
+      const contentRect = content.getBoundingClientRect();
+      const lastBarRect = lastBarStartCell.getBoundingClientRect();
+      const lastBarStartOffset = Math.max(0, lastBarRect.left - contentRect.left);
+      const scrollPadding = parseFloat(window.getComputedStyle(scroller).scrollPaddingLeft || "0") || 0;
+      const naturalContentWidth = gridSurface.getBoundingClientRect().width;
+      const neededContentWidth = lastBarStartOffset + Math.max(0, scroller.clientWidth - scrollPadding);
+      const nextPadding = nextScrollEnabled
+        ? Math.max(16, Math.ceil(neededContentWidth - naturalContentWidth))
+        : 16;
+      setTrailingSnapPadding((prev) => (Math.abs(prev - nextPadding) < 1 ? prev : nextPadding));
+    } else {
+      setTrailingSnapPadding((prev) => (prev === 16 ? prev : 16));
+    }
+    setScrollEnabled((prev) => {
+      if (prev === nextScrollEnabled) return prev;
+      if (!nextScrollEnabled) scroller.scrollLeft = 0;
+      return nextScrollEnabled;
+    });
+  };
+
+  React.useEffect(() => {
+    const measure = () => measureRef.current?.();
+    let frameId = window.requestAnimationFrame(measure);
+    const observer = new ResizeObserver(() => {
+      if (frameId) window.cancelAnimationFrame(frameId);
+      frameId = window.requestAnimationFrame(measure);
+    });
+    if (scrollerRef.current instanceof HTMLElement) observer.observe(scrollerRef.current);
+    if (contentRef.current instanceof HTMLElement) observer.observe(contentRef.current);
+    const gridSurface = contentRef.current?.querySelector?.("[data-gridsurface='1']");
+    if (gridSurface instanceof HTMLElement) observer.observe(gridSurface);
+    window.addEventListener("resize", measure);
+    return () => {
+      if (frameId) window.cancelAnimationFrame(frameId);
+      observer.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, []);
+
+  React.useEffect(() => {
+    const frameId = window.requestAnimationFrame(() => measureRef.current?.());
+    return () => window.cancelAnimationFrame(frameId);
+  });
+
+  return (
+    <div
+      ref={scrollerRef}
+      className={`w-full min-w-0 overflow-y-visible ${
+        scrollEnabled ? "snap-x snap-mandatory overflow-x-auto" : "overflow-x-hidden"
+      } ${className}`}
+      style={{
+        ...style,
+        ...(scrollEnabled && labelGutterWidth ? { scrollPaddingLeft: labelGutterWidth } : {}),
+      }}
+    >
+      <div
+        ref={contentRef}
+        className="inline-block min-w-max align-top"
+        style={{
+          paddingRight: scrollEnabled ? `${trailingSnapPadding}px` : "1rem",
+        }}
+      >
+        {children}
+      </div>
+    </div>
+  );
+}
 
 const CELL_CYCLE = [CELL.OFF, CELL.ON];
 const MOVE_OVERLAP_MODES = [
@@ -2506,11 +2602,21 @@ function buildNotationStateFromPayload(payload) {
           Object.entries(payload.notationStickingSelection).filter(([, value]) => value === true)
         )
       : {};
+  const stickingOverrides =
+    payload?.stickingOverrides && typeof payload.stickingOverrides === "object"
+      ? Object.fromEntries(
+          Object.entries(payload.stickingOverrides).filter(([, value]) => value === "L" || value === "R")
+        )
+      : {};
   const timeSigByBar = Array.from({ length: bars }, () => ({ ...timeSig }));
   return {
     instruments,
     grid,
     notationStickingSelection,
+    stickingOverrides,
+    stickingHandedness: payload.stickingHandedness === "left" ? "left" : "right",
+    stickingLeadHand: payload.stickingLeadHand === "left" ? "left" : "right",
+    stickingKeepQuarterLeadHand: payload.stickingKeepQuarterLeadHand !== false,
     resolution,
     bars,
     barsPerLine: Math.max(1, Math.min(4, bars)),
@@ -2605,10 +2711,15 @@ function expandNotationStateForRepeats(state, repeats) {
     grid[inst.id] = row;
   });
   const notationStickingSelection = {};
+  const stickingOverrides = {};
   const timeSigByBar = [];
   const srcNotationStickingSelection =
     state?.notationStickingSelection && typeof state.notationStickingSelection === "object"
       ? state.notationStickingSelection
+      : {};
+  const srcStickingOverrides =
+    state?.stickingOverrides && typeof state.stickingOverrides === "object"
+      ? state.stickingOverrides
       : {};
   const srcTimeSigByBar =
     Array.isArray(state?.timeSigByBar) && state.timeSigByBar.length === baseBars
@@ -2623,6 +2734,15 @@ function expandNotationStateForRepeats(state, repeats) {
       notationStickingSelection[`${instId}:${i * baseColumns + idx}`] = true;
     }
   });
+  Object.entries(srcStickingOverrides).forEach(([key, hand]) => {
+    if (hand !== "L" && hand !== "R") return;
+    const [instId, rawIdx] = String(key).split(":");
+    const idx = Number(rawIdx);
+    if (!instId || !Number.isFinite(idx) || idx < 0 || idx >= baseColumns) return;
+    for (let i = 0; i < count; i++) {
+      stickingOverrides[`${instId}:${i * baseColumns + idx}`] = hand;
+    }
+  });
   for (let i = 0; i < count; i++) {
     srcTimeSigByBar.forEach((ts) => {
       timeSigByBar.push({
@@ -2635,6 +2755,7 @@ function expandNotationStateForRepeats(state, repeats) {
     ...state,
     grid,
     notationStickingSelection,
+    stickingOverrides,
     bars: baseBars * count,
     barsPerLine: Math.max(1, Math.min(4, baseBars * count)),
     timeSigByBar,
@@ -2690,6 +2811,7 @@ function mergeNotationStates(states) {
 
   let colOffset = 0;
   const notationStickingSelection = {};
+  const stickingOverrides = {};
   const timeSigByBar = [];
   valid.forEach((s) => {
     const sBars = Math.max(1, Number(s.bars) || 1);
@@ -2713,6 +2835,17 @@ function mergeNotationStates(states) {
       if (!instId || !Number.isFinite(idx) || idx < 0 || idx >= sCols) return;
       notationStickingSelection[`${instId}:${colOffset + idx}`] = true;
     });
+    Object.entries(
+      s?.stickingOverrides && typeof s.stickingOverrides === "object"
+        ? s.stickingOverrides
+        : {}
+    ).forEach(([key, hand]) => {
+      if (hand !== "L" && hand !== "R") return;
+      const [instId, rawIdx] = String(key).split(":");
+      const idx = Number(rawIdx);
+      if (!instId || !Number.isFinite(idx) || idx < 0 || idx >= sCols) return;
+      stickingOverrides[`${instId}:${colOffset + idx}`] = hand;
+    });
     const sBarsCount = Math.max(1, Number(s.bars) || 1);
     const sTimeSigByBar =
       Array.isArray(s?.timeSigByBar) && s.timeSigByBar.length === sBarsCount
@@ -2731,6 +2864,10 @@ function mergeNotationStates(states) {
     instruments,
     grid,
     notationStickingSelection,
+    stickingOverrides,
+    stickingHandedness: valid[0].stickingHandedness === "left" ? "left" : "right",
+    stickingLeadHand: valid[0].stickingLeadHand === "left" ? "left" : "right",
+    stickingKeepQuarterLeadHand: valid[0].stickingKeepQuarterLeadHand !== false,
     resolution: valid.reduce(
       (max, state) => Math.max(max, Number(state?.resolution) || 0),
       Number(valid[0]?.resolution) || 8
@@ -2950,10 +3087,32 @@ function computeStickingAssignmentsForNotationState(state, opts = {}) {
   const quarterSubdivisionsByBar = Array.isArray(state.quarterSubdivisionsByBar)
     ? state.quarterSubdivisionsByBar
     : [];
-  const handedness = opts.stickingHandedness === "left" ? "left" : "right";
-  const lead = opts.stickingLeadHand === "left" ? "L" : "R";
-  const keepQuarterLeadHand = opts.stickingKeepQuarterLeadHand !== false;
-  const stickingOverrides = opts.stickingOverrides || {};
+  const handedness =
+    opts.stickingHandedness === "left"
+      ? "left"
+      : opts.stickingHandedness === "right"
+        ? "right"
+        : state.stickingHandedness === "left"
+          ? "left"
+          : "right";
+  const lead =
+    opts.stickingLeadHand === "left"
+      ? "L"
+      : opts.stickingLeadHand === "right"
+        ? "R"
+        : state.stickingLeadHand === "left"
+          ? "L"
+          : "R";
+  const keepQuarterLeadHand =
+    typeof opts.stickingKeepQuarterLeadHand === "boolean"
+      ? opts.stickingKeepQuarterLeadHand
+      : state.stickingKeepQuarterLeadHand !== false;
+  const stickingOverrides =
+    opts.stickingOverrides && typeof opts.stickingOverrides === "object"
+      ? opts.stickingOverrides
+      : state.stickingOverrides && typeof state.stickingOverrides === "object"
+        ? state.stickingOverrides
+        : {};
 
   const quarterDownbeatStepSet = new Set();
   for (let b = 0; b < quarterSubdivisionsByBar.length; b++) {
@@ -3438,7 +3597,7 @@ export default function App() {
     [kitInstrumentIds]
   );
   const currentGridLabelGutterWidth = React.useMemo(() => {
-    return "calc(8ch + 0.2rem)";
+    return "calc(9ch + 0.75rem)";
   }, []);
   const [isKitEditorOpen, setIsKitEditorOpen] = useState(false);
   const [pendingRemoval, setPendingRemoval] = useState(null); // { instId, moveTargetId }
@@ -3792,6 +3951,14 @@ export default function App() {
       return Math.max(0.35, Math.min(1, Math.round(numeric * 100) / 100));
     } catch (_) {
       return 0.6;
+    }
+  });
+  const [notationRowGap, setNotationRowGap] = useState(() => {
+    try {
+      const raw = Number(window.localStorage.getItem(NOTATION_ROW_GAP_STORAGE_KEY));
+      return Number.isFinite(raw) ? Math.max(-16, Math.min(80, Math.round(raw))) : 0;
+    } catch (_) {
+      return 0;
     }
   });
   const [arrangementNotationPreviewScaledHeight, setArrangementNotationPreviewScaledHeight] = useState(0);
@@ -4172,8 +4339,16 @@ export default function App() {
 
   const [resolution, setResolution] = useState(() => initialStartupGridSettings.resolution); // 4, 8, 16, 32
   const [bars, setBars] = useState(() => initialStartupGridSettings.bars);
-  const [barsPerLine, setBarsPerLine] = useState(4);
+  const [barsPerLine, setBarsPerLine] = useState(2);
   const [gridBarsPerLine, setGridBarsPerLine] = useState(4);
+  const [countRowCutoffOffsetPx, setCountRowCutoffOffsetPx] = useState(() => {
+    try {
+      const raw = Number(window.localStorage.getItem(COUNT_ROW_CUTOFF_OFFSET_STORAGE_KEY));
+      return Number.isFinite(raw) ? Math.max(-48, Math.min(48, Math.round(raw))) : 0;
+    } catch (_) {
+      return 0;
+    }
+  });
   const [layout, setLayout] = useState("grid-top");
   const [gridNotationGap, setGridNotationGap] = useState(() => {
     const defaultGridNotationGap = isMobileFloatingPanels ? 0 : 10;
@@ -4199,6 +4374,7 @@ export default function App() {
   const [timeSig, setTimeSig] = useState(() => ({ ...initialStartupGridSettings.timeSig }));
   const [keepTiming, setKeepTiming] = useState(true);
   const [isSidebarResolutionOpen, setIsSidebarResolutionOpen] = useState(false);
+  const [isSidebarBarsOpen, setIsSidebarBarsOpen] = useState(false);
   const [playabilityWarningsEnabled, setPlayabilityWarningsEnabled] = useState(true);
   const [tupletOverridesByBar, setTupletOverridesByBar] = useState(() =>
     cloneTupletOverridesByBar(
@@ -6280,6 +6456,14 @@ export default function App() {
   }, [notationGridGapOffset]);
   useEffect(() => {
     try {
+      window.localStorage.setItem(
+        COUNT_ROW_CUTOFF_OFFSET_STORAGE_KEY,
+        String(countRowCutoffOffsetPx)
+      );
+    } catch (_) {}
+  }, [countRowCutoffOffsetPx]);
+  useEffect(() => {
+    try {
       if (authUser?.id) return;
       deviceLocalBeatLibraryContainersRef.current = beatLibraryContainers;
       writeStoredBeatLibraryContainers(beatLibraryContainers);
@@ -6389,6 +6573,14 @@ export default function App() {
       );
     } catch (_) {}
   }, [arrangementNotationPreviewScale]);
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        NOTATION_ROW_GAP_STORAGE_KEY,
+        String(notationRowGap)
+      );
+    } catch (_) {}
+  }, [notationRowGap]);
   useEffect(() => {
     try {
       window.localStorage.setItem(ARRANGEMENT_TITLE_LINE1_STORAGE_KEY, arrangementTitleLine1Draft);
@@ -7019,6 +7211,9 @@ export default function App() {
   const moveInitialPayloadRef = React.useRef(null);
   const moveBaseGridRef = React.useRef(null);
   const gridClipboardRef = React.useRef(null);
+  const stickingAssignmentsByStepRef = React.useRef([]);
+  const editorRecoveryReadyRef = React.useRef(false);
+  const skipNextEditorRecoveryAutosaveRef = React.useRef(false);
   const [wrappedSelectionCells, setWrappedSelectionCells] = useState(null);
   // { rowStart, rowEnd, start, endExclusive } (row indices into active instruments)
   const [loopRule, setLoopRule] = useState(null);
@@ -7867,16 +8062,50 @@ useEffect(() => {
           rowOffset: rOff,
           colOffset: cOff,
           value: sourceGrid[instId]?.[colIndex] ?? CELL.OFF,
+          sticking:
+            (sourceGrid[instId]?.[colIndex] ?? CELL.OFF) !== CELL.OFF &&
+            !FOOT_INSTRUMENTS.has(instId) &&
+            (stickingAssignmentsByStepRef.current?.[colIndex]?.[instId] === "L" ||
+              stickingAssignmentsByStepRef.current?.[colIndex]?.[instId] === "R")
+              ? stickingAssignmentsByStepRef.current[colIndex][instId]
+              : null,
+          showSticking:
+            (sourceGrid[instId]?.[colIndex] ?? CELL.OFF) !== CELL.OFF &&
+            showNotationSticking !== false &&
+            (notationStickingModePreference === "all" ||
+              notationStickingSelection?.[`${instId}:${colIndex}`] === true),
         });
       }
     }
     return { width, height, cells };
-  }, [selection, instruments]);
+  }, [
+    selection,
+    instruments,
+    notationStickingModePreference,
+    notationStickingSelection,
+    showNotationSticking,
+  ]);
   const applyClipboardAt = React.useCallback((clipboard, anchorRow, anchorCol) => {
     if (!clipboard?.cells?.length) return false;
     const startRow = Math.max(0, Math.floor(Number(anchorRow) || 0));
     const startCol = Math.max(0, Math.floor(Number(anchorCol) || 0));
     setLoopRule(null);
+    const targetSticking = clipboard.cells
+      .map((cell) => {
+        const rowIndex = startRow + cell.rowOffset;
+        const colIndex = startCol + cell.colOffset;
+        if (rowIndex < 0 || rowIndex >= instruments.length) return null;
+        if (colIndex < 0 || colIndex >= columns) return null;
+        const instId = instruments[rowIndex]?.id;
+        if (!instId) return null;
+        return {
+          instId,
+          colIndex,
+          hand: cell.sticking === "L" || cell.sticking === "R" ? cell.sticking : null,
+          active: cell.value !== CELL.OFF,
+        };
+      })
+      .filter(Boolean);
     setBaseGridWithUndo((prev) => {
       const next = cloneGridState(prev);
       clipboard.cells.forEach((cell) => {
@@ -7890,6 +8119,49 @@ useEffect(() => {
       });
       return next;
     });
+    if (targetSticking.length) {
+      setStickingOverrides((prev) => {
+        const next = { ...(prev || {}) };
+        let changed = false;
+        targetSticking.forEach(({ instId, colIndex, hand, active }) => {
+          const key = `${instId}:${colIndex}`;
+          if (next[key]) {
+            delete next[key];
+            changed = true;
+          }
+          if (!active || FOOT_INSTRUMENTS.has(instId) || (hand !== "L" && hand !== "R")) return;
+          next[key] = hand;
+          changed = true;
+        });
+        return changed ? next : prev;
+      });
+      setNotationStickingSelection((prev) => {
+        const next = { ...(prev || {}) };
+        let changed = false;
+        targetSticking.forEach(({ instId, colIndex }) => {
+          const key = `${instId}:${colIndex}`;
+          if (next[key]) {
+            delete next[key];
+            changed = true;
+          }
+        });
+        clipboard.cells.forEach((cell) => {
+          if (!cell.showSticking || cell.value === CELL.OFF) return;
+          const rowIndex = startRow + cell.rowOffset;
+          const colIndex = startCol + cell.colOffset;
+          if (rowIndex < 0 || rowIndex >= instruments.length) return;
+          if (colIndex < 0 || colIndex >= columns) return;
+          const instId = instruments[rowIndex]?.id;
+          if (!instId) return;
+          const key = `${instId}:${colIndex}`;
+          if (next[key] !== true) {
+            next[key] = true;
+            changed = true;
+          }
+        });
+        return changed ? next : prev;
+      });
+    }
     const endRow = Math.min(instruments.length - 1, startRow + Math.max(0, clipboard.height - 1));
     const endColExclusive = Math.min(columns, startCol + Math.max(1, clipboard.width));
     setSelection({
@@ -8265,6 +8537,8 @@ useEffect(() => {
           nextSubsByBar
         )
       );
+    } else {
+      pushGridHistoryRef.current();
     }
     setTupletOverridesByBar(nextOverridesByBar);
     setResolution(newRes);
@@ -8294,6 +8568,8 @@ useEffect(() => {
           nextSubsByBar
         )
       );
+    } else {
+      pushGridHistoryRef.current();
     }
     setTupletOverridesByBar(nextOverridesByBar);
     setTimeSig(newTS);
@@ -8562,6 +8838,9 @@ useEffect(() => {
   const pushGridHistoryRef = React.useRef(() => {});
   const baseGridRef = React.useRef(null);
   const tupletOverridesRef = React.useRef(tupletOverridesByBar);
+  const resolutionRef = React.useRef(resolution);
+  const barsRef = React.useRef(bars);
+  const timeSigRef = React.useRef(timeSig);
 
   React.useEffect(() => {
     localBeatsRef.current = localBeats;
@@ -8609,6 +8888,15 @@ useEffect(() => {
   React.useEffect(() => {
     tupletOverridesRef.current = tupletOverridesByBar;
   }, [tupletOverridesByBar]);
+  React.useEffect(() => {
+    resolutionRef.current = resolution;
+  }, [resolution]);
+  React.useEffect(() => {
+    barsRef.current = bars;
+  }, [bars]);
+  React.useEffect(() => {
+    timeSigRef.current = timeSig;
+  }, [timeSig]);
 
   React.useEffect(() => {
     if (applyingTupletRemapRef.current) {
@@ -8669,6 +8957,14 @@ useEffect(() => {
     (gridState, tupletState) => ({
       grid: snapshotGrid(gridState),
       tuplets: snapshotTuplets(tupletState),
+      resolution: [4, 8, 16, 32].includes(Number(resolutionRef.current))
+        ? Number(resolutionRef.current)
+        : 8,
+      bars: Math.max(1, Math.min(8, Math.round(Number(barsRef.current) || 1))),
+      timeSig: {
+        n: Math.max(1, Math.round(Number(timeSigRef.current?.n) || 4)),
+        d: Math.max(1, Math.round(Number(timeSigRef.current?.d) || 4)),
+      },
     }),
     [snapshotGrid, snapshotTuplets]
   );
@@ -8704,6 +9000,18 @@ useEffect(() => {
       snapshotEditorState(baseGridRef.current, tupletOverridesRef.current),
       ...gridFutureRef.current,
     ];
+    if ([4, 8, 16, 32].includes(Number(prev?.resolution))) {
+      setResolution(Number(prev.resolution));
+    }
+    if (Number.isFinite(Number(prev?.bars))) {
+      setBars(Math.max(1, Math.min(8, Math.round(Number(prev.bars) || 1))));
+    }
+    if (prev?.timeSig && typeof prev.timeSig === "object") {
+      setTimeSig({
+        n: Math.max(1, Math.round(Number(prev.timeSig.n) || 4)),
+        d: Math.max(1, Math.round(Number(prev.timeSig.d) || 4)),
+      });
+    }
     setBaseGrid(prev?.grid || {});
     if (Array.isArray(prev?.tuplets)) setTupletOverridesByBar(prev.tuplets);
     syncHistoryState();
@@ -8717,6 +9025,18 @@ useEffect(() => {
       ...gridPastRef.current,
       snapshotEditorState(baseGridRef.current, tupletOverridesRef.current),
     ];
+    if ([4, 8, 16, 32].includes(Number(next?.resolution))) {
+      setResolution(Number(next.resolution));
+    }
+    if (Number.isFinite(Number(next?.bars))) {
+      setBars(Math.max(1, Math.min(8, Math.round(Number(next.bars) || 1))));
+    }
+    if (next?.timeSig && typeof next.timeSig === "object") {
+      setTimeSig({
+        n: Math.max(1, Math.round(Number(next.timeSig.n) || 4)),
+        d: Math.max(1, Math.round(Number(next.timeSig.d) || 4)),
+      });
+    }
     setBaseGrid(next?.grid || {});
     if (Array.isArray(next?.tuplets)) setTupletOverridesByBar(next.tuplets);
     syncHistoryState();
@@ -8859,6 +9179,18 @@ useEffect(() => {
     (snapshot) => {
       if (!snapshot || typeof snapshot !== "object") return;
       if (snapshot.editor) {
+        if ([4, 8, 16, 32].includes(Number(snapshot.editor.resolution))) {
+          setResolution(Number(snapshot.editor.resolution));
+        }
+        if (Number.isFinite(Number(snapshot.editor.bars))) {
+          setBars(Math.max(1, Math.min(8, Math.round(Number(snapshot.editor.bars) || 1))));
+        }
+        if (snapshot.editor.timeSig && typeof snapshot.editor.timeSig === "object") {
+          setTimeSig({
+            n: Math.max(1, Math.round(Number(snapshot.editor.timeSig.n) || 4)),
+            d: Math.max(1, Math.round(Number(snapshot.editor.timeSig.d) || 4)),
+          });
+        }
         setBaseGrid(snapshot.editor.grid || {});
         if (Array.isArray(snapshot.editor.tuplets)) setTupletOverridesByBar(snapshot.editor.tuplets);
       }
@@ -11030,9 +11362,10 @@ useEffect(() => {
       const notationState = expandNotationStateForRepeats(baseNotationState, row?.repeats);
       if (!notationState) return;
       const stickingAssignments = computeStickingAssignmentsForNotationState(notationState, {
-        stickingHandedness,
-        stickingLeadHand,
-        stickingKeepQuarterLeadHand,
+        stickingHandedness: notationState.stickingHandedness,
+        stickingLeadHand: notationState.stickingLeadHand,
+        stickingKeepQuarterLeadHand: notationState.stickingKeepQuarterLeadHand,
+        stickingOverrides: notationState.stickingOverrides,
       });
       const bpmNum = Number.isFinite(row?.beatBpm) ? Math.round(Number(row.beatBpm)) : null;
       const showTempoAtStart = bpmNum != null && (globalBarOffset === 0 || prevBpm !== bpmNum);
@@ -11114,11 +11447,16 @@ useEffect(() => {
       const mergeNotesByBar = [];
       const dottedNotesByBar = [];
       const showNotationStickingByBar = [];
+      const stickingAssignments = [];
       const exactBarsPerRow = [];
       let localBarCursor = 0;
       let carryBarsRemaining = 0;
       current.forEach((s) => {
         const localBar = Math.max(0, (s.startBarOffset || 0) - startBarOffset);
+        const localStep = Number(merged.barStepOffsets?.[localBar] ?? 0) || 0;
+        (Array.isArray(s?.stickingAssignments) ? s.stickingAssignments : []).forEach((assignment, idx) => {
+          stickingAssignments[localStep + idx] = assignment && typeof assignment === "object" ? { ...assignment } : {};
+        });
         (s.sectionMarkers || []).forEach((m) => {
           sectionMarkers.push({ bar: localBar + (Number(m?.bar) || 0), text: String(m?.text || "") });
         });
@@ -11173,11 +11511,10 @@ useEffect(() => {
         dottedNotesByBar,
         showNotationStickingByBar,
         blockSections: current,
-        stickingAssignments: computeStickingAssignmentsForNotationState(merged, {
-          stickingHandedness,
-          stickingLeadHand,
-          stickingKeepQuarterLeadHand,
-        }),
+        stickingAssignments:
+          stickingAssignments.length > 0
+            ? stickingAssignments
+            : computeStickingAssignmentsForNotationState(merged),
       };
     };
 
@@ -14295,6 +14632,7 @@ useEffect(() => {
     });
     return out;
   }, [autoStickingAssignmentsByStep, stickingOverrides, computedGrid]);
+  stickingAssignmentsByStepRef.current = stickingAssignmentsByStep;
   const playabilityWarningSteps = React.useMemo(() => {
     const handIds = instruments.map((inst) => inst.id).filter((id) => !FOOT_INSTRUMENTS.has(id));
     const warned = [];
@@ -15831,6 +16169,68 @@ useEffect(() => {
     applyImportedBeatPayloadRef.current = applyImportedBeatPayload;
   }, [applyImportedBeatPayload]);
   useEffect(() => {
+    if (isEmbedMode || requestedExample || routeOptions.shared || routeOptions.shareId) {
+      editorRecoveryReadyRef.current = true;
+      return;
+    }
+    try {
+      const raw = window.localStorage.getItem(EDITOR_RECOVERY_DRAFT_STORAGE_KEY);
+      if (!raw) {
+        editorRecoveryReadyRef.current = true;
+        return;
+      }
+      const draft = JSON.parse(raw);
+      const payload = draft?.payload;
+      const savedAt = Number(draft?.savedAt) || 0;
+      const maxAgeMs = 1000 * 60 * 60 * 24 * 14;
+      if (!payload || typeof payload !== "object" || Date.now() - savedAt > maxAgeMs) {
+        editorRecoveryReadyRef.current = true;
+        return;
+      }
+      skipNextEditorRecoveryAutosaveRef.current = true;
+      applyImportedBeatPayloadRef.current?.(payload, `editor-recovery:${savedAt}`);
+    } catch (_) {
+      // Recovery is best-effort; a corrupt draft should never block the editor.
+    } finally {
+      editorRecoveryReadyRef.current = true;
+    }
+  }, [isEmbedMode, requestedExample, routeOptions.shared, routeOptions.shareId]);
+  useEffect(() => {
+    if (!editorRecoveryReadyRef.current) return;
+    if (isEmbedMode) return;
+    if (skipNextEditorRecoveryAutosaveRef.current) {
+      skipNextEditorRecoveryAutosaveRef.current = false;
+      return;
+    }
+    try {
+      window.localStorage.setItem(
+        EDITOR_RECOVERY_DRAFT_STORAGE_KEY,
+        JSON.stringify({
+          savedAt: Date.now(),
+          loadedLocalBeatId: loadedLocalBeatId || null,
+          payload: currentBeatPayload,
+        })
+      );
+    } catch (_) {}
+  }, [currentBeatPayload, isEmbedMode, loadedLocalBeatId]);
+  useEffect(() => {
+    if (isEmbedMode) return undefined;
+    const hasAnyNote = Object.values(currentBeatPayload?.grid || {}).some(
+      (events) => Array.isArray(events) && events.length > 0
+    );
+    const shouldWarn =
+      isLoadedLocalBeatDirty ||
+      (!loadedLocalBeatId && hasAnyNote);
+    if (!shouldWarn) return undefined;
+    const handleBeforeUnload = (event) => {
+      event.preventDefault();
+      event.returnValue = "";
+      return "";
+    };
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, [currentBeatPayload, isEmbedMode, isLoadedLocalBeatDirty, loadedLocalBeatId]);
+  useEffect(() => {
     const mappingPending = pendingMidiImportMapping;
     const tempoPending = pendingMidiTempoPrompt;
     const previewSource = tempoPending?.arrayBuffer
@@ -16190,14 +16590,49 @@ useEffect(() => {
   );
   const addCurrentBeatToSheet = React.useCallback(() => {
     if (!loadedLocalBeatId) return;
-    const currentBeat =
+    const savedBeat =
       localBeatsRef.current.find((beat) => String(beat?.id || "") === String(loadedLocalBeatId)) ||
       loadedLocalBeat ||
       null;
+    const livePayload = buildCurrentBeatPayload();
+    const currentBeat = {
+      ...(savedBeat || {}),
+      id: String(loadedLocalBeatId),
+      name: String(beatNameDraft || savedBeat?.name || livePayload?.name || "Untitled Beat"),
+      category: beatCategoryDraft === "all" ? (savedBeat?.category || "Groove") : beatCategoryDraft,
+      style: beatStyleDraft === "all" ? savedBeat?.style : beatStyleDraft.trim() || undefined,
+      timeSigCategory: `${timeSig.n}/${timeSig.d}`,
+      bpm,
+      payload: {
+        ...(livePayload || {}),
+        ...(savedBeat?.payload?.libraryMeta ? { libraryMeta: savedBeat.payload.libraryMeta } : {}),
+      },
+      notationStickingSelection:
+        livePayload?.notationStickingSelection && typeof livePayload.notationStickingSelection === "object"
+          ? livePayload.notationStickingSelection
+          : {},
+      source: savedBeat?.source || "local",
+    };
+    const nextLocalBeats = localBeatsRef.current.map((beat) =>
+      String(beat?.id || "") === String(loadedLocalBeatId) ? currentBeat : beat
+    );
+    localBeatsRef.current = nextLocalBeats;
+    setLocalBeats(nextLocalBeats);
     arrangementAddBeat("local", loadedLocalBeatId, currentBeat);
     setIsArrangementNotationOpen(true);
     setArrangementNotationRowMenuState(null);
-  }, [arrangementAddBeat, loadedLocalBeatId, loadedLocalBeat]);
+  }, [
+    arrangementAddBeat,
+    loadedLocalBeatId,
+    loadedLocalBeat,
+    buildCurrentBeatPayload,
+    beatNameDraft,
+    beatCategoryDraft,
+    beatStyleDraft,
+    timeSig.n,
+    timeSig.d,
+    bpm,
+  ]);
   const finalizeCurrentBeatStripRename = React.useCallback(() => {
     setCurrentBeatStripRenameHoverAction(null);
     setPendingCurrentBeatStripAutoRename(false);
@@ -16995,9 +17430,28 @@ useEffect(() => {
 	                  </div>
 	                ) : null}
 
-	                <div className="flex items-center justify-between gap-2" onPointerDown={clearSidebarChevronHint}>
-                    <span className="text-sm text-neutral-300">Bars</span>
-                    <div className="flex items-stretch overflow-hidden rounded-md border border-neutral-700 bg-neutral-800">
+	                <div className="flex items-center justify-between gap-2">
+                    <button
+                      type="button"
+                      data-sidebar-chevron-control="bars"
+                      onPointerDown={() => markSidebarChevronHint("bars")}
+                      onClick={() => setIsSidebarBarsOpen((v) => !v)}
+                      className="group -ml-1 inline-flex items-center gap-1 rounded px-1 py-0.5 text-sm text-neutral-300 hover:bg-neutral-800/70 hover:text-white"
+                      aria-expanded={isSidebarBarsOpen}
+                      aria-controls="settings-popup-bars-options"
+                      title="Show bars options"
+                    >
+                      <span className="whitespace-nowrap">Bars</span>
+                      {renderSidebarChevron(
+                        isSidebarBarsOpen,
+                        isSidebarBarsOpen || sidebarChevronHint === "bars"
+                      )}
+                    </button>
+                    <div
+                      data-sidebar-chevron-control="bars"
+                      onPointerDown={() => markSidebarChevronHint("bars")}
+                      className="flex items-stretch overflow-hidden rounded-md border border-neutral-700 bg-neutral-800"
+                    >
                       <button
                         type="button"
                         onClick={() => setBars((b) => Math.max(1, b - 1))}
@@ -17018,7 +17472,101 @@ useEffect(() => {
                         +
                       </button>
                     </div>
-                </div>
+                  </div>
+                  {isSidebarBarsOpen ? (
+                    <div
+                      id="settings-popup-bars-options"
+                      className="space-y-2 rounded px-1 py-1"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs text-neutral-500">Bars/line</span>
+                        <div className="flex items-stretch overflow-hidden rounded-md border border-neutral-700 bg-neutral-800">
+                          <button
+                            type="button"
+                            onClick={() => setBarsPerLine((v) => Math.max(1, v - 1))}
+                            className="px-2 text-sm leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                            aria-label="Decrease notation bars per line"
+                          >
+                            −
+                          </button>
+                          <div className="min-w-[36px] border-l border-r border-neutral-700 px-2 py-1 text-center text-xs text-white">
+                            {barsPerLine}
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setBarsPerLine((v) => Math.min(bars, v + 1))}
+                            className="px-2 text-sm leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                            aria-label="Increase notation bars per line"
+                          >
+                            +
+                          </button>
+                        </div>
+                      </div>
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs text-neutral-500">Grid bars/line</span>
+                        <div className="flex items-stretch overflow-hidden rounded-md border border-neutral-700 bg-neutral-800">
+                          <button
+                            type="button"
+                            onClick={() => setGridBarsPerLine((v) => Math.max(1, v - 1))}
+                            className="px-2 text-sm leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                            aria-label="Decrease grid bars per line"
+                          >
+                            −
+                          </button>
+                          <div className="min-w-[36px] border-l border-r border-neutral-700 px-2 py-1 text-center text-xs text-white">
+                            {gridBarsPerLine}
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setGridBarsPerLine((v) => Math.min(bars, v + 1))}
+                            className="px-2 text-sm leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                            aria-label="Increase grid bars per line"
+                          >
+                            +
+                          </button>
+                        </div>
+                      </div>
+                      <label className="block">
+                        <div className="mb-1 flex items-center justify-between gap-3 text-xs">
+                          <span className="text-neutral-500">Count row cutoff</span>
+                          <span className="tabular-nums text-neutral-300">
+                            {countRowCutoffOffsetPx > 0 ? "+" : ""}{countRowCutoffOffsetPx}px
+                          </span>
+                        </div>
+                        <input
+                          type="range"
+                          min="-48"
+                          max="48"
+                          step="1"
+                          value={countRowCutoffOffsetPx}
+                          onChange={(event) =>
+                            setCountRowCutoffOffsetPx(
+                              Math.max(-48, Math.min(48, Math.round(Number(event.target.value) || 0)))
+                            )
+                          }
+                          className="w-full accent-neutral-500"
+                          aria-label="Count row cutoff"
+                        />
+                      </label>
+                      <label className="block">
+                        <div className="mb-1 flex items-center justify-between gap-3 text-xs">
+                          <span className="text-neutral-500">Notation row gap</span>
+                          <span className="tabular-nums text-neutral-300">{notationRowGap}px</span>
+                        </div>
+                        <input
+                          type="range"
+                          min="-16"
+                          max="80"
+                          step="4"
+                          value={notationRowGap}
+                          onChange={(event) =>
+                            setNotationRowGap(Math.max(-16, Math.min(80, Math.round(Number(event.target.value) || 0))))
+                          }
+                          className="w-full accent-neutral-500"
+                        />
+                      </label>
+                    </div>
+                  ) : null}
 
 	                <div className="flex items-center justify-between gap-2" onPointerDown={clearSidebarChevronHint}>
                     <span className="text-sm text-neutral-300 whitespace-nowrap">Time</span>
@@ -19447,7 +19995,7 @@ useEffect(() => {
   const dockedBeatLibrarySidebar = beatLibraryDockedInSidebar ? (
     <aside
       ref={dockedBeatLibrarySidebarRef}
-      className="sticky top-0 mt-6 z-20 self-start w-[15.5rem] shrink-0 overflow-visible rounded-xl border border-neutral-800 bg-neutral-900 p-4 shadow-xl shadow-black/20"
+      className="sticky top-0 mt-6 z-30 self-start w-[15.5rem] shrink-0 overflow-visible rounded-xl border border-neutral-800 bg-neutral-900 p-4 shadow-xl shadow-black/20"
       data-loopui="1"
     >
       <div className="flex h-full flex-col">
@@ -19671,7 +20219,7 @@ useEffect(() => {
 	    <aside
 	      data-sidebar-chevron-area="1"
 	      onPointerDown={handleSidebarChevronAreaPointerDown}
-	      className="sticky top-0 mt-6 z-20 overflow-visible rounded-xl border border-neutral-800 bg-neutral-900 p-4 shadow-xl shadow-black/20"
+	      className="sticky top-0 mt-6 z-30 overflow-visible rounded-xl border border-neutral-800 bg-neutral-900 p-4 shadow-xl shadow-black/20"
 	      data-loopui="1"
 	    >
       {isSidebarSettingsMenuOpen ? (
@@ -19789,9 +20337,28 @@ useEffect(() => {
               </div>
             ) : null}
 
-	            <div className="flex items-center justify-between gap-2" onPointerDown={clearSidebarChevronHint}>
-              <span className="text-sm text-neutral-300">Bars</span>
-              <div className="flex items-stretch overflow-hidden rounded-md border border-neutral-800 bg-neutral-900/60">
+	            <div className="flex items-center justify-between gap-2">
+              <button
+                type="button"
+	              data-sidebar-chevron-control="bars"
+	              onPointerDown={() => markSidebarChevronHint("bars")}
+	              onClick={() => setIsSidebarBarsOpen((v) => !v)}
+                className="group -ml-1 inline-flex items-center gap-1 rounded px-1 py-0.5 text-sm text-neutral-300 hover:bg-neutral-800/70 hover:text-white"
+                aria-expanded={isSidebarBarsOpen}
+                aria-controls="settings-sidebar-bars-options"
+                title="Show bars options"
+              >
+                <span className="whitespace-nowrap">Bars</span>
+                {renderSidebarChevron(
+                  isSidebarBarsOpen,
+                  isSidebarBarsOpen || sidebarChevronHint === "bars"
+                )}
+              </button>
+              <div
+	              data-sidebar-chevron-control="bars"
+	              onPointerDown={() => markSidebarChevronHint("bars")}
+                className="flex items-stretch overflow-hidden rounded-md border border-neutral-800 bg-neutral-900/60"
+              >
                 <button
                   type="button"
                   onClick={() => setBars((b) => Math.max(1, b - 1))}
@@ -19813,6 +20380,78 @@ useEffect(() => {
                 </button>
               </div>
             </div>
+            {isSidebarBarsOpen ? (
+              <div
+                id="settings-sidebar-bars-options"
+                className="space-y-2 rounded px-1 py-1"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs text-neutral-500">Bars/line</span>
+                  <div className="flex items-stretch overflow-hidden rounded-md border border-neutral-800 bg-neutral-900/60">
+                    <button
+                      type="button"
+                      onClick={() => setBarsPerLine((v) => Math.max(1, v - 1))}
+                      className="px-2 text-sm leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                      aria-label="Decrease notation bars per line"
+                    >
+                      −
+                    </button>
+                    <div className="min-w-[36px] border-l border-r border-neutral-800 px-2 py-1 text-center text-xs text-white">
+                      {barsPerLine}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setBarsPerLine((v) => Math.min(bars, v + 1))}
+                      className="px-2 text-sm leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                      aria-label="Increase notation bars per line"
+                    >
+                      +
+                    </button>
+                  </div>
+                </div>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs text-neutral-500">Grid bars/line</span>
+                  <div className="flex items-stretch overflow-hidden rounded-md border border-neutral-800 bg-neutral-900/60">
+                    <button
+                      type="button"
+                      onClick={() => setGridBarsPerLine((v) => Math.max(1, v - 1))}
+                      className="px-2 text-sm leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                      aria-label="Decrease grid bars per line"
+                    >
+                      −
+                    </button>
+                    <div className="min-w-[36px] border-l border-r border-neutral-800 px-2 py-1 text-center text-xs text-white">
+                      {gridBarsPerLine}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setGridBarsPerLine((v) => Math.min(bars, v + 1))}
+                      className="px-2 text-sm leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700"
+                      aria-label="Increase grid bars per line"
+                    >
+                      +
+                    </button>
+                  </div>
+                </div>
+                <label className="block">
+                  <div className="mb-1 flex items-center justify-between gap-3 text-xs">
+                    <span className="text-neutral-500">Notation row gap</span>
+                    <span className="tabular-nums text-neutral-300">{notationRowGap}px</span>
+                  </div>
+                  <input
+                    type="range"
+                    min="-16"
+                    max="80"
+                    step="4"
+                    value={notationRowGap}
+                    onChange={(event) =>
+                      setNotationRowGap(Math.max(-16, Math.min(80, Math.round(Number(event.target.value) || 0))))
+                    }
+                    className="w-full accent-neutral-500"
+                  />
+                </label>
+              </div>
+            ) : null}
 
 	            <div className="flex items-center justify-between gap-2" onPointerDown={clearSidebarChevronHint}>
               <span className="text-sm text-neutral-300 whitespace-nowrap">Time</span>
@@ -20395,20 +21034,20 @@ useEffect(() => {
 
       
       
-      <div className="-mx-6 w-[calc(100%+3rem)] overflow-x-auto overflow-y-visible px-6">
+      <div className="-mx-6 w-[calc(100%+3rem)] overflow-x-hidden overflow-y-visible px-6">
       <main
         className={`select-none ${
           isEmbedMode
             ? "mt-0"
             : hasDesktopSidebarColumn
-              ? `mt-6 flex-1 grid min-w-max grid-cols-[15.5rem_minmax(0,1fr)] items-start gap-6 ${
+              ? `mt-6 flex-1 grid min-w-0 grid-cols-[15.5rem_minmax(0,1fr)] items-start gap-6 ${
                   effectiveUseFixedDesktopFooter ? "pb-0" : "pb-8"
                 }`
-              : `mt-6 flex-1 min-w-max ${
+              : `mt-6 flex-1 min-w-0 ${
                 layout === "grid-right"
                   ? `grid grid-cols-1 xl:grid-cols-[auto_1fr] gap-6 ${effectiveUseFixedDesktopFooter ? "pb-0" : "pb-8"}`
-                  : layout === "notation-right"
-                    ? `grid grid-cols-1 xl:grid-cols-[1fr_auto] gap-6 ${effectiveUseFixedDesktopFooter ? "pb-0" : "pb-8"}`
+                : layout === "notation-right"
+                  ? `grid grid-cols-1 xl:grid-cols-[1fr_auto] gap-6 ${effectiveUseFixedDesktopFooter ? "pb-0" : "pb-8"}`
                     : `flex flex-col gap-6 items-start ${effectiveUseFixedDesktopFooter ? "pb-0" : "pb-8"}`
               }`
         }`}
@@ -20418,7 +21057,7 @@ useEffect(() => {
           : showDesktopSettingsSidebar && !settingsSidebarCollapsed
             ? desktopSettingsSidebar
             : null}
-        <div className={hasDesktopSidebarColumn ? "min-w-0" : undefined}>
+        <div className="min-w-0 w-full">
         {isEmbedMode ? (
           <div className="w-full" ref={setNotationExportEl}>
             <MemoNotation
@@ -20431,6 +21070,7 @@ useEffect(() => {
               resolution={resolution}
               bars={bars}
               barsPerLine={barsPerLine}
+              rowGap={notationRowGap}
               stepsPerBar={stepsPerBar}
               timeSig={timeSig}
               quarterSubdivisionsByBar={quarterSubdivisionsByBar}
@@ -20443,7 +21083,7 @@ useEffect(() => {
           </div>
         ) : layout === "notation-right" || layout === "notation-top" ? (
           <>
-            <div className="w-full pl-14">
+            <div className="w-full pl-[60px]">
               <div className="w-full" ref={setNotationExportEl}>
                 <MemoNotation
                   instruments={instruments}
@@ -20455,6 +21095,7 @@ useEffect(() => {
                   resolution={resolution}
                   bars={bars}
                   barsPerLine={barsPerLine}
+                  rowGap={notationRowGap}
                   stepsPerBar={stepsPerBar}
                   timeSig={timeSig}
                   quarterSubdivisionsByBar={quarterSubdivisionsByBar}
@@ -20467,15 +21108,18 @@ useEffect(() => {
               </div>
             </div>
 
-	            <div
-                className="w-full overflow-visible"
+	            <EditorGridScrollArea
+                labelGutterWidth={currentGridLabelGutterWidth}
                 style={
-                  layout === "notation-top"
-                    ? { marginTop: `${24 + notationGridGapOffset}px` }
-                    : undefined
+                  {
+                    marginLeft: "-32px",
+                    width: "calc(100% + 32px)",
+                    ...(layout === "notation-top"
+                      ? { marginTop: `${24 + notationGridGapOffset}px` }
+                      : {}),
+                  }
                 }
               >
-	              <div className="inline-block align-top pr-4 -ml-[0.9rem]">
                 <Grid
                 instruments={instruments}
                 grid={computedGrid}
@@ -20523,16 +21167,18 @@ useEffect(() => {
                 bakeLoopPreview={bakeLoopPreview}
                 hoveredGridCellRef={hoveredGridCellRef}
                 labelGutterWidth={currentGridLabelGutterWidth}
+                countRowCutoffOffsetPx={countRowCutoffOffsetPx}
                 tupletGridAppearanceByValue={tupletGridAppearanceByValue}
                 darkenCountRowNonQuarters={darkenCountRowNonQuarters}
       />
-            </div>
-            </div>
+            </EditorGridScrollArea>
           </>
         ) : (
           <>
-	            <div className="w-full overflow-visible">
-	              <div className="inline-block align-top pr-4 -ml-[0.9rem]">
+            <EditorGridScrollArea
+              labelGutterWidth={currentGridLabelGutterWidth}
+              style={{ marginLeft: "-32px", width: "calc(100% + 32px)" }}
+            >
                 <Grid
                 instruments={instruments}
                 grid={computedGrid}
@@ -20580,14 +21226,14 @@ useEffect(() => {
                 bakeLoopPreview={bakeLoopPreview}
                 hoveredGridCellRef={hoveredGridCellRef}
                 labelGutterWidth={currentGridLabelGutterWidth}
+                countRowCutoffOffsetPx={countRowCutoffOffsetPx}
                 tupletGridAppearanceByValue={tupletGridAppearanceByValue}
                 darkenCountRowNonQuarters={darkenCountRowNonQuarters}
       />
-            </div>
-            </div>
+            </EditorGridScrollArea>
 
             <div
-              className="w-full pr-4 inline-block align-top pl-14"
+              className="w-full pr-4 inline-block align-top pl-[60px]"
               style={layout === "grid-top" ? { marginTop: `${gridNotationGap}px` } : undefined}
             >
               <div className="w-full" ref={setNotationExportEl}>
@@ -20601,6 +21247,7 @@ useEffect(() => {
                   resolution={resolution}
                   bars={bars}
                   barsPerLine={barsPerLine}
+                  rowGap={notationRowGap}
                   stepsPerBar={stepsPerBar}
                   timeSig={timeSig}
                   quarterSubdivisionsByBar={quarterSubdivisionsByBar}
@@ -22230,6 +22877,7 @@ const MemoNotation = React.memo(Notation, (prev, next) => {
     prev.bars === next.bars &&
     prev.barsPerLine === next.barsPerLine &&
     prev.barsPerRow === next.barsPerRow &&
+    prev.rowGap === next.rowGap &&
     prev.stepsPerBar === next.stepsPerBar &&
     prev.timeSig === next.timeSig &&
     prev.timeSigByBar === next.timeSigByBar &&

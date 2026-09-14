@@ -20,6 +20,7 @@ import ArrangementSheetSettingsMenu from "./components/ArrangementSheetSettingsM
 import AppHeader from "./components/AppHeader";
 import AuthDialog from "./components/AuthDialog";
 import AdminStatsPanel from "./components/AdminStatsPanel";
+import ChangelogPanel from "./components/ChangelogPanel";
 import ArrangementRowNotationMenu from "./components/ArrangementRowNotationMenu";
 import {
   BeatLibraryDragOverlayCard,
@@ -59,6 +60,7 @@ import PublicSubmitDialog from "./components/PublicSubmitDialog";
 import ShareActionsDialog from "./components/ShareActionsDialog";
 import TransportMenu from "./components/TransportMenu";
 import { hasSupabaseEnabled, supabase } from "./lib/supabase";
+import { requestChangelogApi } from "./services/changelog";
 import { requestFeedbackApi } from "./services/feedback";
 import { fetchAdminStats } from "./services/stats";
 import { fetchUsageLimits } from "./services/usageLimits";
@@ -219,6 +221,14 @@ function formatTimingShiftLabel(sixteenths) {
   const value = Math.max(-15, Math.min(15, Math.round(Number(sixteenths) || 0)));
   if (value === 0) return "Off";
   return value < 0 ? `${Math.abs(value)}/16 earlier` : `${value}/16 later`;
+}
+
+function formatCurrentChangelogTitle(date = new Date()) {
+  try {
+    return new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(date);
+  } catch (_) {
+    return date.toISOString().slice(0, 10);
+  }
 }
 
 function bindingFromKeyboardEvent(event) {
@@ -481,6 +491,10 @@ const ARRANGEMENT_NOTATION_VIRTUALIZE_STORAGE_KEY =
   "drum-grid-arrangement-notation-virtualize-v1";
 const ARRANGEMENT_NOTATION_PREVIEW_SCALE_STORAGE_KEY =
   "drum-grid-arrangement-notation-preview-scale-v1";
+const ARRANGEMENT_NOTATION_SHOW_TEMPO_STORAGE_KEY =
+  "drum-grid-arrangement-notation-show-tempo-v1";
+const ARRANGEMENT_NOTATION_SHOW_BAR_NUMBERS_STORAGE_KEY =
+  "drum-grid-arrangement-notation-show-bar-numbers-v1";
 const NOTATION_ROW_GAP_STORAGE_KEY = "drum-grid-notation-row-gap-v1";
 const ARRANGEMENT_TITLE_LINE1_STORAGE_KEY = "drum-grid-arrangement-title-line1-v1";
 const ARRANGEMENT_TITLE_LINE2_STORAGE_KEY = "drum-grid-arrangement-title-line2-v1";
@@ -3667,6 +3681,12 @@ export default function App() {
   const [feedbackVoteMap, setFeedbackVoteMap] = useState({});
   const [feedbackAdminFilter, setFeedbackAdminFilter] = useState("pending");
   const [feedbackAdminReplyDrafts, setFeedbackAdminReplyDrafts] = useState({});
+  const [changelogItems, setChangelogItems] = useState([]);
+  const [changelogLoading, setChangelogLoading] = useState(false);
+  const [changelogSubmitting, setChangelogSubmitting] = useState(false);
+  const [changelogError, setChangelogError] = useState("");
+  const [changelogBody, setChangelogBody] = useState("");
+  const [changelogSuccessMessage, setChangelogSuccessMessage] = useState("");
   const [adminStatsRange, setAdminStatsRange] = useState("day");
   const [adminStatsLoading, setAdminStatsLoading] = useState(false);
   const [adminStatsError, setAdminStatsError] = useState("");
@@ -3918,6 +3938,22 @@ export default function App() {
   const [arrangementNotationGlobalDottedNotes, setArrangementNotationGlobalDottedNotes] = useState(() => {
     try {
       const raw = window.localStorage.getItem(ARRANGEMENT_NOTATION_GLOBAL_DOTTED_NOTES_STORAGE_KEY);
+      return raw == null ? true : raw === "true";
+    } catch (_) {
+      return true;
+    }
+  });
+  const [arrangementNotationShowTempo, setArrangementNotationShowTempo] = useState(() => {
+    try {
+      const raw = window.localStorage.getItem(ARRANGEMENT_NOTATION_SHOW_TEMPO_STORAGE_KEY);
+      return raw == null ? true : raw === "true";
+    } catch (_) {
+      return true;
+    }
+  });
+  const [arrangementNotationShowBarNumbers, setArrangementNotationShowBarNumbers] = useState(() => {
+    try {
+      const raw = window.localStorage.getItem(ARRANGEMENT_NOTATION_SHOW_BAR_NUMBERS_STORAGE_KEY);
       return raw == null ? true : raw === "true";
     } catch (_) {
       return true;
@@ -4883,6 +4919,10 @@ export default function App() {
     if (typeof document === "undefined") return null;
     return document.getElementById("feedback-panel-root");
   }, []);
+  const changelogPortalTarget = React.useMemo(() => {
+    if (typeof document === "undefined") return null;
+    return document.getElementById("changelog-panel-root");
+  }, []);
   const adminStatsPortalTarget = React.useMemo(() => {
     if (typeof document === "undefined") return null;
     return document.getElementById("admin-stats-panel-root");
@@ -5068,6 +5108,21 @@ export default function App() {
       })(),
       adminReply: String(row.admin_reply || "").trim(),
       resolutionStatus: String(row.resolution_status || "reviewing").trim().toLowerCase() || "reviewing",
+    };
+  }, []);
+  const normalizeChangelogItem = React.useCallback((row) => {
+    if (!row || typeof row !== "object") return null;
+    const title = String(row.title || "").trim();
+    const body = String(row.body || "").trim();
+    if (!title || !body) return null;
+    return {
+      id: String(row.id || ""),
+      title,
+      body,
+      status: String(row.status || "published").trim().toLowerCase() || "published",
+      createdAt: String(row.created_at || ""),
+      updatedAt: String(row.updated_at || ""),
+      publishedAt: String(row.published_at || row.created_at || ""),
     };
   }, []);
   const toggleFeedbackType = React.useCallback((value) => {
@@ -5454,6 +5509,92 @@ export default function App() {
       }),
     [anonymousFeedbackFingerprint, authSession?.access_token]
   );
+  const callChangelogApi = React.useCallback(
+    (method, payload = null, options = {}) =>
+      requestChangelogApi(method, payload, {
+        ...options,
+        accessToken: authSession?.access_token,
+      }),
+    [authSession?.access_token]
+  );
+  const refreshChangelogItems = React.useCallback(async () => {
+    if (!hasSupabaseEnabled) {
+      setChangelogItems([]);
+      setChangelogLoading(false);
+      return;
+    }
+    setChangelogLoading(true);
+    setChangelogError("");
+    try {
+      const data = await callChangelogApi("GET");
+      const normalized = (Array.isArray(data?.items) ? data.items : [])
+        .map(normalizeChangelogItem)
+        .filter(Boolean);
+      setChangelogItems(normalized);
+    } catch (error) {
+      setChangelogItems([]);
+      setChangelogError(error?.message || "Failed to load changelog.");
+    } finally {
+      setChangelogLoading(false);
+    }
+  }, [callChangelogApi, hasSupabaseEnabled, normalizeChangelogItem]);
+  const submitChangelogEntry = React.useCallback(async () => {
+    const title = formatCurrentChangelogTitle();
+    const body = String(changelogBody || "").trim();
+    if (!isAdminUser) return false;
+    if (body.length < 3) {
+      setChangelogError("Update text is too short.");
+      return false;
+    }
+    if (!hasSupabaseEnabled) {
+      setChangelogError("Changelog is not configured yet.");
+      return false;
+    }
+    setChangelogSubmitting(true);
+    setChangelogError("");
+    setChangelogSuccessMessage("");
+    try {
+      await callChangelogApi("POST", {
+        action: "create",
+        title,
+        body,
+      });
+      setChangelogBody("");
+      setChangelogSuccessMessage("Update posted.");
+      await refreshChangelogItems();
+      return true;
+    } catch (error) {
+      setChangelogError(error?.message || "Failed to post changelog.");
+      return false;
+    } finally {
+      setChangelogSubmitting(false);
+    }
+  }, [
+    callChangelogApi,
+    changelogBody,
+    hasSupabaseEnabled,
+    isAdminUser,
+    refreshChangelogItems,
+  ]);
+  const deleteChangelogEntry = React.useCallback(
+    async (changelogId) => {
+      const normalizedId = String(changelogId || "").trim();
+      if (!normalizedId || !isAdminUser) return false;
+      if (!window.confirm("Delete this changelog entry?")) return false;
+      try {
+        await callChangelogApi("POST", {
+          action: "delete",
+          changelogId: normalizedId,
+        });
+        await refreshChangelogItems();
+        return true;
+      } catch (error) {
+        setChangelogError(error?.message || "Failed to delete changelog.");
+        return false;
+      }
+    },
+    [callChangelogApi, isAdminUser, refreshChangelogItems]
+  );
   const refreshFeedbackItems = React.useCallback(async () => {
     if (!hasSupabaseEnabled) {
       setFeedbackItems([]);
@@ -5602,6 +5743,9 @@ export default function App() {
     },
     [callFeedbackApi, feedbackItems, hasSupabaseEnabled, refreshFeedbackItems]
   );
+  React.useEffect(() => {
+    refreshChangelogItems();
+  }, [refreshChangelogItems]);
   React.useEffect(() => {
     refreshFeedbackItems();
   }, [refreshFeedbackItems]);
@@ -6544,6 +6688,22 @@ export default function App() {
       );
     } catch (_) {}
   }, [arrangementNotationGlobalDottedNotes]);
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        ARRANGEMENT_NOTATION_SHOW_TEMPO_STORAGE_KEY,
+        arrangementNotationShowTempo ? "true" : "false"
+      );
+    } catch (_) {}
+  }, [arrangementNotationShowTempo]);
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        ARRANGEMENT_NOTATION_SHOW_BAR_NUMBERS_STORAGE_KEY,
+        arrangementNotationShowBarNumbers ? "true" : "false"
+      );
+    } catch (_) {}
+  }, [arrangementNotationShowBarNumbers]);
   useEffect(() => {
     try {
       window.localStorage.setItem(
@@ -14167,6 +14327,10 @@ useEffect(() => {
     notationStickingSelectionModeEnabled,
     notationStickingModePreference,
   ]);
+  const editorNotationRowGap =
+    notationStickingSelectionStats.mode === "off"
+      ? notationRowGap
+      : Math.max(notationRowGap, 36);
   React.useEffect(() => {
     if (notationStickingSelectionStats.mode !== "custom") return;
     if (notationStickingSelectionStats.selectedCount < 1) return;
@@ -14233,8 +14397,8 @@ useEffect(() => {
         : {};
     if (Object.keys(rememberedCustomSelection).length > 0) {
       setNotationStickingSelection(rememberedCustomSelection);
-    } else if (!notationStickingSelectionStats.selectedCount && notationStickingSelectionStats.allCount > 0) {
-      setNotationStickingSelection(allNotationStickingSelection);
+    } else {
+      setNotationStickingSelection({});
     }
     setShowNotationSticking(true);
     setNotationStickingSelectionModeEnabled(false);
@@ -14256,21 +14420,6 @@ useEffect(() => {
       if (next) setStickingEditModeEnabled(false);
       return next;
     });
-  }, [
-    notationStickingSelectionStats.mode,
-    setNotationStickingPrintMode,
-  ]);
-  const cycleNotationStickingPrintMode = React.useCallback((delta) => {
-    const modes = ["off", "all", "custom"];
-    const currentMode =
-      notationStickingSelectionStats.mode === "all"
-        ? "all"
-        : notationStickingSelectionStats.mode === "custom"
-          ? "custom"
-          : "off";
-    const currentIndex = modes.indexOf(currentMode);
-    const nextIndex = (currentIndex + delta + modes.length) % modes.length;
-    setNotationStickingPrintMode(modes[nextIndex]);
   }, [
     notationStickingSelectionStats.mode,
     setNotationStickingPrintMode,
@@ -16644,12 +16793,13 @@ useEffect(() => {
     setCurrentBeatStripRenameWidth(null);
     setIsCurrentBeatStripRenaming(false);
   }, []);
-  const updateCurrentLoadedBeatLocal = React.useCallback(async () => {
+  const updateCurrentLoadedBeatLocal = React.useCallback(async (payloadOverrides = {}) => {
     if (!loadedLocalBeatId) return null;
     const name = beatNameDraft.trim() || String(loadedLocalBeat?.name || "Untitled Beat");
     const existingLibraryMeta = getBeatLibraryMeta(loadedLocalBeat);
     const payload = {
       ...buildCurrentBeatPayload(),
+      ...(payloadOverrides && typeof payloadOverrides === "object" ? payloadOverrides : {}),
       libraryMeta: {
         parentId: existingLibraryMeta.parentId,
         manualOrder: existingLibraryMeta.manualOrder,
@@ -16720,6 +16870,18 @@ useEffect(() => {
     timeSig.n,
     timeSig.d,
     bpm,
+  ]);
+  const toggleArrangementNotationPrintSticking = React.useCallback(async () => {
+    const nextShowNotationSticking = !showNotationSticking;
+    setShowNotationSticking(nextShowNotationSticking);
+    if (!loadedLocalBeatId) return;
+    await updateCurrentLoadedBeatLocal({
+      showNotationSticking: nextShowNotationSticking,
+    });
+  }, [
+    loadedLocalBeatId,
+    showNotationSticking,
+    updateCurrentLoadedBeatLocal,
   ]);
   const handleCurrentBeatAddToSheet = React.useCallback(async () => {
     if (loadedLocalBeatId && isCurrentBeatStripRenaming) {
@@ -17157,6 +17319,122 @@ useEffect(() => {
         Split rows
       </button>
     </div>
+  );
+  const renderStickingPrintModeStepper = () => (
+    <div
+      data-sidebar-chevron-control="sticking"
+      onPointerDownCapture={() => markSidebarChevronHint("sticking")}
+      className="flex items-stretch overflow-hidden rounded-md border border-neutral-800 bg-neutral-900/60"
+    >
+      <button
+        type="button"
+        onPointerDown={() => markSidebarChevronHint("sticking")}
+        onClick={() => {
+          markSidebarChevronHint("sticking");
+          setNotationStickingPrintMode("all");
+        }}
+        className={`min-w-[42px] px-2 py-1 text-xs ${
+          notationStickingSelectionStats.mode === "all"
+            ? "bg-neutral-800 text-white"
+            : "bg-neutral-900/60 text-neutral-600 hover:bg-neutral-800/50"
+        }`}
+        title="Print all sticking in notation"
+        aria-pressed={notationStickingSelectionStats.mode === "all"}
+      >
+        All
+      </button>
+      <button
+        type="button"
+        onPointerDown={() => markSidebarChevronHint("sticking")}
+        onClick={() => {
+          markSidebarChevronHint("sticking");
+          setNotationStickingPrintMode("custom");
+        }}
+        className={`min-w-[50px] border-l border-neutral-800 px-2 py-1 text-xs ${
+          notationStickingSelectionStats.mode === "custom"
+            ? "bg-neutral-800 text-white"
+            : "bg-neutral-900/60 text-neutral-600 hover:bg-neutral-800/50"
+        }`}
+        title="Show selected sticking only"
+        aria-pressed={notationStickingSelectionStats.mode === "custom"}
+      >
+        Some
+      </button>
+    </div>
+  );
+  const renderStickingEnabledToggle = () => {
+    const stickingEnabled = notationStickingSelectionStats.mode !== "off";
+    return (
+      <button
+        type="button"
+        data-sidebar-chevron-control="sticking"
+        onPointerDown={() => markSidebarChevronHint("sticking")}
+        onClick={() => {
+          markSidebarChevronHint("sticking");
+          setNotationStickingPrintMode(stickingEnabled ? "off" : "all");
+        }}
+        className={`relative h-[24px] w-[40px] rounded-full border transition-colors ${
+          stickingEnabled
+            ? "border-neutral-700 bg-neutral-800"
+            : "border-neutral-800 bg-neutral-900"
+        }`}
+        title={stickingEnabled ? "Turn sticking display off" : "Turn sticking display on"}
+        aria-label={stickingEnabled ? "Turn sticking display off" : "Turn sticking display on"}
+        aria-pressed={stickingEnabled}
+      >
+        <span
+          className="absolute top-1/2 h-[16px] w-[16px] -translate-y-1/2 rounded-full bg-neutral-400 transition-[left]"
+          style={{ left: stickingEnabled ? "20px" : "4px" }}
+          aria-hidden="true"
+        />
+      </button>
+    );
+  };
+  const renderStickingEditControls = () => (
+    <div className="flex items-center gap-2">
+      <button
+        type="button"
+        data-sidebar-chevron-control="sticking"
+        onPointerDown={() => markSidebarChevronHint("sticking")}
+        onClick={() =>
+          setStickingEditModeEnabled((v) => {
+            const next = !v;
+            if (next) {
+              setStickingGuideEnabled(true);
+              setNotationStickingSelectionModeEnabled(false);
+            } else {
+              setNotationStickingSelectionModeEnabled(false);
+            }
+            return next;
+          })
+        }
+        className={`w-fit touch-none select-none px-3 py-[5px] rounded border text-sm ${
+          stickingEditModeEnabled
+            ? "bg-neutral-800 border-neutral-700 text-white"
+            : "bg-neutral-900 border-neutral-800 text-neutral-600"
+        }`}
+        title="When enabled, clicking active hand-hit cells edits R/L sticking instead of toggling notes"
+      >
+        Edit R/L
+      </button>
+    </div>
+  );
+  const renderStickingSelectNotesControl = () => (
+    notationStickingSelectionStats.mode === "custom" ? (
+      <button
+        type="button"
+        onClick={handleCustomNotationStickingModeToggle}
+        className={`w-fit touch-none select-none px-3 py-[5px] rounded border text-sm ${
+          notationStickingSelectionModeEnabled
+            ? "bg-neutral-800 border-neutral-700 text-white"
+            : "bg-neutral-900 border-neutral-800 text-neutral-600"
+        }`}
+        title="Choose which notes show sticking labels"
+        aria-pressed={notationStickingSelectionModeEnabled}
+      >
+        Select notes
+      </button>
+    ) : null
   );
 
   const renderSidebarSettingsMenu = (className) =>
@@ -17819,128 +18097,37 @@ useEffect(() => {
 
                     <div className="flex w-full flex-col gap-2">
                       <div className="flex w-full items-center justify-between gap-2">
-                      <div className="relative shrink-0">
-                        <button
-                          type="button"
-	                          data-sidebar-chevron-control="sticking"
-	                          onPointerDown={() => markSidebarChevronHint("sticking")}
-	                          onClick={() => setIsEditingAdvancedMenuOpen((v) => !v)}
-                          className="group -ml-1 inline-flex items-center gap-1 rounded px-1 py-0.5 text-sm text-neutral-300 hover:bg-neutral-800/70 hover:text-white"
-                          title="Sticking display options"
-                          aria-label="Sticking display options"
-                          aria-expanded={isEditingAdvancedMenuOpen}
-                        >
-                          <span>Sticking</span>
-                          {renderSidebarChevron(
-                            isEditingAdvancedMenuOpen,
-                            isEditingAdvancedMenuOpen || sidebarChevronHint === "sticking"
-                          )}
-                        </button>
-                      </div>
-	                      <div className="ml-auto flex items-center gap-1.5">
-	                        <div
-	                          data-sidebar-chevron-control="sticking"
-	                          onPointerDownCapture={() => markSidebarChevronHint("sticking")}
-	                          className="flex items-stretch overflow-hidden rounded-md border border-neutral-800 bg-neutral-900/60"
-	                        >
-	                          <button
-	                            type="button"
-	                            onPointerDown={() => markSidebarChevronHint("sticking")}
-	                            onClick={() => {
-	                              markSidebarChevronHint("sticking");
-	                              cycleNotationStickingPrintMode(-1);
-	                            }}
-                            className="px-2 text-base leading-none text-neutral-500 hover:bg-neutral-800/50 active:bg-neutral-800"
-                            title="Previous print sticking mode"
-                            aria-label="Previous print sticking mode"
+                        <div className="relative shrink-0">
+                          <button
+                            type="button"
+                            data-sidebar-chevron-control="sticking"
+                            onPointerDown={() => markSidebarChevronHint("sticking")}
+                            onClick={() => setIsEditingAdvancedMenuOpen((v) => !v)}
+                            className="group -ml-1 inline-flex items-center gap-1 rounded px-1 py-0.5 text-sm text-neutral-300 hover:bg-neutral-800/70 hover:text-white"
+                            title="Sticking display options"
+                            aria-label="Sticking display options"
+                            aria-expanded={isEditingAdvancedMenuOpen}
                           >
-                            -
-                          </button>
-	                          <button
-	                            type="button"
-	                            onPointerDown={() => markSidebarChevronHint("sticking")}
-	                            onClick={() => {
-	                              markSidebarChevronHint("sticking");
-	                              setNotationStickingPrintMode(notationStickingSelectionStats.mode === "all" ? "off" : "all");
-	                            }}
-                            className="min-w-[72px] px-3 py-1 flex items-center justify-center text-sm border-l border-r border-neutral-800 bg-neutral-900/60 text-neutral-500 hover:bg-neutral-800/50"
-                            title={
-                              notationStickingSelectionStats.mode === "custom"
-                                ? "Show selected sticking only"
-                                : notationStickingSelectionStats.mode === "all"
-                                  ? "Print all sticking in notation"
-                                  : "Do not print sticking in notation"
-                            }
-                          >
-                            {notationStickingSelectionStats.mode === "all"
-                              ? "All"
-                              : notationStickingSelectionStats.mode === "custom"
-                                ? "Some"
-                                : "None"}
-                          </button>
-	                          <button
-	                            type="button"
-	                            onPointerDown={() => markSidebarChevronHint("sticking")}
-	                            onClick={() => {
-	                              markSidebarChevronHint("sticking");
-	                              cycleNotationStickingPrintMode(1);
-	                            }}
-                            className="px-2 text-base leading-none text-neutral-500 hover:bg-neutral-800/50 active:bg-neutral-800"
-                            title="Next print sticking mode"
-                            aria-label="Next print sticking mode"
-                          >
-                            +
+                            <span>Sticking</span>
+                            {renderSidebarChevron(
+                              isEditingAdvancedMenuOpen,
+                              isEditingAdvancedMenuOpen || sidebarChevronHint === "sticking"
+                            )}
                           </button>
                         </div>
+                        {renderStickingEnabledToggle()}
+                        {renderStickingEditControls()}
                       </div>
-                      </div>
+                      {notationStickingSelectionStats.mode !== "off" ? (
+                        <div className="flex items-center justify-start gap-2">
+                          {renderStickingPrintModeStepper()}
+                          {renderStickingSelectNotesControl()}
+                        </div>
+                      ) : null}
                       {isEditingAdvancedMenuOpen ? (
                         <div className="flex justify-start">
                           {renderStickingDisplayControl()}
                         </div>
-                      ) : null}
-                    </div>
-
-                    <div className="flex items-center justify-between gap-2">
-	                      <button
-	                        type="button"
-	                        data-sidebar-chevron-control="sticking"
-	                        onPointerDown={() => markSidebarChevronHint("sticking")}
-	                        onClick={() =>
-	                          setStickingEditModeEnabled((v) => {
-                            const next = !v;
-                            if (next) {
-                              setStickingGuideEnabled(true);
-                              setNotationStickingSelectionModeEnabled(false);
-                            } else {
-                              setNotationStickingSelectionModeEnabled(false);
-                            }
-                            return next;
-                          })
-                        }
-                        className={`w-fit touch-none select-none px-3 py-[5px] rounded border text-sm ${
-                          stickingEditModeEnabled
-                            ? "bg-neutral-800 border-neutral-700 text-white"
-                            : "bg-neutral-900 border-neutral-800 text-neutral-600"
-                        }`}
-                        title="When enabled, clicking active hand-hit cells edits R/L sticking instead of toggling notes"
-                      >
-                        Edit R/L
-                      </button>
-                      {notationStickingSelectionStats.mode === "custom" ? (
-                        <button
-                          type="button"
-                          onClick={handleCustomNotationStickingModeToggle}
-                          className={`w-fit touch-none select-none px-3 py-[5px] rounded border text-sm ${
-                            notationStickingSelectionModeEnabled
-                              ? "bg-neutral-800 border-neutral-700 text-white"
-                              : "bg-neutral-900 border-neutral-800 text-neutral-600"
-                          }`}
-                          title="Choose which notes show sticking labels"
-                          aria-pressed={notationStickingSelectionModeEnabled}
-                        >
-                          Select notes
-                        </button>
                       ) : null}
                     </div>
 
@@ -19128,14 +19315,14 @@ useEffect(() => {
                   justifySystems={true}
                   targetContentWidth={770}
                   sectionMarkers={segment.sectionMarkers || []}
-                  tempoMarkers={segment.tempoMarkers || []}
+                  tempoMarkers={arrangementNotationShowTempo ? segment.tempoMarkers || [] : []}
                   dynamicSpacingByBar={segment.dynamicSpacingByBar || null}
                   spacingPresetByBar={segment.spacingPresetByBar || null}
                   mergeRestsByBar={segment.mergeRestsByBar || null}
                   mergeNotesByBar={segment.mergeNotesByBar || null}
                   dottedNotesByBar={segment.dottedNotesByBar || null}
                   showNotationStickingByBar={segment.showNotationStickingByBar || null}
-                  showSystemBarNumbers={true}
+                  showSystemBarNumbers={arrangementNotationShowBarNumbers}
                   barNumberOffset={segment.startBarOffset || 0}
                   enableMeasureRepeats={true}
                   theme={dark ? "dark" : "light"}
@@ -20722,110 +20909,19 @@ useEffect(() => {
                     )}
                   </button>
                 </div>
-	                <div className="ml-auto flex items-center gap-1.5">
-	                <div
-	                  data-sidebar-chevron-control="sticking"
-	                  onPointerDownCapture={() => markSidebarChevronHint("sticking")}
-	                  className="flex items-stretch overflow-hidden rounded-md border border-neutral-800 bg-neutral-900/60"
-	                >
-	                  <button
-	                    type="button"
-	                    onPointerDown={() => markSidebarChevronHint("sticking")}
-	                    onClick={() => {
-	                      markSidebarChevronHint("sticking");
-	                      cycleNotationStickingPrintMode(-1);
-	                    }}
-                    className="px-2 text-base leading-none text-neutral-500 hover:bg-neutral-800/50 active:bg-neutral-800"
-                    title="Previous print sticking mode"
-                    aria-label="Previous print sticking mode"
-                  >
-                    -
-                  </button>
-	                  <button
-	                    type="button"
-	                    onPointerDown={() => markSidebarChevronHint("sticking")}
-	                    onClick={() => {
-	                      markSidebarChevronHint("sticking");
-	                      setNotationStickingPrintMode(notationStickingSelectionStats.mode === "all" ? "off" : "all");
-	                    }}
-                    className="min-w-[72px] px-3 py-1 flex items-center justify-center text-sm border-l border-r border-neutral-800 bg-neutral-900/60 text-neutral-500 hover:bg-neutral-800/50"
-                    title={
-                      notationStickingSelectionStats.mode === "custom"
-                        ? "Show selected sticking only"
-                        : notationStickingSelectionStats.mode === "all"
-                        ? "Print all sticking in notation"
-                          : "Do not print sticking in notation"
-                    }
-                  >
-                    {notationStickingSelectionStats.mode === "all"
-                      ? "All"
-                      : notationStickingSelectionStats.mode === "custom"
-                        ? "Some"
-                        : "None"}
-                  </button>
-	                  <button
-	                    type="button"
-	                    onPointerDown={() => markSidebarChevronHint("sticking")}
-	                    onClick={() => {
-	                      markSidebarChevronHint("sticking");
-	                      cycleNotationStickingPrintMode(1);
-	                    }}
-                    className="px-2 text-base leading-none text-neutral-500 hover:bg-neutral-800/50 active:bg-neutral-800"
-                    title="Next print sticking mode"
-                    aria-label="Next print sticking mode"
-                  >
-                    +
-                  </button>
-                </div>
-                </div>
+                {renderStickingEnabledToggle()}
+                {renderStickingEditControls()}
               </div>
+              {notationStickingSelectionStats.mode !== "off" ? (
+                <div className="flex items-center justify-start gap-2">
+                  {renderStickingPrintModeStepper()}
+                  {renderStickingSelectNotesControl()}
+                </div>
+              ) : null}
               {isEditingAdvancedMenuOpen ? (
                 <div className="flex justify-start">
                   {renderStickingDisplayControl()}
                 </div>
-              ) : null}
-            </div>
-
-            <div className="flex items-center gap-2">
-	              <button
-	                type="button"
-	                data-sidebar-chevron-control="sticking"
-	                onPointerDown={() => markSidebarChevronHint("sticking")}
-	                onClick={() =>
-	                  setStickingEditModeEnabled((v) => {
-                    const next = !v;
-                    if (next) {
-                      setStickingGuideEnabled(true);
-                      setNotationStickingSelectionModeEnabled(false);
-                    } else {
-                      setNotationStickingSelectionModeEnabled(false);
-                    }
-                    return next;
-                  })
-                }
-                className={`w-fit touch-none select-none px-3 py-[5px] rounded border text-sm ${
-                  stickingEditModeEnabled
-                    ? "bg-neutral-800 border-neutral-700 text-white"
-                    : "bg-neutral-900 border-neutral-800 text-neutral-600"
-                }`}
-                title="When enabled, clicking active hand-hit cells edits R/L sticking instead of toggling notes"
-              >
-                Edit R/L
-              </button>
-              {notationStickingSelectionStats.mode === "custom" ? (
-                <button
-                  type="button"
-                  onClick={handleCustomNotationStickingModeToggle}
-                  className={`w-fit touch-none select-none px-3 py-[5px] rounded border text-sm ${
-                    notationStickingSelectionModeEnabled
-                      ? "bg-neutral-800 border-neutral-700 text-white"
-                      : "bg-neutral-900 border-neutral-800 text-neutral-600"
-                  }`}
-                  title="Choose which notes show sticking labels"
-                  aria-pressed={notationStickingSelectionModeEnabled}
-                >
-                  Select notes
-                </button>
               ) : null}
             </div>
 
@@ -21075,7 +21171,7 @@ useEffect(() => {
               resolution={resolution}
               bars={bars}
               barsPerLine={barsPerLine}
-              rowGap={notationRowGap}
+              rowGap={editorNotationRowGap}
               stepsPerBar={stepsPerBar}
               timeSig={timeSig}
               quarterSubdivisionsByBar={quarterSubdivisionsByBar}
@@ -21100,7 +21196,7 @@ useEffect(() => {
                   resolution={resolution}
                   bars={bars}
                   barsPerLine={barsPerLine}
-                  rowGap={notationRowGap}
+                  rowGap={editorNotationRowGap}
                   stepsPerBar={stepsPerBar}
                   timeSig={timeSig}
                   quarterSubdivisionsByBar={quarterSubdivisionsByBar}
@@ -21252,7 +21348,7 @@ useEffect(() => {
                   resolution={resolution}
                   bars={bars}
                   barsPerLine={barsPerLine}
-                  rowGap={notationRowGap}
+                  rowGap={editorNotationRowGap}
                   stepsPerBar={stepsPerBar}
                   timeSig={timeSig}
                   quarterSubdivisionsByBar={quarterSubdivisionsByBar}
@@ -21373,6 +21469,28 @@ useEffect(() => {
             </div>
           </div>,
           document.body
+        )}
+      {changelogPortalTarget &&
+        createPortal(
+          <ChangelogPanel
+            hasSupabaseEnabled={hasSupabaseEnabled}
+            isAdminUser={isAdminUser}
+            title={formatCurrentChangelogTitle()}
+            body={changelogBody}
+            onBodyChange={(nextBody) => {
+              setChangelogBody(nextBody);
+              if (changelogError) setChangelogError("");
+              if (changelogSuccessMessage) setChangelogSuccessMessage("");
+            }}
+            submitting={changelogSubmitting}
+            onSubmit={submitChangelogEntry}
+            error={changelogError}
+            successMessage={changelogSuccessMessage}
+            loading={changelogLoading}
+            items={changelogItems}
+            onDelete={deleteChangelogEntry}
+          />,
+          changelogPortalTarget
         )}
       {feedbackPortalTarget &&
         createPortal(
@@ -22166,7 +22284,11 @@ useEffect(() => {
               globalDottedNotes={arrangementNotationGlobalDottedNotes}
               onToggleGlobalDottedNotes={() => setArrangementNotationGlobalDottedNotes((v) => !v)}
               printSticking={showNotationSticking}
-              onTogglePrintSticking={() => setShowNotationSticking((v) => !v)}
+              onTogglePrintSticking={toggleArrangementNotationPrintSticking}
+              showTempo={arrangementNotationShowTempo}
+              onToggleShowTempo={() => setArrangementNotationShowTempo((v) => !v)}
+              showBarNumbers={arrangementNotationShowBarNumbers}
+              onToggleShowBarNumbers={() => setArrangementNotationShowBarNumbers((v) => !v)}
               previewScale={arrangementNotationPreviewScale}
               onDecreasePreviewScale={() => stepArrangementNotationPreviewScale(-1)}
               onIncreasePreviewScale={() => stepArrangementNotationPreviewScale(1)}
@@ -22636,13 +22758,7 @@ useEffect(() => {
         getOverlapModeDescription={getOverlapModeDescription}
         moveOverrideBehavior={moveOverrideBehavior}
         onMoveOverrideBehaviorChange={setMoveOverrideBehavior}
-        bars={bars}
-        barsPerLine={barsPerLine}
-        onBarsPerLineChange={setBarsPerLine}
-        gridBarsPerLine={gridBarsPerLine}
-        onGridBarsPerLineChange={setGridBarsPerLine}
         layout={layout}
-        onLayoutChange={setLayout}
         gridNotationGap={gridNotationGap}
         onGridNotationGapChange={setGridNotationGap}
         notationGridGapOffset={notationGridGapOffset}

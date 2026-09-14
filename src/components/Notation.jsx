@@ -610,14 +610,7 @@ export default function Notation({
     const applyAccentArticulation = (note, accentKeyIndices) => {
       if (!note || !accentKeyIndices || accentKeyIndices.length === 0) return;
       try {
-        const art = new Flow.Articulation("a>");
-        art.setPosition(Flow.Modifier.Position.ABOVE);
-        if (art?.render_options && Number.isFinite(art.render_options.font_scale)) {
-          art.render_options.font_scale = art.render_options.font_scale * 0.88;
-          if (typeof art.reset === "function") art.reset();
-        }
-        if (typeof art.setXShift === "function") art.setXShift(2);
-        note.addModifier(art, 0);
+        note.__dgHasAccent = true;
       } catch (_) {}
     };
     const getStickingSpecForStep = (stepIdx) => {
@@ -700,7 +693,48 @@ export default function Notation({
         });
       });
     };
-
+    const drawAccentMarksForVoice = (voice, svgRoot) => {
+      if (!svgRoot) return;
+      const tickables = (voice && typeof voice.getTickables === "function" && voice.getTickables()) || [];
+      tickables.forEach((note) => {
+        if (!note?.__dgHasAccent) return;
+        try {
+          const stave = note.getStave?.();
+          const absX = Number(note.getAbsoluteX?.()) || 0;
+          const headBegin = Number(note.getNoteHeadBeginX?.());
+          const headEnd = Number(note.getNoteHeadEndX?.());
+          const x =
+            Number.isFinite(headBegin) && Number.isFinite(headEnd) && headEnd > headBegin
+              ? (headBegin + headEnd) / 2 + 2
+              : absX + 2;
+          const ys = Array.isArray(note.getYs?.()) ? note.getYs().filter((y) => Number.isFinite(y)) : [];
+          const stemTopY = Number(note.getStemExtents?.()?.topY);
+          const noteTopY = Math.min(
+            ...(ys.length ? ys : [Number(stave?.getYForLine?.(0)) || 0]),
+            Number.isFinite(stemTopY) ? stemTopY : Infinity
+          );
+          const staffTopY = Number(stave?.getYForLine?.(0));
+          const preferredY = Number.isFinite(noteTopY) ? noteTopY - 13 : staffTopY - 20;
+          const outsideStaffY = Number.isFinite(staffTopY) ? staffTopY - 19 : preferredY;
+          const y = Math.max(12, Math.min(preferredY, outsideStaffY));
+          [
+            [x - 5, y - 3.75, x + 5.5, y],
+            [x + 5.5, y, x - 5, y + 3.75],
+          ].forEach(([x1, y1, x2, y2]) => {
+            const lineEl = document.createElementNS("http://www.w3.org/2000/svg", "line");
+            lineEl.setAttribute("x1", String(x1));
+            lineEl.setAttribute("y1", String(y1));
+            lineEl.setAttribute("x2", String(x2));
+            lineEl.setAttribute("y2", String(y2));
+            lineEl.setAttribute("stroke", notationColor);
+            lineEl.setAttribute("stroke-width", "1.65");
+            lineEl.setAttribute("stroke-linecap", "round");
+            lineEl.setAttribute("class", "dg-accent");
+            svgRoot.appendChild(lineEl);
+          });
+        } catch (_) {}
+      });
+    };
     const applyCircledXLargeStyling = (note, keyIndices) => {
       if (!note || !keyIndices || keyIndices.length === 0) return;
       try {
@@ -1315,6 +1349,7 @@ export default function Notation({
         (tupletsByBar[b] || []).forEach((tuplet) => {
           try { tuplet.setContext(ctx).draw(); } catch (_) {}
         });
+        drawAccentMarksForVoice(voices[b], svgRoot);
       }
       drawArrangementTextMarkers(svgRoot, staves);
       const svg = ref.current.querySelector("svg");
@@ -2061,6 +2096,10 @@ for (let i = 0; i < notes.length; i++) {
       }
 
       barBeams.forEach((beam) => beam.setContext(ctx).draw());
+    }
+
+    for (let b = 0; b < bars; b++) {
+      drawAccentMarksForVoice(voices[b], svgRoot);
     }
 
     drawArrangementTextMarkers(svgRoot, staves);

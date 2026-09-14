@@ -68,13 +68,7 @@ export default function PreferencesDialog({
   getOverlapModeDescription,
   moveOverrideBehavior,
   onMoveOverrideBehaviorChange,
-  bars,
-  barsPerLine,
-  onBarsPerLineChange,
-  gridBarsPerLine,
-  onGridBarsPerLineChange,
   layout,
-  onLayoutChange,
   gridNotationGap,
   onGridNotationGapChange,
   notationGridGapOffset,
@@ -435,13 +429,7 @@ export default function PreferencesDialog({
               <></>
             ) : category === "appearance" ? (
               <AppearancePreferences
-                bars={bars}
-                barsPerLine={barsPerLine}
-                onBarsPerLineChange={onBarsPerLineChange}
-                gridBarsPerLine={gridBarsPerLine}
-                onGridBarsPerLineChange={onGridBarsPerLineChange}
                 layout={layout}
-                onLayoutChange={onLayoutChange}
                 gridNotationGap={gridNotationGap}
                 onGridNotationGapChange={onGridNotationGapChange}
                 notationGridGapOffset={notationGridGapOffset}
@@ -487,13 +475,7 @@ export default function PreferencesDialog({
 }
 
 function AppearancePreferences({
-  bars,
-  barsPerLine,
-  onBarsPerLineChange,
-  gridBarsPerLine,
-  onGridBarsPerLineChange,
   layout,
-  onLayoutChange,
   gridNotationGap,
   onGridNotationGapChange,
   notationGridGapOffset,
@@ -515,27 +497,6 @@ function AppearancePreferences({
         <div className="text-sm font-normal text-neutral-200">Layout</div>
       </div>
       <div className="mt-2 flex flex-wrap items-center gap-4">
-        <NumberStepper label="Bars/line" value={barsPerLine} onDecrease={() => onBarsPerLineChange?.((v) => Math.max(1, v - 1))} onIncrease={() => onBarsPerLineChange?.((v) => Math.min(bars, v + 1))} />
-        <NumberStepper label="Grid bars/line" value={gridBarsPerLine} onDecrease={() => onGridBarsPerLineChange?.((v) => Math.max(1, v - 1))} onIncrease={() => onGridBarsPerLineChange?.((v) => Math.min(bars, v + 1))} />
-        <div className="flex items-center gap-2">
-          <span className="text-sm text-neutral-300 whitespace-nowrap">Layout</span>
-          <div className="flex items-stretch overflow-hidden rounded-md border border-neutral-700 bg-neutral-800">
-            {["grid-top", "notation-top"].map((layoutOption, index) => (
-              <button
-                key={layoutOption}
-                type="button"
-                onClick={() => onLayoutChange?.(layoutOption)}
-                className={`${index > 0 ? "border-l border-neutral-700 " : ""}px-3 py-1 text-sm whitespace-nowrap ${
-                  layout === layoutOption
-                    ? "bg-neutral-700 text-white"
-                    : "bg-neutral-800 text-neutral-400 hover:bg-neutral-700/60 hover:text-neutral-200"
-                }`}
-              >
-                {layoutOption === "grid-top" ? "Grid top" : "Notation top"}
-              </button>
-            ))}
-          </div>
-        </div>
         {layout === "grid-top" ? (
           <RangeSetting label="Offset" min="0" max="80" value={gridNotationGap} onChange={onGridNotationGapChange} />
         ) : null}
@@ -601,25 +562,6 @@ function AppearancePreferences({
         </button>
       </div>
     </>
-  );
-}
-
-function NumberStepper({ label, value, onDecrease, onIncrease }) {
-  return (
-    <div className="flex items-center gap-2">
-      <span className="text-sm text-neutral-300 whitespace-nowrap">{label}</span>
-      <div className="flex items-stretch overflow-hidden rounded-md border border-neutral-700 bg-neutral-800">
-        <button type="button" onClick={onDecrease} className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700">
-          −
-        </button>
-        <div className="min-w-[44px] px-3 py-1 flex items-center justify-center text-sm text-white bg-neutral-800 border-l border-r border-neutral-700">
-          {value}
-        </div>
-        <button type="button" onClick={onIncrease} className="px-2 text-base leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700">
-          +
-        </button>
-      </div>
-    </div>
   );
 }
 

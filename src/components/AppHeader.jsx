@@ -292,22 +292,6 @@ export default function AppHeader({
             >
               {`${bpm} BPM`}
             </button>
-          </div>
-          <div className="min-w-4 flex-1" />
-          <div className="inline-flex shrink-0 items-center gap-2 whitespace-nowrap">
-            <HelpHotspot
-              tip={
-                <>
-                  <div>Grid: long press a cell to cycle note modes.</div>
-                  <div className="mt-1">Selection: long press and drag to select.</div>
-                  <div className="mt-1">Selection: use arrow keys to move it.</div>
-                  <div className="mt-1">Looping: press &quot;L&quot; to toggle looping for the current selection.</div>
-                  <div className="mt-1">Subdivision: click count numbers above the grid to toggle the selected subdivision. Long press a count number for subdivision options.</div>
-                </>
-              }
-              align="right"
-              widthClass="w-72"
-            />
             <button
               type="button"
               onClick={onUndo}
@@ -330,7 +314,21 @@ export default function AppHeader({
             >
               →
             </button>
+            <HelpHotspot
+              tip={
+                <>
+                  <div>Grid: long press a cell to cycle note modes.</div>
+                  <div className="mt-1">Selection: long press and drag to select.</div>
+                  <div className="mt-1">Selection: use arrow keys to move it.</div>
+                  <div className="mt-1">Looping: press &quot;L&quot; to toggle looping for the current selection.</div>
+                  <div className="mt-1">Subdivision: click count numbers above the grid to toggle the selected subdivision. Long press a count number for subdivision options.</div>
+                </>
+              }
+              align="left"
+              widthClass="w-72"
+            />
           </div>
+          <div className="min-w-4 flex-1" />
           <button
             ref={headerSheetButtonRef}
             type="button"

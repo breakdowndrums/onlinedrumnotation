@@ -1347,7 +1347,7 @@ export default function Grid({
                     >
                       <span
                         className={`pointer-events-none absolute inset-0 ${quarterBandClass} ${
-                          quarterBandClass ? "opacity-100" : (val === CELL.OFF ? "opacity-100" : "opacity-40")
+                          val === CELL.OFF ? "opacity-100" : "opacity-0"
                         }`}
                         style={
                           quarterBandClass === "is-tuplet-band"

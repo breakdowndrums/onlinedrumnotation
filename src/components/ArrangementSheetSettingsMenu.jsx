@@ -72,6 +72,10 @@ export default function ArrangementSheetSettingsMenu({
   onToggleGlobalDottedNotes,
   printSticking,
   onTogglePrintSticking,
+  showTempo,
+  onToggleShowTempo,
+  showBarNumbers,
+  onToggleShowBarNumbers,
   previewScale,
   onDecreasePreviewScale,
   onIncreasePreviewScale,
@@ -175,6 +179,20 @@ export default function ArrangementSheetSettingsMenu({
                   label="Print sticking"
                   valueLabel={printSticking ? "On" : "Off"}
                   onClick={onTogglePrintSticking}
+                />
+                <BooleanOption
+                  active={showTempo}
+                  title="Show or hide tempo markings on the sheet"
+                  label="Show tempo"
+                  valueLabel={showTempo ? "On" : "Off"}
+                  onClick={onToggleShowTempo}
+                />
+                <BooleanOption
+                  active={showBarNumbers}
+                  title="Show or hide bar numbers on the sheet"
+                  label="Show bar numbers"
+                  valueLabel={showBarNumbers ? "On" : "Off"}
+                  onClick={onToggleShowBarNumbers}
                 />
                 <Stepper
                   label="Scale"

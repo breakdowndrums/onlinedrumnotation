@@ -535,6 +535,7 @@ function EditorGridScrollArea({
   const contentRef = React.useRef(null);
   const measureRef = React.useRef(() => {});
   const [scrollEnabled, setScrollEnabled] = React.useState(false);
+  const [snapEnabled, setSnapEnabled] = React.useState(false);
   const [trailingSnapPadding, setTrailingSnapPadding] = React.useState(16);
 
   measureRef.current = () => {
@@ -548,6 +549,7 @@ function EditorGridScrollArea({
     );
     const nextScrollEnabled = gridSurfaceWidth > scroller.clientWidth + 1;
     const barStartCells = Array.from(content.querySelectorAll("[data-bar-start='1']"));
+    const nextSnapEnabled = nextScrollEnabled && barStartCells.length > 1;
     const lastBarStartCell = barStartCells[barStartCells.length - 1];
     if (lastBarStartCell instanceof HTMLElement) {
       const contentRect = content.getBoundingClientRect();
@@ -556,7 +558,7 @@ function EditorGridScrollArea({
       const scrollPadding = parseFloat(window.getComputedStyle(scroller).scrollPaddingLeft || "0") || 0;
       const naturalContentWidth = gridSurface.getBoundingClientRect().width;
       const neededContentWidth = lastBarStartOffset + Math.max(0, scroller.clientWidth - scrollPadding);
-      const nextPadding = nextScrollEnabled
+      const nextPadding = nextSnapEnabled
         ? Math.max(16, Math.ceil(neededContentWidth - naturalContentWidth))
         : 16;
       setTrailingSnapPadding((prev) => (Math.abs(prev - nextPadding) < 1 ? prev : nextPadding));
@@ -568,6 +570,7 @@ function EditorGridScrollArea({
       if (!nextScrollEnabled) scroller.scrollLeft = 0;
       return nextScrollEnabled;
     });
+    setSnapEnabled((prev) => (prev === nextSnapEnabled ? prev : nextSnapEnabled));
   };
 
   React.useEffect(() => {
@@ -598,11 +601,13 @@ function EditorGridScrollArea({
     <div
       ref={scrollerRef}
       className={`w-full min-w-0 overflow-y-visible ${
-        scrollEnabled ? "snap-x snap-mandatory overflow-x-auto" : "overflow-x-hidden"
+        scrollEnabled
+          ? `${snapEnabled ? "snap-x snap-proximity" : ""} overflow-x-auto`
+          : "overflow-x-hidden"
       } ${className}`}
       style={{
         ...style,
-        ...(scrollEnabled && labelGutterWidth ? { scrollPaddingLeft: labelGutterWidth } : {}),
+        ...(snapEnabled && labelGutterWidth ? { scrollPaddingLeft: labelGutterWidth } : {}),
       }}
     >
       <div
@@ -17339,7 +17344,7 @@ useEffect(() => {
                 ref={gridMenuPopupRef}
                 data-sidebar-chevron-area="1"
                 onPointerDown={handleSidebarChevronAreaPointerDown}
-                className="absolute left-0 top-full z-20 mt-2 w-[min(15rem,calc(100vw-2rem))] max-w-[calc(100vw-2rem)] rounded-lg border border-neutral-700 bg-neutral-900 p-3 shadow-xl"
+                className="absolute left-0 top-full z-[150] mt-2 w-[min(15rem,calc(100vw-2rem))] max-w-[calc(100vw-2rem)] rounded-lg border border-neutral-700 bg-neutral-900 p-3 shadow-xl"
               >
               <div className="flex flex-col gap-3">
                 <div className="flex items-center justify-between gap-2">

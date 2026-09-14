@@ -838,7 +838,7 @@ export default function Grid({
             {instruments.map((inst, instrumentRowIdx) => (
               <React.Fragment key={`${inst.id}-${lineIdx}`}>
                 <div
-                  className={`sticky left-0 z-20 relative box-border flex items-center justify-end ${instrumentRowIdx === 0 ? "overflow-visible" : "overflow-hidden"} bg-transparent pr-1 text-xs text-right whitespace-nowrap select-none cursor-pointer hover:text-neutral-200`}
+                  className="sticky left-0 z-20 relative box-border flex items-center justify-end overflow-visible bg-transparent pr-1 text-xs text-right whitespace-nowrap select-none cursor-pointer hover:text-neutral-200"
                   style={{ width: labelGutterWidth, minWidth: labelGutterWidth, maxWidth: labelGutterWidth }}
                   onMouseDown={(e) => {
                     e.stopPropagation();
@@ -867,11 +867,11 @@ export default function Grid({
                     className="pointer-events-none absolute left-0 bottom-0 bg-neutral-900"
                     style={{
                       top: instrumentRowIdx === 0 ? "-1.75rem" : "0px",
-                      width: `calc(100% + ${countRowCutoffOffsetPx}px)`,
+                      right: `${-(countRowCutoffOffsetPx + 10)}px`,
                     }}
                     aria-hidden="true"
                   />
-                  <span className="relative z-10">{inst.label}</span>
+                  <span className="relative z-10 inline-block translate-x-[10px]">{inst.label}</span>
                 </div>
                 {timeline.map((t, i) => {
                   if (t.type === "gap") return <div key={`g-${inst.id}-${lineIdx}-${i}`} style={gridContentOffsetStyle} />;

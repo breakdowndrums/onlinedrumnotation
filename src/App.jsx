@@ -225,7 +225,11 @@ function formatTimingShiftLabel(sixteenths) {
 
 function formatCurrentChangelogTitle(date = new Date()) {
   try {
-    return new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(date);
+    return new Intl.DateTimeFormat("en-US", {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    }).format(date);
   } catch (_) {
     return date.toISOString().slice(0, 10);
   }

@@ -14,6 +14,10 @@ create table if not exists public.changelog_entries (
 create index if not exists changelog_entries_public_idx
   on public.changelog_entries (status, published_at desc, created_at desc);
 
+grant usage on schema public to anon, authenticated, service_role;
+grant select on table public.changelog_entries to anon, authenticated;
+grant all privileges on table public.changelog_entries to service_role;
+
 create or replace function public.set_changelog_updated_at()
 returns trigger
 language plpgsql
@@ -44,3 +48,5 @@ drop policy if exists "changelog_entries_admin_all" on public.changelog_entries;
 
 comment on table public.changelog_entries is
   'Public changelog entries are read by visitors and created by admin through the backend API.';
+
+notify pgrst, 'reload schema';

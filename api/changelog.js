@@ -3,6 +3,19 @@ import { getRequestUser, hasSupabaseAdmin, supabaseAdmin } from "./_supabaseAdmi
 const MAX_CHANGELOG_TITLE_LENGTH = 120;
 const MAX_CHANGELOG_BODY_LENGTH = 2000;
 
+function isMissingChangelogTableError(error) {
+  const message = String(error?.message || "").toLowerCase();
+  const code = String(error?.code || "");
+  return (
+    code === "PGRST205" ||
+    code === "42P01" ||
+    (message.includes("changelog_entries") &&
+      (message.includes("could not find the table") ||
+        message.includes("schema cache") ||
+        message.includes("does not exist")))
+  );
+}
+
 async function readJsonBody(req) {
   if (req.body && typeof req.body === "object") return req.body;
   if (typeof req.body === "string") {
@@ -36,7 +49,17 @@ async function listChangelog(req, res) {
   }
 
   const { data, error } = await query;
-  if (error) return res.status(500).json({ error: error.message || "Failed to load changelog." });
+  if (error) {
+    if (isMissingChangelogTableError(error)) {
+      return res.status(200).json({
+        items: [],
+        isAdmin,
+        unavailable: true,
+        warning: "Changelog table is not configured yet.",
+      });
+    }
+    return res.status(500).json({ error: error.message || "Failed to load changelog." });
+  }
   return res.status(200).json({ items: Array.isArray(data) ? data : [], isAdmin });
 }
 
@@ -58,7 +81,14 @@ async function createChangelogEntry(req, res, body) {
     status: "published",
     published_at: now,
   });
-  if (error) return res.status(500).json({ error: error.message || "Failed to post changelog." });
+  if (error) {
+    if (isMissingChangelogTableError(error)) {
+      return res.status(503).json({
+        error: "Changelog table is not configured yet. Apply supabase-changelog-schema.sql in Supabase.",
+      });
+    }
+    return res.status(500).json({ error: error.message || "Failed to post changelog." });
+  }
   return res.status(200).json({ ok: true });
 }
 
@@ -68,7 +98,14 @@ async function deleteChangelogEntry(req, res, body) {
   const changelogId = String(body?.changelogId || "").trim();
   if (!changelogId) return res.status(400).json({ error: "Missing changelog id." });
   const { error } = await supabaseAdmin.from("changelog_entries").delete().eq("id", changelogId);
-  if (error) return res.status(500).json({ error: error.message || "Failed to delete changelog." });
+  if (error) {
+    if (isMissingChangelogTableError(error)) {
+      return res.status(503).json({
+        error: "Changelog table is not configured yet. Apply supabase-changelog-schema.sql in Supabase.",
+      });
+    }
+    return res.status(500).json({ error: error.message || "Failed to delete changelog." });
+  }
   return res.status(200).json({ ok: true });
 }
 

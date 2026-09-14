@@ -7,7 +7,9 @@ function buildChangelogHeaders({ accessToken = "" } = {}) {
   return headers;
 }
 
-export async function requestChangelogApi(method, payload = null, options = {}) {
+let publicChangelogPreloadPromise = null;
+
+async function fetchChangelogApi(method, payload = null, options = {}) {
   const query = options.query ? `?${new URLSearchParams(options.query).toString()}` : "";
   const response = await fetch(`/api/changelog${query}`, {
     method,
@@ -25,3 +27,26 @@ export async function requestChangelogApi(method, payload = null, options = {}) 
   }
   return data || {};
 }
+
+export function preloadPublicChangelogApi() {
+  if (typeof window === "undefined") return null;
+  if (!publicChangelogPreloadPromise) {
+    publicChangelogPreloadPromise = fetchChangelogApi("GET").catch((error) => {
+      publicChangelogPreloadPromise = null;
+      throw error;
+    });
+  }
+  return publicChangelogPreloadPromise;
+}
+
+export async function requestChangelogApi(method, payload = null, options = {}) {
+  const normalizedMethod = String(method || "GET").toUpperCase();
+  const hasAccessToken = Boolean(String(options?.accessToken || "").trim());
+  const hasQuery = Boolean(options?.query);
+  if (normalizedMethod === "GET" && !payload && !hasAccessToken && !hasQuery) {
+    return preloadPublicChangelogApi() || fetchChangelogApi(normalizedMethod, payload, options);
+  }
+  return fetchChangelogApi(normalizedMethod, payload, options);
+}
+
+preloadPublicChangelogApi()?.catch(() => {});

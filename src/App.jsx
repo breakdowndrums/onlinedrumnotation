@@ -4376,6 +4376,9 @@ export default function App() {
   const [modifiedPresetBase, setModifiedPresetBase] = useState(null); // built-in/user preset name for "preset*" variants
   const [isSaveAsDialogOpen, setIsSaveAsDialogOpen] = useState(false);
   const [saveAsName, setSaveAsName] = useState("");
+  const [newBeatSaveName, setNewBeatSaveName] = useState(null);
+  const [newBeatSaving, setNewBeatSaving] = useState(false);
+  const [newBeatSaveError, setNewBeatSaveError] = useState("");
   const [presetNameInlineDraft, setPresetNameInlineDraft] = useState("");
   const availableInstrumentButtonWidthCh = React.useMemo(
     () => Math.max(...ALL_INSTRUMENTS.map((inst) => inst.label.length)) + 2,
@@ -16629,7 +16632,7 @@ useEffect(() => {
   const saveCurrentBeatLocal = React.useCallback(async (options = {}) => {
     const shouldAutoRename = !(options && options.autoRename === false);
     const excludeId = String(options?.excludeId || "").trim();
-    const name = getUniqueBeatName(beatNameDraft, excludeId ? { excludeId } : undefined);
+    const name = getUniqueBeatName(options?.nameOverride ?? beatNameDraft, excludeId ? { excludeId } : undefined);
     const now = new Date().toISOString();
     const selectedParentId = selectedBeatLibraryContainerId !== "all" ? selectedBeatLibraryContainerId : null;
     const nextManualOrder =
@@ -16640,6 +16643,7 @@ useEffect(() => {
       }, 0) + 1;
     const payload = {
       ...buildCurrentBeatPayload(),
+      name,
       libraryMeta: {
         parentId: selectedParentId,
         manualOrder: nextManualOrder,
@@ -18234,13 +18238,14 @@ useEffect(() => {
       </button>
     </div>
   );
-  const createNewBeat = () => {
+  const createNewBeat = (skipSaveDialog = false) => {
     const payload = buildCurrentBeatPayload();
     const hasNotes = Object.values(payload.grid || {}).some((events) => events.length > 0);
-    if (
-      (isLoadedLocalBeatDirty || (!loadedLocalBeatId && hasNotes)) &&
-      !window.confirm("Start a new beat? Unsaved changes to the current beat will be discarded.")
-    ) return;
+    if (!skipSaveDialog && (isLoadedLocalBeatDirty || (!loadedLocalBeatId && hasNotes))) {
+      setNewBeatSaveName(beatNameDraft.trim() || "Untitled Beat");
+      setNewBeatSaveError("");
+      return;
+    }
     playback.hardStop();
     setArrangementPlaybackEnabled(false);
     setArrangementPlaybackUiActive(false);
@@ -21114,6 +21119,49 @@ useEffect(() => {
         </div>
       ) : null}
       
+      {newBeatSaveName !== null && createPortal(
+        <div className="fixed inset-0 z-[300] flex items-center justify-center bg-black/60 p-4" data-loopui="1">
+          <form
+            className="w-full max-w-sm rounded-xl border border-neutral-700 bg-neutral-900 p-5 shadow-2xl"
+            onSubmit={async (event) => {
+              event.preventDefault();
+              if (newBeatSaving || !newBeatSaveName.trim()) return;
+              setNewBeatSaving(true);
+              setNewBeatSaveError("");
+              try {
+                const saved = await saveCurrentBeatLocal({ autoRename: false, nameOverride: newBeatSaveName.trim() });
+                if (!saved) {
+                  setNewBeatSaveError("Could not save the beat. Please try again.");
+                  return;
+                }
+                createNewBeat(true);
+                setNewBeatSaveName(null);
+              } catch (error) {
+                setNewBeatSaveError(error?.message || "Could not save the beat.");
+              } finally {
+                setNewBeatSaving(false);
+              }
+            }}
+          >
+            <h2 className="text-sm font-medium text-neutral-200">Save current beat</h2>
+            <p className="mt-2 text-xs text-neutral-400">Give your current beat a name before starting a new one.</p>
+            <input
+              autoFocus
+              aria-label="Beat name"
+              value={newBeatSaveName}
+              onChange={(event) => setNewBeatSaveName(event.target.value)}
+              disabled={newBeatSaving}
+              required
+              className="mt-4 w-full rounded border border-neutral-700 bg-neutral-950 px-3 py-2 text-sm text-neutral-200 outline-none focus:border-neutral-500"
+            />
+            {newBeatSaveError && <p role="alert" className="mt-2 text-xs text-amber-300">{newBeatSaveError}</p>}
+            <div className="mt-4 flex justify-end gap-2">
+              <button type="button" disabled={newBeatSaving} onClick={() => setNewBeatSaveName(null)} className="rounded px-3 py-2 text-xs text-neutral-400 hover:bg-neutral-800">Cancel</button>
+              <button type="submit" disabled={newBeatSaving || !newBeatSaveName.trim()} className="rounded border border-neutral-600 bg-neutral-800 px-3 py-2 text-xs text-neutral-200 disabled:opacity-50">{newBeatSaving ? "Saving..." : "Save & New beat"}</button>
+            </div>
+          </form>
+        </div>, document.body
+      )}
       <AppHeader
         isEmbedMode={isEmbedMode}
         requestedExample={requestedExample}
@@ -21160,7 +21208,7 @@ useEffect(() => {
         canRedo={canRedoTop}
         onUndo={handleTopUndo}
         onRedo={handleTopRedo}
-        onNewBeat={createNewBeat}
+        onNewBeat={() => createNewBeat()}
         hasSupabaseEnabled={hasSupabaseEnabled}
         authUser={authUser}
         authUserEmail={authUserEmail}

@@ -18271,7 +18271,6 @@ useEffect(() => {
     setUnsavedBeatStripSnapshot(null);
     setSelectedBeatLibraryBeatIds([]);
     setBeatLibraryBeatSelectionAnchorId(null);
-    setSelectedArrangementSourceBeatKey("");
     setPendingCurrentBeatStripAutoRename(false);
     setIsCurrentBeatStripRenaming(false);
     lastCustomNotationStickingSelectionRef.current = {};

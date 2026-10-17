@@ -18234,6 +18234,43 @@ useEffect(() => {
       </button>
     </div>
   );
+  const createNewBeat = () => {
+    const payload = buildCurrentBeatPayload();
+    const hasNotes = Object.values(payload.grid || {}).some((events) => events.length > 0);
+    if (
+      (isLoadedLocalBeatDirty || (!loadedLocalBeatId && hasNotes)) &&
+      !window.confirm("Start a new beat? Unsaved changes to the current beat will be discarded.")
+    ) return;
+    playback.hardStop();
+    setArrangementPlaybackEnabled(false);
+    setArrangementPlaybackUiActive(false);
+    setArrangementSelection(null);
+    setArrangementSelectionAnchor(null);
+    setArrangementBarSelection(null);
+    setArrangementBarSelectionAnchor(null);
+    setCurrentArrangementEditorBeatKey("");
+    applyImportedBeatPayload({
+      ...payload,
+      name: "",
+      composer: "",
+      category: "Groove",
+      style: "",
+      bars: 1,
+      tupletsByBar: [],
+      grid: {},
+      stickingOverrides: {},
+      notationStickingSelection: {},
+    }, `new-beat:${Date.now()}`);
+    setCurrentEditorBeatKey("__unsaved__");
+    setStickingEditModeEnabled(false);
+    setUnsavedBeatStripSnapshot(null);
+    setSelectedBeatLibraryBeatIds([]);
+    setBeatLibraryBeatSelectionAnchorId(null);
+    setSelectedArrangementSourceBeatKey("");
+    setPendingCurrentBeatStripAutoRename(false);
+    setIsCurrentBeatStripRenaming(false);
+    lastCustomNotationStickingSelectionRef.current = {};
+  };
   const currentBeatEditorStripMainControls = (
     <div className="inline-flex max-w-full items-center gap-1.5 bg-transparent px-0 py-0.5 align-top">
       <div className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap">
@@ -21123,6 +21160,7 @@ useEffect(() => {
         canRedo={canRedoTop}
         onUndo={handleTopUndo}
         onRedo={handleTopRedo}
+        onNewBeat={createNewBeat}
         hasSupabaseEnabled={hasSupabaseEnabled}
         authUser={authUser}
         authUserEmail={authUserEmail}

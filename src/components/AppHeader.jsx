@@ -157,6 +157,7 @@ export default function AppHeader({
   canRedo,
   onUndo,
   onRedo,
+  onNewBeat,
   hasSupabaseEnabled,
   authUser,
   authUserEmail,
@@ -329,6 +330,14 @@ export default function AppHeader({
             />
           </div>
           <div className="min-w-4 flex-1" />
+          <button
+            type="button"
+            onClick={onNewBeat}
+            className="touch-none select-none inline-flex h-[2.125rem] items-center justify-center rounded border border-neutral-900 bg-black px-3 text-sm text-neutral-400 hover:bg-neutral-950/80 hover:text-neutral-300"
+            title="Start a new empty beat"
+          >
+            + New beat
+          </button>
           <button
             ref={headerSheetButtonRef}
             type="button"

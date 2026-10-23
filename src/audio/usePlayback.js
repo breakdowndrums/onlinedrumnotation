@@ -15,6 +15,8 @@ export function usePlayback({
   metronomeEnabled,
   metronomeVolume,
   drumVolume,
+  flamSpacingMs = 33,
+  playbackRange = null,
 }) {
   const engine = useMemo(() => makeAudioEngine(), []);
   const [isReady, setIsReady] = useState(false);
@@ -26,13 +28,13 @@ export function usePlayback({
   const [slowStartDetected, setSlowStartDetected] = useState(false);
   const [endedNaturallyAt, setEndedNaturallyAt] = useState(0);
 
-  const snapRef = useRef({ instruments, grid, columns, stepQuarterDurations });
+  const snapRef = useRef({ instruments, grid, columns, stepQuarterDurations, playbackRange });
   const pendingPlayStartTsRef = useRef(null);
   const firstStepSeenForPlayRef = useRef(false);
 
   useEffect(() => {
-    snapRef.current = { instruments, grid, columns, stepQuarterDurations };
-  }, [instruments, grid, columns, stepQuarterDurations]);
+    snapRef.current = { instruments, grid, columns, stepQuarterDurations, playbackRange };
+  }, [instruments, grid, columns, stepQuarterDurations, playbackRange]);
 
   useEffect(() => {
     engine.setTransport({
@@ -44,8 +46,9 @@ export function usePlayback({
       nextMetronomeEnabled: metronomeEnabled,
       nextMetronomeVolume: metronomeVolume,
       nextDrumVolume: drumVolume,
+      nextFlamSpacingMs: flamSpacingMs,
     });
-  }, [engine, bpm, resolution, columns, stepQuarterDurations, timeSig, metronomeEnabled, metronomeVolume, drumVolume]);
+  }, [engine, bpm, resolution, columns, stepQuarterDurations, timeSig, metronomeEnabled, metronomeVolume, drumVolume, flamSpacingMs]);
 
   useEffect(() => {
     engine.setOnStep((step, meta) => {

@@ -5,7 +5,7 @@ const { Renderer, Stave, StaveNote, Voice, Formatter, Beam, Fraction, Barline } 
 const CUSTOM_GHOST_GLYPHS = {
   black: "noteheadBlackParensCustom",
   x: "noteheadXBlackGhostSmallCustom",
-  circleX: "noteheadXBlackGhostSmallCustom",
+  circleX: "noteheadCircleXSmallCustom",
 };
 const CUSTOM_CIRCLED_X_LARGE_GLYPH = "noteheadCircleX115FreshCustom";
 const TEMPO_QUARTER_UP_PATH =
@@ -15,8 +15,15 @@ const CELL = {
   ON: "on",
   GHOST: "ghost",
   ACCENT: "accent",
+  FLAM: "flam",
 };
-const GHOST_NOTATION_ENABLED = new Set(["snare", "tom1", "tom2", "floorTom", "hihat"]);
+const GHOST_NOTATION_ENABLED = new Set(["snare", "tom1", "tom2", "floorTom", "hihat", "kick", "sideStick", "ride", "hihatOpen", "rideBell", "crash1", "crash2", "china", "cowbell", "splash"]);
+
+function flamSlurPath(x1, x2, y, thicknessScale = 1) {
+  const width = Math.abs(x2 - x1);
+  const middle = (x1 + x2) / 2;
+  return `M${x1},${y} Q${middle},${y + width / 3} ${x2},${y} Q${middle},${y + width / 3 + width * (0.425 - 1 / 3) * thicknessScale} ${x1},${y} Z`;
+}
 
 const NOTATION_MAP = {
   kick: { key: "f/4" },
@@ -529,14 +536,20 @@ export default function Notation({
     const applyGhostStyling = (note, ghostKeyIndices) => {
       if (!note || !ghostKeyIndices || ghostKeyIndices.length === 0) return;
       note.__dgHasGhost = true;
+      note.__dgGhostKeyIndices = new Set(ghostKeyIndices);
 
       // Use custom small SMuFL glyphs via keyProps so the override survives notehead rebuilds.
       try {
         const keyProps = (typeof note.getKeyProps === "function" && note.getKeyProps()) || [];
         let changed = false;
+        const specialGhostIndices = [];
         ghostKeyIndices.forEach((i) => {
           const kp = keyProps?.[i];
           if (!kp) return;
+          if (/\/(d2|t2)$/.test(note.getKeys()[i])) {
+            specialGhostIndices.push(i);
+            return;
+          }
           const code = String(kp.code || "");
           let target = CUSTOM_GHOST_GLYPHS.black;
           if (code.includes("CircleX")) target = CUSTOM_GHOST_GLYPHS.circleX;
@@ -547,6 +560,10 @@ export default function Notation({
           }
         });
         if (changed && typeof note.reset === "function") note.reset();
+        specialGhostIndices.forEach((index) => {
+          note.addModifier(new VF.Parenthesis(VF.Modifier.Position.LEFT), index);
+          note.addModifier(new VF.Parenthesis(VF.Modifier.Position.RIGHT), index);
+        });
       } catch (_) {}
     };
     const applyGhostStemOverride = (note, ghostKeyIndices) => {
@@ -555,6 +572,13 @@ export default function Notation({
         // Stabilize ghost stem geometry when custom notehead metrics differ.
         // Value is in px and intentionally close to VexFlow default stem size.
         if (typeof note.setStemLength === "function") note.setStemLength(35);
+        note.__dgGhostXStemIndices = ghostKeyIndices.filter((index) => note.getKeys()?.[index]?.includes("/x"));
+        if (!note.__dgGhostOpticallyCentered && note.__dgGhostXStemIndices.length === note.getKeys().length) {
+          const width = Math.max(...note.noteHeads.map((head) => head.getWidth()));
+          const correction = Math.max(0, (note.getGlyphWidth() - width) / 2);
+          note.setXShift(note.getXShift() - correction);
+          note.__dgGhostOpticallyCentered = true;
+        }
       } catch (_) {}
     };
     const applySpecialStemOverride = (note) => {
@@ -633,6 +657,21 @@ export default function Notation({
         return notationStickingSelection[`${instId}:${sourceStepIdx}`] === true;
       });
       if (!entries.length) return [];
+      if (entries.some(([instId]) => grid[instId]?.[sourceStepIdx] === CELL.FLAM)) {
+        const labels = [...new Set(entries.map(([instId, hand]) =>
+          grid[instId]?.[sourceStepIdx] === CELL.FLAM
+            ? `${hand === "R" ? "L" : "R"}${hand}`
+            : hand
+        ))];
+        const hasBothMainHands = entries.some(([, hand]) => hand === "R") &&
+          entries.some(([, hand]) => hand === "L");
+        return labels.map((text) => ({
+          text,
+          lane: (notationStickingView === "split-rows" || hasBothMainHands) && text.endsWith("L")
+            ? "bottom"
+            : "top",
+        }));
+      }
       const hands = entries.map(([, hand]) => hand);
       if (!hands.length) return [];
       const hasR = hands.includes("R");
@@ -651,6 +690,21 @@ export default function Notation({
       return [{ text: "L", lane: "top" }];
     };
     const applyStickingAnnotation = (note, specList, stepIdx = -1) => {
+      const sourceStep = renderStepSourceIndexMap?.[stepIdx] ?? stepIdx;
+      const flamKeys = instruments
+        .filter((inst) => grid[inst.id]?.[sourceStep] === CELL.FLAM)
+        .map((inst) => NOTATION_MAP[inst.id]?.key)
+        .filter(Boolean);
+      if (note && flamKeys.length && !note.__dgHasFlam) {
+        const grace = new VF.GraceNote({ keys: flamKeys, duration: "8", clef: "percussion", slash: false, glyph_font_scale: 18 });
+        grace.setStemDirection(1);
+        grace.setStemLength(16);
+        grace.setXShift(7);
+        note.addModifier(new VF.GraceNoteGroup([grace], false), 0);
+        note.__dgFlamGrace = grace;
+        note.__dgFlamKey = flamKeys[0];
+        note.__dgHasFlam = true;
+      }
       if (!note || !Array.isArray(specList) || specList.length < 1) return;
       // Draw after voice rendering; this avoids Annotation layout quirks.
       note.__dgStickingSpec = specList;
@@ -676,11 +730,15 @@ export default function Notation({
         specList.forEach((spec) => {
           const txt = String(spec?.text || "");
           if (!txt) return;
+          const graceBegin = Number(note.__dgFlamGrace?.getNoteHeadBeginX?.());
+          const stickingX = (txt === "LR" || txt === "RL") && Number.isFinite(graceBegin) && Number.isFinite(headEnd)
+            ? (graceBegin + headEnd) / 2
+            : x;
           const lane = String(spec?.lane || "stackSingle");
           const y = (lane === "bottom" ? yBottom : yTop) + 8;
           const xNudge = txt === "L" && lane === "bottom" ? -1.00 : 0;
           const textEl = document.createElementNS("http://www.w3.org/2000/svg", "text");
-          textEl.setAttribute("x", String(x + xNudge));
+          textEl.setAttribute("x", String(stickingX + xNudge));
           textEl.setAttribute("y", String(y));
           textEl.setAttribute("fill", notationColor);
           textEl.setAttribute("font-family", "Arial");
@@ -688,8 +746,28 @@ export default function Notation({
           textEl.setAttribute("font-weight", "400");
           textEl.setAttribute("text-anchor", "middle");
           textEl.setAttribute("class", "dg-sticking");
-          textEl.textContent = txt;
+          if (txt === "LR" || txt === "RL") {
+            const graceHand = document.createElementNS("http://www.w3.org/2000/svg", "tspan");
+            graceHand.setAttribute("font-size", "8");
+            graceHand.textContent = txt[0];
+            const mainHand = document.createElementNS("http://www.w3.org/2000/svg", "tspan");
+            mainHand.setAttribute("font-size", "12");
+            mainHand.setAttribute("dx", "2");
+            mainHand.textContent = txt[1];
+            textEl.append(graceHand, mainHand);
+          } else {
+            textEl.textContent = txt;
+          }
           svgRoot.appendChild(textEl);
+          if (txt === "LR" || txt === "RL") {
+            const halfSpan = textEl.getComputedTextLength() * 0.4;
+            const slur = document.createElementNS("http://www.w3.org/2000/svg", "path");
+            slur.setAttribute("d", flamSlurPath(stickingX - halfSpan, stickingX + halfSpan, y + 2));
+            slur.style.fill = notationColor;
+            slur.style.stroke = "none";
+            slur.setAttribute("class", "dg-sticking dg-sticking-slur");
+            svgRoot.appendChild(slur);
+          }
         });
       });
     };
@@ -697,6 +775,96 @@ export default function Notation({
       if (!svgRoot) return;
       const tickables = (voice && typeof voice.getTickables === "function" && voice.getTickables()) || [];
       tickables.forEach((note) => {
+        const ys = note.getYs?.() || [];
+        const ghostBaseIndex = note.__dgGhostXStemIndices?.find((index) => ys[index] === Math.max(...ys));
+        if (ghostBaseIndex != null && note.getStemDirection() === 1) {
+          const headElements = Array.from(note.getSVGElement()?.querySelectorAll(".vf-notehead") || []);
+          const headElement = headElements.sort((a, b) => {
+            const aBox = a.getBBox();
+            const bBox = b.getBBox();
+            return Math.abs(aBox.y + aBox.height / 2 - ys[ghostBaseIndex]) - Math.abs(bBox.y + bBox.height / 2 - ys[ghostBaseIndex]);
+          })[0];
+          const stemPath = note.getStem()?.getSVGElement()?.querySelector("path");
+          if (headElement && stemPath) {
+            const headBox = headElement.getBBox();
+            const stemBox = stemPath.getBBox();
+            const tipInset = 0.5;
+            const shift = stemBox.x - (headBox.x + headBox.width - tipInset);
+            headElement.setAttribute("transform", `translate(${shift},0)`);
+            stemPath.setAttribute("d", `M${stemBox.x},${headBox.y + tipInset} L${stemBox.x},${stemBox.y}`);
+            if (note.getKeys().length === 1) {
+              const center = headBox.x + headBox.width / 2 + shift;
+              const halfWidth = headBox.width / 2 + 2;
+              Array.from(note.getSVGElement().children).forEach((element) => {
+                if (element.tagName.toLowerCase() !== "path") return;
+                const box = element.getBBox();
+                if (box.height > 0.01 || box.width <= 0) return;
+                element.setAttribute("d", `M${center - halfWidth},${box.y} H${center + halfWidth}`);
+                element.style.strokeWidth = "1px";
+                element.style.fill = "none";
+              });
+            }
+          }
+        }
+        const grace = note?.__dgFlamGrace;
+        if (grace) {
+          const graceElement = grace.getSVGElement();
+          const stemPath = graceElement?.querySelector(".vf-stem path");
+          const flagPath = Array.from(graceElement?.children || []).filter((child) => child.tagName.toLowerCase() === "path").at(-1);
+          if (stemPath && flagPath) {
+            const stemBox = stemPath.getBBox();
+            const flagBox = flagPath.getBBox();
+            const flagShift = stemBox.x - 0.4 - flagBox.x;
+            const left = stemBox.x - 0.4 - flagShift;
+            const right = left + 0.8;
+            const top = flagBox.y + 0.6;
+            const graceYs = grace.getYs();
+            const baseY = Math.max(...graceYs);
+            const hasCrossAtBase = grace.getKeys().some((key, index) => key.includes("/x") && graceYs[index] === baseY);
+            let bottom = stemBox.y + stemBox.height;
+            if (hasCrossAtBase) {
+              const heads = Array.from(graceElement.querySelectorAll(".vf-notehead"));
+              const head = heads.sort((a, b) => {
+                const aBox = a.getBBox();
+                const bBox = b.getBBox();
+                return Math.abs(aBox.y + aBox.height / 2 - baseY) - Math.abs(bBox.y + bBox.height / 2 - baseY);
+              })[0];
+              if (head) {
+                const box = head.getBBox();
+                head.setAttribute("transform", `translate(${stemBox.x - (box.x + box.width - 0.4)},0)`);
+                bottom = box.y + 0.4;
+              }
+            }
+            // One filled silhouette avoids an antialiasing seam between the flag and stem.
+            flagPath.setAttribute("d", `${flagPath.getAttribute("d")} M${left},${top} V${bottom} H${right} V${top} Z`);
+            flagPath.setAttribute("transform", `translate(${flagShift},0)`);
+            stemPath.style.display = "none";
+          }
+          // Preserve native glyph outlines: the general recoloring pass adds a stroke.
+          graceElement?.querySelectorAll("path").forEach((path) => {
+            const isStem = path.closest(".vf-stem") != null;
+            path.style.fill = isStem ? "none" : notationColor;
+            path.style.stroke = isStem ? notationColor : "none";
+            if (isStem) {
+              path.style.strokeWidth = "0.8px";
+              path.style.strokeLinecap = "round";
+            }
+          });
+          const mainIndex = Math.max(0, note.getKeys().indexOf(note.__dgFlamKey));
+          const x1 = (grace.getNoteHeadBeginX() + grace.getNoteHeadEndX()) / 2;
+          const x2 = (note.getNoteHeadBeginX() + note.getNoteHeadEndX()) / 2;
+          const mainY = note.getYs()[mainIndex];
+          const stave = note.getStave();
+          const linePosition = (mainY - stave.getYForLine(0)) / stave.getSpacingBetweenLines();
+          const onStaffLine = Math.abs(linePosition - Math.round(linePosition)) < 0.05;
+          const y = Math.max(grace.getYs()[0], mainY) + (onStaffLine ? 4 : 7);
+          const slur = document.createElementNS("http://www.w3.org/2000/svg", "path");
+          slur.setAttribute("d", flamSlurPath(x1, x2, y, 1.6));
+          slur.setAttribute("fill", notationColor);
+          slur.style.stroke = "none";
+          slur.setAttribute("class", "dg-flam-slur");
+          svgRoot.appendChild(slur);
+        }
         if (!note?.__dgHasAccent) return;
         try {
           const stave = note.getStave?.();
@@ -741,6 +909,7 @@ export default function Notation({
         const keyProps = (typeof note.getKeyProps === "function" && note.getKeyProps()) || [];
         let changed = false;
         keyIndices.forEach((i) => {
+          if (note.__dgGhostKeyIndices?.has(i)) return;
           const kp = keyProps?.[i];
           if (!kp) return;
           if (kp.code !== CUSTOM_CIRCLED_X_LARGE_GLYPH) {

@@ -149,15 +149,22 @@ export function exportDrumMidi({
   });
 
   const events = [];
+  const flamTicks = Math.max(1, Math.round(PPQ * (Number(bpm) || 120) / 60 * 0.025));
+  const pickupTicks = instruments.some((inst) => grid[inst.id]?.[0] === "flam") ? flamTicks : 0;
   for (const inst of instruments) {
     if (!inst || !Number.isFinite(inst.midi)) continue;
     const row = grid[inst.id] || [];
     for (let step = 0; step < columns; step++) {
       const cell = row[step] ?? "off";
       if (cell === "off") continue;
-      const tick = stepStarts[step] ?? 0;
+      const tick = (stepStarts[step] ?? 0) + pickupTicks;
       const noteLen = Math.max(1, Math.floor((ticksByStep[step] || 1) * 0.95));
       const velocity = cell === "ghost" ? 56 : 100;
+      if (cell === "flam") {
+        const graceTick = Math.max(0, tick - Math.min(flamTicks, Math.max(1, Math.floor(ticksByStep[step] * 0.2))));
+        events.push({ tick: graceTick, type: "on", note: inst.midi, velocity: 45 });
+        events.push({ tick: Math.max(graceTick + 1, tick - 1), type: "off", note: inst.midi, velocity: 0 });
+      }
       events.push({ tick, type: "on", note: inst.midi, velocity });
       events.push({ tick: tick + noteLen, type: "off", note: inst.midi, velocity: 0 });
     }
@@ -238,7 +245,12 @@ export function exportArrangementMidi({
   const onStatus = 0x90 | channel;
   const offStatus = 0x80 | channel;
   const timelineEvents = [];
-  let currentTick = 0;
+  const firstPayload = rows.find((row) => row?.beat?.payload)?.beat?.payload;
+  const firstBpm = Math.max(1, Number(rows[0]?.beatBpm || firstPayload?.bpm) || 120);
+  const startsWithFlam = Object.values(firstPayload?.grid || {}).some((events) =>
+    Array.isArray(events) && events.some(([step, value]) => step === 0 && value === 4)
+  );
+  let currentTick = startsWithFlam ? Math.max(1, Math.round(PPQ * firstBpm / 60 * 0.025)) : 0;
   let previousTempo = null;
   let previousTimeSig = null;
 
@@ -293,6 +305,16 @@ export function exportArrangementMidi({
           const tick = repeatStartTick + stepStarts[step];
           const noteLen = Math.max(1, Math.floor((ticksByStep[step] || 1) * 0.95));
           const velocity = value === 2 ? 56 : 100;
+          if (value === 4) {
+            const gap = Math.min(Math.max(1, Math.round(PPQ * bpm / 60 * 0.025)), Math.max(1, Math.floor(ticksByStep[step] * 0.2)));
+            const graceTick = Math.max(0, tick - gap);
+            const mainTick = tick;
+            timelineEvents.push({ tick: graceTick, kind: "on", bytes: [onStatus, inst.midi & 0x7f, 45] });
+            timelineEvents.push({ tick: Math.max(graceTick + 1, mainTick - 1), kind: "off", bytes: [offStatus, inst.midi & 0x7f, 0] });
+            timelineEvents.push({ tick: mainTick, kind: "on", bytes: [onStatus, inst.midi & 0x7f, velocity] });
+            timelineEvents.push({ tick: mainTick + noteLen, kind: "off", bytes: [offStatus, inst.midi & 0x7f, 0] });
+            continue;
+          }
           timelineEvents.push({ tick, kind: "on", bytes: [onStatus, inst.midi & 0x7f, velocity & 0x7f] });
           timelineEvents.push({
             tick: tick + noteLen,

@@ -322,6 +322,7 @@ export default function AppHeader({
                   <div className="mt-1">Selection: long press and drag to select.</div>
                   <div className="mt-1">Selection: use arrow keys to move it.</div>
                   <div className="mt-1">Looping: press &quot;L&quot; to toggle looping for the current selection.</div>
+                  <div className="mt-1">Start: click above counts; click again to clear. End: Shift-click or drag start right.</div>
                   <div className="mt-1">Subdivision: click count numbers above the grid to toggle the selected subdivision. Long press a count number for subdivision options.</div>
                 </>
               }

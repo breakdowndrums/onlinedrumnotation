@@ -541,6 +541,7 @@ const CELL = {
   ON: "on",
   GHOST: "ghost",
   ACCENT: "accent",
+  FLAM: "flam",
 };
 
 function EditorGridScrollArea({
@@ -1466,7 +1467,7 @@ function getComparableBeatPayload(payload) {
     const events = source
       .map((entry) =>
         Array.isArray(entry)
-          ? [Math.max(0, Math.round(Number(entry[0]) || 0)), Math.max(1, Math.min(3, Math.round(Number(entry[1]) || 1)))]
+          ? [Math.max(0, Math.round(Number(entry[0]) || 0)), Math.max(1, Math.min(4, Math.round(Number(entry[1]) || 1)))]
           : null
       )
       .filter(Boolean)
@@ -1508,6 +1509,7 @@ function getComparableBeatPayload(payload) {
     resolution: nextResolution,
     timeSig: nextTimeSig,
     bpm: Math.max(20, Math.min(400, Number(payload?.bpm) || 120)),
+    flamSpacingMs: Math.max(10, Math.min(60, Number(payload?.flamSpacingMs) || 33)),
     layout:
       payload?.layout === "grid-right" ||
       payload?.layout === "notation-right" ||
@@ -2614,7 +2616,7 @@ function buildNotationStateFromPayload(payload) {
         if (!Number.isFinite(idx)) return;
         if (idx < 0 || idx >= columns) return;
         const valRaw = Number(Array.isArray(event) ? event[1] : 1);
-        row[idx] = valRaw === 3 ? CELL.ACCENT : valRaw === 2 ? CELL.GHOST : CELL.ON;
+        row[idx] = valRaw === 4 ? CELL.FLAM : valRaw === 3 ? CELL.ACCENT : valRaw === 2 ? CELL.GHOST : CELL.ON;
       });
     }
     grid[inst.id] = row;
@@ -3026,7 +3028,8 @@ function buildPayloadFromNotationState(state, bpm = 120) {
     const row = Array.isArray(state.grid?.[inst.id]) ? state.grid[inst.id] : [];
     const events = [];
     row.forEach((cell, idx) => {
-      if (cell === CELL.ACCENT) events.push([idx, 3]);
+      if (cell === CELL.FLAM) events.push([idx, 4]);
+      else if (cell === CELL.ACCENT) events.push([idx, 3]);
       else if (cell === CELL.GHOST) events.push([idx, 2]);
       else if (cell === CELL.ON) events.push([idx, 1]);
     });
@@ -3502,7 +3505,7 @@ function assignPhasesToSlots(phases, slotCount) {
 }
 
 // Ghost note support (MVP)
-const GHOST_ENABLED = new Set(["snare", "tom1", "tom2", "floorTom", "hihat"]);
+const GHOST_ENABLED = new Set(["snare", "tom1", "tom2", "floorTom", "hihat", "kick", "sideStick", "ride", "hihatOpen", "rideBell", "crash1", "crash2", "china", "cowbell", "splash"]);
 const FOOT_INSTRUMENTS = new Set(["kick", "hihatFoot"]);
 const INSTRUMENT_HAND_POSITION = {
   splash: 0.8,
@@ -7389,6 +7392,7 @@ export default function App() {
   const [wrappedSelectionCells, setWrappedSelectionCells] = useState(null);
   // { rowStart, rowEnd, start, endExclusive } (row indices into active instruments)
   const [loopRule, setLoopRule] = useState(null);
+  const [playbackRange, setPlaybackRange] = useState(null);
 
 
   
@@ -7741,6 +7745,21 @@ useEffect(() => {
       return DEFAULT_METRONOME_VOLUME;
     }
   });
+  const [defaultFlamSpacingMs, setDefaultFlamSpacingMs] = useState(() => {
+    try {
+      const stored = window.localStorage.getItem("drumgrid.flamSpacingMs");
+      const value = stored == null ? 33 : Number(stored);
+      return Number.isFinite(value) ? Math.max(10, Math.min(60, value)) : 33;
+    } catch (_) {
+      return 33;
+    }
+  });
+  const [flamSpacingMs, setFlamSpacingMs] = useState(defaultFlamSpacingMs);
+  useEffect(() => {
+    try {
+      window.localStorage.setItem("drumgrid.flamSpacingMs", String(defaultFlamSpacingMs));
+    } catch (_) {}
+  }, [defaultFlamSpacingMs]);
   const [gridSelectionHoldDelayMs, setGridSelectionHoldDelayMs] = useState(() => {
     try {
       const raw = String(window.localStorage.getItem(GRID_SELECTION_HOLD_SPEED_STORAGE_KEY) || "").toLowerCase();
@@ -8003,6 +8022,10 @@ useEffect(() => {
   const columns = barStepOffsets[barStepOffsets.length - 1] ?? 0;
 
   useEffect(() => {
+    setPlaybackRange(null);
+  }, [columns, resolution, timeSig.n, timeSig.d, currentEditorBeatKey]);
+
+  useEffect(() => {
     setTupletOverridesByBar((prev) =>
       Array.from({ length: bars }, (_, barIdx) =>
         Array.from({ length: quarterBeatsPerBar }, (_, qIdx) => {
@@ -8209,7 +8232,7 @@ useEffect(() => {
     setWrappedSelectionCells(null);
   }, []);
 
-  const rankCell = React.useCallback((v) => (v === CELL.ACCENT ? 3 : v === CELL.ON ? 2 : v === CELL.GHOST ? 1 : 0), []);
+  const rankCell = React.useCallback((v) => (v === CELL.FLAM ? 4 : v === CELL.ACCENT ? 3 : v === CELL.ON ? 2 : v === CELL.GHOST ? 1 : 0), []);
   const cloneGridState = React.useCallback((g) => {
     const out = {};
     ALL_INSTRUMENTS.forEach((inst) => {
@@ -9715,7 +9738,7 @@ useEffect(() => {
           const idx = Number(event[0]);
           const code = Number(event[1]);
           if (!Number.isFinite(idx) || idx < 0 || idx >= columns) return;
-          const nextVal = code === 3 ? CELL.ACCENT : code === 2 ? CELL.GHOST : code === 1 ? CELL.ON : CELL.OFF;
+          const nextVal = code === 4 ? CELL.FLAM : code === 3 ? CELL.ACCENT : code === 2 ? CELL.GHOST : code === 1 ? CELL.ON : CELL.OFF;
           if (nextVal !== CELL.OFF) nextGrid[instId][Math.floor(idx)] = nextVal;
         });
       });
@@ -14213,7 +14236,7 @@ useEffect(() => {
         const checkId = inst?.id;
         if (!checkId || FOOT_INSTRUMENTS.has(checkId)) continue;
         const val = checkId === instId ? nextVal : (next[checkId]?.[idx] ?? CELL.OFF);
-        if (val !== CELL.OFF) handHits += 1;
+        if (val !== CELL.OFF) handHits += val === CELL.FLAM ? 2 : 1;
         if (handHits > 2) return false;
       }
       return true;
@@ -14802,7 +14825,7 @@ useEffect(() => {
       let handHits = 0;
       for (const id of handIds) {
         const v = computedGrid[id]?.[step] ?? CELL.OFF;
-        if (v !== CELL.OFF) handHits += 1;
+        if (v !== CELL.OFF) handHits += v === CELL.FLAM ? 2 : 1;
         if (handHits > 2) break;
       }
       if (handHits > 2) warned.push(step);
@@ -14822,7 +14845,10 @@ useEffect(() => {
         const v = computedGrid[id]?.[step] ?? CELL.OFF;
         if (v === CELL.OFF) continue;
         const hand = stickingAssignmentsByStep?.[step]?.[id];
-        if (hand === "L" || hand === "R") counts[hand] += 1;
+        if (hand === "L" || hand === "R") {
+          counts[hand] += 1;
+          if (v === CELL.FLAM) counts[hand === "R" ? "L" : "R"] += 1;
+        }
       }
       if (counts.L > 1 || counts.R > 1) warned.push(step);
     }
@@ -14852,6 +14878,8 @@ useEffect(() => {
 
 
   const playback = usePlayback({
+    flamSpacingMs,
+    playbackRange,
     instruments,
     grid: computedGrid,
     columns,
@@ -14889,10 +14917,10 @@ useEffect(() => {
     } else {
       const countInBeatDurSec = (60 / effectivePlaybackBpm) * (4 / Math.max(1, Number(timeSig?.d) || 4));
       const countInBeats = metronomeCountInEnabled ? Math.max(1, Number(timeSig?.n) || 4) : 0;
-      playback.setPlayhead(0);
-      playback.play({ startStep: 0, countInBeats, countInBeatDurSec });
+      playback.setPlayhead(playbackRange?.start || 0);
+      playback.play({ startStep: playbackRange?.start || 0, countInBeats, countInBeatDurSec });
     }
-  }, [playback.isPlaying, playback.play, playback.stop, playback.setPlayhead, effectivePlaybackBpm, timeSig, metronomeCountInEnabled]);
+  }, [playback.isPlaying, playback.play, playback.stop, playback.setPlayhead, effectivePlaybackBpm, timeSig, metronomeCountInEnabled, playbackRange]);
   const activeArrangementPlaybackEntry = React.useMemo(() => {
     if (!arrangementPlaybackEnabled) return null;
     return arrangementPlayableEntries[arrangementPlaybackIndex] || null;
@@ -15480,7 +15508,7 @@ useEffect(() => {
           if (state === CELL.OFF) return;
           hits.push({
             instId: inst.id,
-            state: state === CELL.ACCENT ? "accent" : state === CELL.GHOST ? "ghost" : "on",
+            state: state === CELL.FLAM ? "flam" : state === CELL.ACCENT ? "accent" : state === CELL.GHOST ? "ghost" : "on",
           });
         });
         const globalBarIndex = globalBarBase + getBarIndexForStepFromPayload(payload, step);
@@ -15488,6 +15516,11 @@ useEffect(() => {
           timeSec,
           stepIndex: step,
           hits,
+          flamSpacingSec: Math.min(
+            (Math.max(10, Math.min(60, Number(payload?.flamSpacingMs) || 33)) / 1000) *
+              Math.min(2, Math.max(1, Math.sqrt(120 / entryBpm))),
+            (60 / entryBpm) * stepQuarterDurations[step] * 0.2
+          ),
           meta: {
             mode: "arrangement-compiled",
             queueIndex: Number(entry?.__queueIndex ?? -1),
@@ -15916,7 +15949,8 @@ useEffect(() => {
       const events = [];
       for (let idx = 0; idx < Math.min(columns, row.length); idx++) {
         const cell = row[idx];
-        if (cell === CELL.ACCENT) events.push([idx, 3]);
+        if (cell === CELL.FLAM) events.push([idx, 4]);
+        else if (cell === CELL.ACCENT) events.push([idx, 3]);
         else if (cell === CELL.ON) events.push([idx, 1]);
         else if (cell === CELL.GHOST) events.push([idx, 2]);
       }
@@ -15944,6 +15978,7 @@ useEffect(() => {
       resolution,
       timeSig,
       bpm,
+      flamSpacingMs,
       layout,
       tupletsByBar: normalizedTupletOverridesByBar,
       grid,
@@ -15974,6 +16009,7 @@ useEffect(() => {
     resolution,
     timeSig,
     bpm,
+    flamSpacingMs,
     layout,
     normalizedTupletOverridesByBar,
     mergeRests,
@@ -16227,7 +16263,7 @@ useEffect(() => {
             const code = Number(event[1]);
             if (!Number.isFinite(idx) || idx < 0 || idx >= nextColumns) return;
             const nextVal =
-              code === 3 ? CELL.ACCENT : code === 2 ? CELL.GHOST : code === 1 ? CELL.ON : CELL.OFF;
+              code === 4 ? CELL.FLAM : code === 3 ? CELL.ACCENT : code === 2 ? CELL.GHOST : code === 1 ? CELL.ON : CELL.OFF;
             if (nextVal !== CELL.OFF) nextGrid[instId][Math.floor(idx)] = nextVal;
           });
         }
@@ -16299,6 +16335,7 @@ useEffect(() => {
           setBeatStyleDraft(payload.style);
         }
         const nextBpm = Number(payload.bpm);
+        setFlamSpacingMs(Math.max(10, Math.min(60, Number(payload.flamSpacingMs) || 33)));
         if (Number.isFinite(nextBpm)) {
           const clampedBpm = Math.max(20, Math.min(400, Math.round(nextBpm)));
           setBpm(clampedBpm);
@@ -18254,14 +18291,16 @@ useEffect(() => {
     setArrangementBarSelection(null);
     setArrangementBarSelectionAnchor(null);
     setCurrentArrangementEditorBeatKey("");
+    const startupSettings = customStartupGridSettings || BUILT_IN_STARTUP_GRID_SETTINGS;
     applyImportedBeatPayload({
       ...payload,
+      ...startupSettings,
       name: "",
       composer: "",
       category: "Groove",
       style: "",
-      bars: 1,
-      tupletsByBar: [],
+      bpm: 120,
+      flamSpacingMs: defaultFlamSpacingMs,
       grid: {},
       stickingOverrides: {},
       notationStickingSelection: {},
@@ -19637,7 +19676,7 @@ useEffect(() => {
       const next = { ...prev };
       const current = prev[inst][idx];
       // Articulated hits behave like "on" for regular click toggling.
-      const normalized = current === CELL.GHOST || current === CELL.ACCENT ? CELL.ON : current;
+      const normalized = current === CELL.GHOST || current === CELL.ACCENT || current === CELL.FLAM ? CELL.ON : current;
       const nextVal = normalized === CELL.OFF ? CELL.ON : CELL.OFF;
       next[inst] = [...prev[inst]];
       next[inst][idx] = nextVal;
@@ -19801,7 +19840,7 @@ useEffect(() => {
     setBaseGridWithUndo((prev) => {
       const next = { ...prev };
       const current = prev[inst][idx];
-      if (forceValue && (forceValue === CELL.ON || forceValue === CELL.GHOST || forceValue === CELL.ACCENT)) {
+      if (forceValue && (forceValue === CELL.ON || forceValue === CELL.GHOST || forceValue === CELL.ACCENT || forceValue === CELL.FLAM)) {
         next[inst] = [...prev[inst]];
         next[inst][idx] = forceValue;
         return next;
@@ -19812,6 +19851,7 @@ useEffect(() => {
       const nextVal =
         current === CELL.ON ? CELL.GHOST :
         current === CELL.GHOST ? CELL.ACCENT :
+        current === CELL.ACCENT && !FOOT_INSTRUMENTS.has(inst) ? CELL.FLAM :
         CELL.ON;
 
       next[inst] = [...prev[inst]];
@@ -21143,7 +21183,7 @@ useEffect(() => {
             }}
           >
             <h2 className="text-sm font-medium text-neutral-200">Save current beat</h2>
-            <p className="mt-2 text-xs text-neutral-400">Give your current beat a name before starting a new one.</p>
+            <p className="mt-2 text-xs text-neutral-400">Save your current beat before starting a new one, or discard its unsaved changes.</p>
             <input
               autoFocus
               aria-label="Beat name"
@@ -21154,8 +21194,20 @@ useEffect(() => {
               className="mt-4 w-full rounded border border-neutral-700 bg-neutral-950 px-3 py-2 text-sm text-neutral-200 outline-none focus:border-neutral-500"
             />
             {newBeatSaveError && <p role="alert" className="mt-2 text-xs text-amber-300">{newBeatSaveError}</p>}
-            <div className="mt-4 flex justify-end gap-2">
+            <div className="mt-4 flex flex-wrap justify-end gap-2">
               <button type="button" disabled={newBeatSaving} onClick={() => setNewBeatSaveName(null)} className="rounded px-3 py-2 text-xs text-neutral-400 hover:bg-neutral-800">Cancel</button>
+              <button
+                type="button"
+                disabled={newBeatSaving}
+                onClick={() => {
+                  createNewBeat(true);
+                  setNewBeatSaveName(null);
+                  setNewBeatSaveError("");
+                }}
+                className="rounded px-3 py-2 text-xs text-red-300 hover:bg-neutral-800 disabled:opacity-50"
+              >
+                Delete & New beat
+              </button>
               <button type="submit" disabled={newBeatSaving || !newBeatSaveName.trim()} className="rounded border border-neutral-600 bg-neutral-800 px-3 py-2 text-xs text-neutral-200 disabled:opacity-50">{newBeatSaving ? "Saving..." : "Save & New beat"}</button>
             </div>
           </form>
@@ -21336,6 +21388,8 @@ useEffect(() => {
                 loopRule={loopRule}
                 loopRepeats={loopRepeats}
                 setLoopRule={setLoopRule}
+                playbackRange={playbackRange}
+                onPlaybackRangeChange={setPlaybackRange}
                 wrappedSelectionCells={wrappedSelectionCells}
                 playhead={playback.playhead}
                 moveSelectionByDelta={moveSelectionByDelta}
@@ -21395,6 +21449,8 @@ useEffect(() => {
                 loopRule={loopRule}
                 loopRepeats={loopRepeats}
                 setLoopRule={setLoopRule}
+                playbackRange={playbackRange}
+                onPlaybackRangeChange={setPlaybackRange}
                 wrappedSelectionCells={wrappedSelectionCells}
                 playhead={playback.playhead}
                 moveSelectionByDelta={moveSelectionByDelta}
@@ -22826,6 +22882,11 @@ useEffect(() => {
         isShortcutsDialogOpen={isShortcutsDialogOpen}
         onShortcutsDialogOpenChange={setIsShortcutsDialogOpen}
         gridSelectionHoldDelayMs={gridSelectionHoldDelayMs}
+        flamSpacingMs={flamSpacingMs}
+        onFlamSpacingMsChange={(value) => {
+          setFlamSpacingMs(value);
+          setDefaultFlamSpacingMs(value);
+        }}
         onGridSelectionHoldDelayMsChange={setGridSelectionHoldDelayMs}
         playabilityWarningsEnabled={playabilityWarningsEnabled}
         onPlayabilityWarningsEnabledChange={setPlayabilityWarningsEnabled}

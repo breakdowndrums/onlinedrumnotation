@@ -1,3 +1,17 @@
+const GHOST_GAIN_BY_INSTRUMENT = {
+  hihatOpen: 0.25,
+  kick: 0.2,
+  floorTom: 0.17,
+  sideStick: 0.15,
+  splash: 0.15,
+  ride: 0.25,
+  rideBell: 0.25,
+  cowbell: 0.17,
+  china: 0.2,
+  crash1: 0.3,
+  crash2: 0.3,
+};
+
 export function makeAudioEngine() {
   let audioCtx = null;
   let master = null;
@@ -14,9 +28,16 @@ export function makeAudioEngine() {
   let metronomeEnabled = false;
   let metronomeVolume = 0.5;
   let drumVolume = 0.9;
+  let flamSpacingMs = 33;
+
+  function flamSpacingSec(stepIndex = null) {
+    const spacing = flamSpacingMs / 1000 * Math.min(2, Math.max(1, Math.sqrt(120 / Math.max(1, bpm))));
+    return stepIndex == null ? spacing : Math.min(spacing, secondsForStep(stepIndex) * 0.2);
+  }
 
   // Scheduler state
   let currentStep = 0;
+  let gridPlaybackRangeKey = null;
   let nextNoteTime = 0;
   let timerId = null;
   let activeSources = new Set();
@@ -98,6 +119,7 @@ export function makeAudioEngine() {
     nextMetronomeEnabled,
     nextMetronomeVolume,
     nextDrumVolume,
+    nextFlamSpacingMs,
   }) {
     const transportTimingChanged =
       typeof nextBpm === "number" ||
@@ -105,6 +127,7 @@ export function makeAudioEngine() {
       (Array.isArray(nextStepQuarterDurations) && nextStepQuarterDurations.length > 0) ||
       (typeof nextColumns === "number" && Number.isFinite(nextColumns) && nextColumns > 0);
     if (typeof nextBpm === "number") bpm = nextBpm;
+    if (Number.isFinite(nextFlamSpacingMs)) flamSpacingMs = Math.max(10, Math.min(60, nextFlamSpacingMs));
     if (typeof nextResolution === "number") resolution = nextResolution;
     if (nextTimeSig && typeof nextTimeSig === "object") {
       timeSig = {
@@ -201,6 +224,7 @@ export function makeAudioEngine() {
   }
 
   function realignGridLoopTiming() {
+    gridPlaybackRangeKey = null;
     if (!audioCtx) return;
     const safeColumns = Math.max(1, transportColumns);
     currentStep = ((currentStep % safeColumns) + safeColumns) % safeColumns;
@@ -219,11 +243,11 @@ export function makeAudioEngine() {
     trigger(instId, time, baseGain * Math.max(0, Math.min(1, metronomeVolume)));
   }
 
-  function scheduleCountIn(countInBeats = 0, beatDurSec = 0) {
+  function scheduleCountIn(countInBeats = 0, beatDurSec = 0, leadInSec = 0) {
     const beats = Math.max(0, Math.floor(Number(countInBeats) || 0));
     const duration = Math.max(0, Number(beatDurSec) || 0);
     if (beats < 1 || duration <= 0) return 0;
-    const startTime = audioCtx.currentTime + 0.03;
+    const startTime = audioCtx.currentTime + 0.03 + leadInSec;
     for (let beat = 0; beat < beats; beat++) {
       triggerMetronome(startTime + beat * duration, beat === 0);
     }
@@ -321,19 +345,26 @@ function trigger(instId, time, gainValue = 1) {
     for (const inst of instruments) {
       const state = grid[inst.id]?.[stepIndex] ?? "off";
       if (state === "off") continue;
+      if (state === "flam") {
+        const graceTime = Math.max(audioCtx.currentTime, time - flamSpacingSec(stepIndex));
+        trigger(inst.id, graceTime, 0.4);
+      }
 
       // Ghost notes: instrument-specific gain
       if (state === "ghost") {
         if (inst.id === "snare" && buffers["snare_ghost"]) {
           trigger("snare_ghost", time, 0.6);
+        } else if (inst.id === "hihatOpen") {
+          const hat = triggerWithGain(inst.id, time, GHOST_GAIN_BY_INSTRUMENT.hihatOpen);
+          if (hat) openHats.push(hat);
         } else if (inst.id === "hihat") {
           chokeOpenHats(time);
           trigger(inst.id, time, 0.3);
         } else if (inst.id === "tom1" || inst.id === "tom2" || inst.id === "floorTom") {
-          trigger(inst.id, time, 0.15);
+          trigger(inst.id, time, GHOST_GAIN_BY_INSTRUMENT[inst.id] ?? 0.15);
         } else {
           // fallback ghost gain
-          trigger(inst.id, time, 0.1);
+          trigger(inst.id, time, GHOST_GAIN_BY_INSTRUMENT[inst.id] ?? 0.1);
         }
         continue;
       }
@@ -356,12 +387,18 @@ function trigger(instId, time, gainValue = 1) {
 
   function scheduleCompiledEvent(event, time) {
     if (!event) return;
+    const graceSpacing = Number.isFinite(event.flamSpacingSec)
+      ? Math.max(0, Math.min(0.12, event.flamSpacingSec))
+      : flamSpacingSec();
     const hits = Array.isArray(event.hits) ? event.hits : [];
     for (const hit of hits) {
       const instId = hit?.instId;
       const state = hit?.state ?? "off";
       const explicitGain = Number.isFinite(hit?.gain) ? Math.max(0, Math.min(1, Number(hit.gain))) : null;
       if (!instId || state === "off") continue;
+      if (state === "flam") {
+        trigger(instId, Math.max(audioCtx.currentTime, time - graceSpacing), 0.4);
+      }
       if (instId === "metronomeHi" || instId === "metronomeLo") {
         trigger(instId, time, explicitGain ?? ((instId === "metronomeHi" ? 0.95 : 0.82) * Math.max(0, Math.min(1, metronomeVolume))));
         continue;
@@ -369,13 +406,16 @@ function trigger(instId, time, gainValue = 1) {
       if (state === "ghost") {
         if (instId === "snare" && buffers["snare_ghost"]) {
           trigger("snare_ghost", time, 0.6);
+        } else if (instId === "hihatOpen") {
+          const hat = triggerWithGain(instId, time, GHOST_GAIN_BY_INSTRUMENT.hihatOpen);
+          if (hat) openHats.push(hat);
         } else if (instId === "hihat") {
           chokeOpenHats(time);
           trigger(instId, time, 0.3);
         } else if (instId === "tom1" || instId === "tom2" || instId === "floorTom") {
-          trigger(instId, time, 0.15);
+          trigger(instId, time, GHOST_GAIN_BY_INSTRUMENT[instId] ?? 0.15);
         } else {
-          trigger(instId, time, 0.1);
+          trigger(instId, time, GHOST_GAIN_BY_INSTRUMENT[instId] ?? 0.1);
         }
         continue;
       }
@@ -420,16 +460,30 @@ function trigger(instId, time, gainValue = 1) {
         const event = compiledEvents[compiledCursor];
         const eventTimeSec =
           playStartTime + compiledLoopIteration * compiledDurationSec + (Number(event?.timeSec) || 0);
-        if (eventTimeSec >= audioCtx.currentTime + scheduleAheadTimeSec) break;
+        if (eventTimeSec >= audioCtx.currentTime + scheduleAheadTimeSec + 0.12) break;
         if (stopAtTime != null && eventTimeSec >= stopAtTime - 1e-6) break;
         scheduleCompiledEvent(event, eventTimeSec);
         compiledCursor += 1;
       }
     } else {
-      const { grid, instruments, columns } = getGridSnapshot();
+      const { grid, instruments, columns, playbackRange } = getGridSnapshot();
       const loopColumns = Math.max(1, Math.min(Math.floor(Number(columns) || 1), transportColumns));
-      const loopDurationSec = secondsForLoop(loopColumns);
-      while (nextNoteTime < audioCtx.currentTime + scheduleAheadTimeSec) {
+      const requestedStart = Math.max(0, Math.min(loopColumns - 1, Math.floor(Number(playbackRange?.start) || 0)));
+      const hasLoopEnd = playbackRange?.endExclusive != null;
+      const rangeStart = hasLoopEnd ? requestedStart : 0;
+      const rangeEnd = hasLoopEnd
+        ? Math.max(rangeStart + 1, Math.min(loopColumns, Math.floor(Number(playbackRange.endExclusive) || loopColumns)))
+        : loopColumns;
+      const loopDurationSec = secondsBeforeStep(rangeEnd) - secondsBeforeStep(rangeStart);
+      const rangeKey = `${requestedStart}:${rangeEnd}:${hasLoopEnd}`;
+      if (gridPlaybackRangeKey !== rangeKey) {
+        if (playbackRange) currentStep = requestedStart;
+        if (currentStep < rangeStart || currentStep >= rangeEnd) currentStep = rangeStart;
+        gridLoopStartTime = nextNoteTime - (secondsBeforeStep(currentStep) - secondsBeforeStep(rangeStart));
+        gridLoopIteration = 0;
+        gridPlaybackRangeKey = rangeKey;
+      }
+      while (nextNoteTime < audioCtx.currentTime + scheduleAheadTimeSec + flamSpacingSec()) {
         if (stopAtTime != null && nextNoteTime >= stopAtTime - 1e-6) {
           break;
         }
@@ -437,8 +491,8 @@ function trigger(instId, time, gainValue = 1) {
 
         nextNoteTime += secondsForStep(currentStep);
         currentStep += 1;
-        if (currentStep >= loopColumns) {
-          currentStep = 0;
+        if (currentStep >= rangeEnd) {
+          currentStep = rangeStart;
           gridLoopIteration += 1;
           if (loopDurationSec > 0) {
             nextNoteTime = gridLoopStartTime + gridLoopIteration * loopDurationSec;
@@ -457,6 +511,7 @@ function trigger(instId, time, gainValue = 1) {
     if (isPlaying) return;
 
     playMode = "grid";
+    gridPlaybackRangeKey = null;
     compiledEvents = [];
     compiledCursor = 0;
     compiledLoop = false;
@@ -467,14 +522,17 @@ function trigger(instId, time, gainValue = 1) {
     const maxStep = Math.max(0, (snap.columns ?? 1) - 1);
     transportColumns = Math.max(1, snap.columns ?? 1);
     currentStep = Math.max(0, Math.min(maxStep, startStep));
-    const countInDurationSec = scheduleCountIn(countInBeats, countInBeatDurSec);
-    playStartTime = audioCtx.currentTime + 0.03 + countInDurationSec;
+    const startsWithFlam = snap.instruments.some((inst) => snap.grid[inst.id]?.[currentStep] === "flam");
+    const leadInSec = startsWithFlam ? flamSpacingSec(currentStep) : 0;
+    const countInDurationSec = scheduleCountIn(countInBeats, countInBeatDurSec, leadInSec);
+    playStartTime = audioCtx.currentTime + 0.03 + countInDurationSec + leadInSec;
     gridLoopStartTime = playStartTime - secondsBeforeStep(currentStep, transportColumns);
     gridLoopIteration = 0;
     nextNoteTime = playStartTime;
     stopAtTime = null;
 
     isPlaying = true;
+    scheduler(getGridSnapshot);
     timerId = window.setInterval(() => scheduler(getGridSnapshot), lookaheadMs);
     return playStartTime;
   }
@@ -497,8 +555,12 @@ function trigger(instId, time, gainValue = 1) {
     compiledDurationSec = Math.max(0, Number(totalDurationSec) || 0);
     compiledStartOffsetSec = Math.max(0, Number(startAtSec) || 0);
     compiledLoopIteration = 0;
-    const countInDurationSec = scheduleCountIn(countInBeats, countInBeatDurSec);
-    playStartTime = audioCtx.currentTime + 0.03 + countInDurationSec - compiledStartOffsetSec;
+    const leadInSec = compiledEvents.reduce((maximum, event) => Math.max(
+      maximum,
+      Number.isFinite(event.flamSpacingSec) ? Math.max(0, Math.min(0.12, event.flamSpacingSec)) : flamSpacingSec()
+    ), 0);
+    const countInDurationSec = scheduleCountIn(countInBeats, countInBeatDurSec, leadInSec);
+    playStartTime = audioCtx.currentTime + 0.03 + leadInSec + countInDurationSec - compiledStartOffsetSec;
     compiledCursor = compiledEvents.findIndex((event) => event.timeSec >= compiledStartOffsetSec - 1e-6);
     if (compiledCursor < 0) {
       compiledCursor = compiledLoop ? 0 : compiledEvents.length;
@@ -507,6 +569,7 @@ function trigger(instId, time, gainValue = 1) {
     stopAtTime = compiledLoop ? null : playStartTime + compiledDurationSec;
 
     isPlaying = true;
+    scheduler(() => ({ grid: {}, instruments: [], columns: 1 }));
     timerId = window.setInterval(() => scheduler(() => ({ grid: {}, instruments: [], columns: 1 })), lookaheadMs);
     return playStartTime;
   }

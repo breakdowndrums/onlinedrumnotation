@@ -46,6 +46,8 @@ export default function PreferencesDialog({
   isShortcutsDialogOpen,
   onShortcutsDialogOpenChange,
   gridSelectionHoldDelayMs,
+  flamSpacingMs,
+  onFlamSpacingMsChange,
   onGridSelectionHoldDelayMsChange,
   playabilityWarningsEnabled,
   onPlayabilityWarningsEnabledChange,
@@ -289,6 +291,26 @@ export default function PreferencesDialog({
               </>
             ) : category === "timing" ? (
               <>
+                <div className="text-sm font-normal text-neutral-200">Flam playback</div>
+                <label className="mt-2 flex flex-wrap items-center gap-3 text-sm text-neutral-300">
+                  Hit spacing
+                  <input
+                    type="range"
+                    min={10}
+                    max={60}
+                    step={1}
+                    value={flamSpacingMs}
+                    onChange={(e) => onFlamSpacingMsChange?.(Number(e.target.value))}
+                    className="w-28 accent-neutral-700"
+                  />
+                  <span className="min-w-[48px] text-xs text-neutral-500 tabular-nums">{flamSpacingMs}ms</span>
+                </label>
+                <div className="mt-2 text-xs text-neutral-500">
+                  Spacing at 120 BPM and above. Slower tempos gently widen the flam; dense grid notes keep it compact.
+                  The main hit stays on the beat.
+                  {" "}Saved with the current beat and shared links. Changes also become the default for new beats.
+                </div>
+                <div className="my-3 border-t border-neutral-800" />
                 <div className="flex items-center justify-between gap-2">
                   <div className="text-sm font-normal text-neutral-200">Selection</div>
                 </div>

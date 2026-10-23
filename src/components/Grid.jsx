@@ -5,6 +5,7 @@ const CELL = {
   ON: "on",
   GHOST: "ghost",
   ACCENT: "accent",
+  FLAM: "flam",
 };
 
 const CELL_COLOR = {
@@ -12,8 +13,9 @@ const CELL_COLOR = {
   [CELL.ON]: "bg-[#00b3ba]",
   [CELL.GHOST]: "bg-[#00b3ba]/35",
   [CELL.ACCENT]: "bg-[#00b3ba]",
+  [CELL.FLAM]: "bg-neutral-800",
 };
-const GHOST_ENABLED = new Set(["snare", "tom1", "tom2", "floorTom", "hihat"]);
+const GHOST_ENABLED = new Set(["snare", "tom1", "tom2", "floorTom", "hihat", "kick", "sideStick", "ride", "hihatOpen", "rideBell", "crash1", "crash2", "china", "cowbell", "splash"]);
 const FOOT_INSTRUMENTS = new Set(["kick", "hihatFoot"]);
 const QUARTER_SUBDIVISION_CYCLE = [2, 3, 4, 5, 6, 7, 8, 9];
 const QUARTER_SUBDIVISION_LABELS = {
@@ -86,7 +88,7 @@ function formatTupletHslColor(appearance, alpha = 1) {
 export default function Grid({
   instruments,
   grid, columns, bars, stepsPerBar, resolution, timeSig, quarterSubdivisionsByBar, normalizedTupletOverridesByBar, barStepOffsets, setTupletAt, resetTupletAt, selectedCountRowSubdivision = 3, onSelectedCountRowSubdivisionChange, gridBarsPerLine,
-  cycleVelocity, toggleGhost, selection, setSelection, loopRule,
+  cycleVelocity, toggleGhost, selection, setSelection, loopRule, playbackRange, onPlaybackRangeChange,
     loopRepeats,
   setLoopRule, wrappedSelectionCells, playhead, moveSelectionByDelta, playabilityWarningsEnabled, playabilityWarningStepSet, stickingConflictStepSet, stickingGuideEnabled, showEditedSticking, notationStickingSelection, stickingAssignmentsByStep, stickingEditModeEnabled, notationStickingSelectionModeEnabled, stickingOverrides, onCycleStickingOverride, onToggleNotationStickingSelection, onDisableNotationStickingSelectionMode, onDisableStickingEditMode, bakeLoopPreview, hoveredGridCellRef, labelGutterWidth = "calc(8ch + 0.75rem)", countRowCutoffOffsetPx = 0, tupletGridAppearanceByValue = DEFAULT_TUPLET_GRID_APPEARANCE_BY_VALUE, darkenCountRowNonQuarters = true
 }) {
@@ -118,6 +120,61 @@ export default function Grid({
     pointerId: null,
   });
   const countRowPopupRef = React.useRef(null);
+  const playbackRangeDragRef = React.useRef(null);
+  const [markerShiftHeld, setMarkerShiftHeld] = useState(false);
+  React.useEffect(() => {
+    const update = (event) => setMarkerShiftHeld(event.shiftKey);
+    const reset = () => setMarkerShiftHeld(false);
+    window.addEventListener("keydown", update);
+    window.addEventListener("keyup", update);
+    window.addEventListener("blur", reset);
+    return () => {
+      window.removeEventListener("keydown", update);
+      window.removeEventListener("keyup", update);
+      window.removeEventListener("blur", reset);
+    };
+  }, []);
+  React.useEffect(() => {
+    const move = (event) => {
+      const drag = playbackRangeDragRef.current;
+      if (!drag || event.pointerId !== drag.pointerId) return;
+      if (event.pointerType === "mouse" && (event.buttons & 1) === 0) {
+        playbackRangeDragRef.current = null;
+        return;
+      }
+      if (!drag.dragged && Math.hypot(event.clientX - drag.x, event.clientY - drag.y) < 6) return;
+      if (!drag.dragged) {
+        drag.selectingEnd = drag.startedOnStart;
+      }
+      drag.dragged = true;
+      const cell = document.elementFromPoint(event.clientX, event.clientY)?.closest("[data-playback-quarter-start]");
+      if (!cell) return;
+      const start = Number(cell.dataset.playbackQuarterStart);
+      if (drag.selectingEnd) {
+        if (start > drag.start) {
+          onPlaybackRangeChange?.({ start: drag.start, endExclusive: start + 1 });
+        }
+      } else {
+        onPlaybackRangeChange?.({ start });
+      }
+      event.preventDefault();
+    };
+    const finish = () => {
+      playbackRangeDragRef.current = null;
+      if (countRowPressRef.current.timer) {
+        window.clearTimeout(countRowPressRef.current.timer);
+        countRowPressRef.current.timer = null;
+      }
+    };
+    window.addEventListener("pointermove", move, { passive: false });
+    window.addEventListener("pointerup", finish);
+    window.addEventListener("pointercancel", finish);
+    return () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", finish);
+      window.removeEventListener("pointercancel", finish);
+    };
+  }, [onPlaybackRangeChange]);
   const [countRowPopupState, setCountRowPopupState] = useState(null);
   const maybeClearSingleCellSelectionAfterMove = React.useCallback(() => {
     const shouldClearSingleSelection =
@@ -738,8 +795,68 @@ export default function Grid({
 
         return (
           <div key={`gridline-${lineIdx}`} className="grid gap-1" style={{ gridTemplateColumns: `${labelGutterWidth} repeat(${timeline.length}, 28px)` }}>
+            <div className="h-4" />
+            {timeline.map((t) => {
+              if (t.type === "gap") return <div key={`loop-${t.key}`} />;
+              const start = t.stepIndex;
+              const selected = playbackRange != null && start === playbackRange.start;
+              const isEnd = playbackRange?.endExclusive === start + 1;
+              const hasEnd = playbackRange?.endExclusive != null;
+              const previewEnd = markerShiftHeld && playbackRange != null && start > playbackRange.start;
+              return <div
+                key={`loop-${t.stepIndex}`}
+                data-playback-quarter-start={start}
+                className="group/start-marker relative h-4 cursor-pointer select-none rounded-sm"
+                style={{ touchAction: "none" }}
+                onPointerEnter={(event) => setMarkerShiftHeld(event.shiftKey)}
+                title="Click to set playback start. Drag the start right or Shift-click further right to set loop end"
+                onPointerDown={(event) => {
+                  event.stopPropagation();
+                  if (event.button != null && event.button !== 0) return;
+                  playbackRangeDragRef.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, start, dragged: false, startedOnStart: selected, selectingEnd: false };
+                }}
+                onPointerUp={(event) => {
+                  event.stopPropagation();
+                  const drag = playbackRangeDragRef.current;
+                  playbackRangeDragRef.current = null;
+                  if (!drag || drag.pointerId !== event.pointerId || drag.dragged) return;
+                  if (event.shiftKey && playbackRange && start > playbackRange.start) {
+                    onPlaybackRangeChange?.({ start: playbackRange.start, endExclusive: start + 1 });
+                  } else {
+                    onPlaybackRangeChange?.(selected ? null : { start });
+                  }
+                }}
+                onPointerCancel={() => { playbackRangeDragRef.current = null; }}
+              >
+                {!selected && !isEnd && (
+                  <span aria-hidden="true" className="pointer-events-none absolute z-10 bottom-0 left-1/2 -translate-x-1/2 opacity-0 group-hover/start-marker:opacity-40">
+                    <svg
+                      viewBox="0 0 14 14"
+                      width="14"
+                      height="14"
+                      className="transition-transform duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none"
+                      style={{ transform: `translateX(${previewEnd ? 3.5 : 0}px) rotate(${previewEnd ? 90 : 0}deg)` }}
+                    >
+                      <path d="M0 7H14L7 14Z" className="fill-neutral-700" />
+                    </svg>
+                  </span>
+                )}
+                {playhead === t.stepIndex && !selected && !isEnd && <span aria-hidden="true" className="pointer-events-none absolute bottom-[3px] left-1/2 -translate-x-1/2 h-1 w-1 rounded-full bg-neutral-700 group-hover/start-marker:opacity-0" />}
+                <span aria-hidden="true" className="pointer-events-none absolute z-10 bottom-0 left-1/2 -translate-x-1/2">
+                  <svg
+                    viewBox="0 0 14 14"
+                    width="14"
+                    height="14"
+                    className={selected ? "transition-[transform,opacity] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none" : "transition-none"}
+                    style={{ opacity: selected || isEnd ? 1 : 0, transform: `translateX(${hasEnd ? selected ? -3.5 : isEnd ? 3.5 : 0 : 0}px) rotate(${hasEnd && (selected || isEnd) ? isEnd ? 90 : -90 : 0}deg)` }}
+                  >
+                    <path d="M0 7H14L7 14Z" className="fill-neutral-700" />
+                  </svg>
+                </span>
+              </div>;
+            })}
             <div
-              className="pointer-events-none box-border flex h-6 items-end justify-end overflow-hidden bg-neutral-900 pr-3"
+              className="pointer-events-none box-border flex h-4 items-end justify-end overflow-hidden bg-neutral-900 pr-3"
               style={{ width: labelGutterWidth, minWidth: labelGutterWidth, maxWidth: labelGutterWidth }}
             />
                 {timeline.map((t, i) => {
@@ -758,7 +875,7 @@ export default function Grid({
                   key={`h-${t.stepIndex}`}
                   data-count-row-cell="1"
                   data-bar-start={t.stepInBar === 0 ? "1" : undefined}
-                  className={`relative h-6 text-xs text-center select-none overflow-hidden cursor-pointer rounded-sm ${
+                  className={`relative h-4 text-xs text-center select-none overflow-hidden cursor-pointer rounded-sm ${
                     t.stepInBar === 0 ? "snap-start" : ""
                   }`}
                   style={gridContentOffsetStyle}
@@ -783,19 +900,13 @@ export default function Grid({
                     if (wasLongPressed) return;
                     const quarterIdx = t.stepMeta?.quarterIndex ?? 0;
                     const selectedSubdivision = Number(selectedCountRowSubdivision) || 3;
-                    const currentOverride =
-                      normalizedTupletOverridesByBar?.[t.bar]?.[quarterIdx] ?? null;
-                    const currentEffective =
-                      currentOverride == null
-                        ? gridBaseSubdivPerQuarter
-                        : Math.max(1, Math.round(Number(currentOverride) || gridBaseSubdivPerQuarter));
-                    if (currentEffective === selectedSubdivision) {
-                      resetTupletAt?.(t.bar, quarterIdx);
-                      return;
-                    }
-                    setTupletAt?.(t.bar, quarterIdx, selectedSubdivision);
+                    const currentOverride = normalizedTupletOverridesByBar?.[t.bar]?.[quarterIdx] ?? null;
+                    const currentEffective = currentOverride == null ? gridBaseSubdivPerQuarter : Number(currentOverride);
+                    if (currentEffective === selectedSubdivision) resetTupletAt?.(t.bar, quarterIdx);
+                    else setTupletAt?.(t.bar, quarterIdx, selectedSubdivision);
                   }}
                   onPointerCancel={() => {
+                    playbackRangeDragRef.current = null;
                     countRowPressRef.current.longPressed = false;
                     clearCountRowLongPress();
                   }}
@@ -806,13 +917,6 @@ export default function Grid({
                   }}
                   title="Click to toggle subdivisions. Long press for subdivision options"
                 >
-                  {/* Playhead indicator: kept within header row to avoid clipping/overlap. */}
-                  {playhead === t.stepIndex && (
-                    <span
-                      className="pointer-events-none absolute top-0 left-1/2 -translate-x-1/2 h-1 w-1 rounded-full bg-neutral-700"
-                      aria-hidden="true"
-                    />
-                  )}
                   {countRowQuarterBandStyle ? (
                     <span
                       className={`pointer-events-none absolute inset-0 rounded-sm ${quarterBandClass}`}
@@ -1304,7 +1408,7 @@ export default function Grid({
                           press.current.mode = "selectArmed";
                         } else if (press.current.startWasSelected) {
                           press.current.mode = "moveArmed";
-                        } else if (ghostAllowed && (val === CELL.ON || val === CELL.GHOST || val === CELL.ACCENT)) {
+                        } else if (ghostAllowed && val !== CELL.OFF) {
                           press.current.mode = "ghostArmed";
                         } else if (val !== CELL.OFF) {
                           press.current.mode = "moveArmed";
@@ -1343,7 +1447,7 @@ export default function Grid({
                           return "border-amber-300 ring-2 ring-amber-300/35";
                         }
                         return quarterBorderClass || "border-neutral-800";
-                      })()} ${(hasPlayabilityWarning || hasStickingConflictWarning) ? "shadow-[inset_0_0_0_1px_rgba(239,68,68,0.35)]" : ""} relative overflow-hidden`}
+                      })()} ${(hasPlayabilityWarning || hasStickingConflictWarning) && val !== CELL.FLAM ? "shadow-[inset_0_0_0_1px_rgb(166,65,65)]" : ""} relative overflow-hidden`}
                     >
                       <span
                         className={`pointer-events-none absolute inset-0 ${quarterBandClass} ${
@@ -1358,7 +1462,26 @@ export default function Grid({
                         }
                         aria-hidden="true"
                       />
-                      {stickingHand && (
+                      {val === CELL.FLAM && (
+                        <span
+                          aria-hidden="true"
+                          className={`pointer-events-none absolute inset-0 flex gap-[4px] leading-none font-bold ${
+                            showEditedSticking && hasManualStickingOverride ? "text-amber-300" : "text-neutral-100/90"
+                          }`}
+                        >
+                          <span className={`flex basis-[24%] shrink-0 items-center justify-center bg-[#00b3ba]/35 text-[8px] ${
+                            hasPlayabilityWarning || hasStickingConflictWarning ? "shadow-[inset_0_0_0_1px_rgb(166,65,65)]" : ""
+                          }`}>
+                            {stickingHand ? (stickingHand === "R" ? "L" : "R") : null}
+                          </span>
+                          <span className={`flex min-w-0 flex-1 items-center justify-center bg-[#00b3ba] text-[18px] ${
+                            hasPlayabilityWarning || hasStickingConflictWarning ? "shadow-[inset_0_0_0_1px_rgb(166,65,65)]" : ""
+                          }`}>
+                            <span className="-translate-x-[0.5px]">{stickingHand}</span>
+                          </span>
+                        </span>
+                      )}
+                      {stickingHand && val !== CELL.FLAM && (
                         <span
                           className={`pointer-events-none absolute inset-0 flex items-center justify-center text-[22px] leading-none font-bold ${
                             showEditedSticking && hasManualStickingOverride ? "text-amber-300" : "text-neutral-100/90"

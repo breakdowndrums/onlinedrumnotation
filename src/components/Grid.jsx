@@ -143,20 +143,14 @@ export default function Grid({
         return;
       }
       if (!drag.dragged && Math.hypot(event.clientX - drag.x, event.clientY - drag.y) < 6) return;
-      if (!drag.dragged) {
-        drag.selectingEnd = drag.startedOnStart;
-      }
       drag.dragged = true;
       const cell = document.elementFromPoint(event.clientX, event.clientY)?.closest("[data-playback-quarter-start]");
       if (!cell) return;
       const start = Number(cell.dataset.playbackQuarterStart);
-      if (drag.selectingEnd) {
-        if (start > drag.start) {
-          onPlaybackRangeChange?.({ start: drag.start, endExclusive: start + 1 });
-        }
-      } else {
-        onPlaybackRangeChange?.({ start });
-      }
+      onPlaybackRangeChange?.({
+        start: Math.min(drag.start, start),
+        endExclusive: Math.max(drag.start, start) + 1,
+      });
       event.preventDefault();
     };
     const finish = () => {
@@ -809,11 +803,11 @@ export default function Grid({
                 className="group/start-marker relative h-4 cursor-pointer select-none rounded-sm"
                 style={{ touchAction: "none" }}
                 onPointerEnter={(event) => setMarkerShiftHeld(event.shiftKey)}
-                title="Click to set playback start. Drag the start right or Shift-click further right to set loop end"
+                title="Click to set playback start. Click and drag to set a loop, or Shift-click further right to set its end"
                 onPointerDown={(event) => {
                   event.stopPropagation();
                   if (event.button != null && event.button !== 0) return;
-                  playbackRangeDragRef.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, start, dragged: false, startedOnStart: selected, selectingEnd: false };
+                  playbackRangeDragRef.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, start, dragged: false };
                 }}
                 onPointerUp={(event) => {
                   event.stopPropagation();

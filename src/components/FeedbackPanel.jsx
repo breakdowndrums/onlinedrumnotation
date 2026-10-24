@@ -136,7 +136,7 @@ export default function FeedbackPanel({
             aria-expanded={contactDetailsOpen}
             aria-controls={contactDetailsId}
             onClick={() => setContactDetailsOpen((open) => !open)}
-            className="ml-auto text-[11px] text-neutral-600 hover:text-neutral-300"
+            className="ml-auto text-xs text-neutral-500 hover:text-neutral-400"
           >
             Add name or get a reply by email
           </button>

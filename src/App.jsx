@@ -4928,6 +4928,23 @@ export default function App() {
     if (typeof document === "undefined") return null;
     return document.getElementById("feedback-panel-root");
   }, []);
+  React.useEffect(() => {
+    let scrollFrame;
+    const openFeedbackFromHash = () => {
+      if (window.location.hash !== "#feedback") return;
+      const accordion = feedbackPortalTarget?.closest("details");
+      if (!accordion) return;
+      accordion.open = true;
+      window.cancelAnimationFrame(scrollFrame);
+      scrollFrame = window.requestAnimationFrame(() => accordion.scrollIntoView({ block: "start" }));
+    };
+    openFeedbackFromHash();
+    window.addEventListener("hashchange", openFeedbackFromHash);
+    return () => {
+      window.cancelAnimationFrame(scrollFrame);
+      window.removeEventListener("hashchange", openFeedbackFromHash);
+    };
+  }, [feedbackPortalTarget]);
   const changelogPortalTarget = React.useMemo(() => {
     if (typeof document === "undefined") return null;
     return document.getElementById("changelog-panel-root");

@@ -18,17 +18,18 @@ function escapeHtml(value) {
 export function buildFeedbackEmail({ name, question, answer }) {
   const greeting = name ? `Hi ${name},` : "Hi,";
   return {
-    subject: "Arne replied to your Drum Grid feedback",
-    text: `${greeting}\n\nYour message\n${question}\n\nArne's reply\n${answer}\n\nOpen Drum Grid: https://onlinedrumnotation.com/\n\nYou received this email because you left your address with your feedback. This is a notification; please send any follow-up through the site's feedback form.`,
-    html: `<div style="font-family:Helvetica,Arial,sans-serif;max-width:600px;line-height:1.6;color:#222">
-      <p>${escapeHtml(greeting)}</p>
-      <h2 style="font-size:16px">Your message</h2>
-      <div style="white-space:pre-wrap">${escapeHtml(question)}</div>
-      <h2 style="font-size:16px">Arne's reply</h2>
+    subject: "Arne replied to your feedback",
+    text: `${greeting}\n\nArne's reply\n${answer}\n\nYour original message\n${question}\n\nOpen feedback section: https://onlinedrumnotation.com/#feedback\n\nSent because you left your email with your feedback. For follow-ups, please use the site's feedback form, not email replies.`,
+    html: `<div style="font-family:Helvetica,Arial,sans-serif;max-width:560px;margin:0 auto;padding:24px 16px;font-size:16px;line-height:1.6;color:#222;overflow-wrap:break-word">
+      <p style="margin:0 0 24px">${escapeHtml(greeting)}</p>
+      <h2 style="margin:0 0 8px;font-size:16px;font-weight:600">Arne's reply</h2>
       <div style="white-space:pre-wrap">${escapeHtml(answer)}</div>
-      <p><a href="https://onlinedrumnotation.com/">Open Drum Grid</a></p>
-      <p style="font-size:12px;color:#666">You received this email because you left your address with your feedback.</p>
-      <p style="font-size:12px;color:#666">This is a notification; please send any follow-up through the site's feedback form.</p>
+      <div style="margin-top:28px;padding-left:16px;border-left:2px solid #d4d4d4;font-size:14px;color:#666">
+        <h2 style="margin:0 0 8px;font-size:12px;font-weight:600">Your original message</h2>
+        <div style="white-space:pre-wrap">${escapeHtml(question)}</div>
+      </div>
+      <p style="margin:28px 0"><a href="https://onlinedrumnotation.com/#feedback">Open feedback section</a></p>
+      <p style="margin:0;padding-top:16px;border-top:1px solid #e5e5e5;font-size:12px;color:#777">Sent because you left your email with your feedback. For follow-ups, please use the site's feedback form, not email replies.</p>
     </div>`,
   };
 }

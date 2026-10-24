@@ -79,7 +79,51 @@ test("email contains question and full answer, escaping user HTML", () => {
   assert.ok(message.text.includes("Full answer"));
   assert.ok(message.html.includes("&lt;script&gt;"));
   assert.ok(!message.html.includes("<script>"));
-  assert.ok(message.html.includes("https://onlinedrumnotation.com/"));
+  assert.ok(message.html.includes('href="https://onlinedrumnotation.com/#feedback">Open feedback section</a>'));
+  assert.ok(message.text.includes("Open feedback section: https://onlinedrumnotation.com/#feedback"));
+});
+
+test("email prioritizes the reply and keeps the original message secondary", () => {
+  const message = emailModule.buildFeedbackEmail({ name: "Alex", question: "Original question", answer: "Full reply" });
+  assert.equal(message.subject, "Arne replied to your feedback");
+  for (const body of [message.text, message.html]) {
+    assert.ok(body.indexOf("Full reply") < body.indexOf("Original question"));
+    assert.ok(body.includes("Your original message"));
+    assert.equal(body.split("Sent because you left your email").length - 1, 1);
+    assert.ok(body.includes("not email replies"));
+  }
+  assert.ok(message.html.includes("border-left:2px solid"));
+  assert.ok(message.html.includes("font-size:14px;color:#666"));
+});
+
+test("feedback email anchor opens the accordion on arrival and hash changes", async () => {
+  const app = await readFile(new URL("../src/App.jsx", import.meta.url), "utf8");
+  const start = app.indexOf("    let scrollFrame;\n    const openFeedbackFromHash");
+  const effect = app.slice(start, app.indexOf("\n  }, [feedbackPortalTarget]);", start));
+  const listeners = new Map();
+  let scrolls = 0;
+  const accordion = { open: false, scrollIntoView() { scrolls++; } };
+  const window = {
+    location: { hash: "#feedback" },
+    cancelAnimationFrame() {},
+    requestAnimationFrame(callback) { callback(); return 1; },
+    addEventListener(name, callback) { listeners.set(name, callback); },
+    removeEventListener(name) { listeners.delete(name); },
+  };
+  const cleanup = new Function("window", "feedbackPortalTarget", effect)(window, { closest: () => accordion });
+  assert.equal(accordion.open, true);
+  assert.equal(scrolls, 1);
+  accordion.open = false;
+  window.location.hash = "#other";
+  listeners.get("hashchange")();
+  assert.equal(accordion.open, false);
+  window.location.hash = "#feedback";
+  listeners.get("hashchange")();
+  assert.equal(accordion.open, true);
+  cleanup();
+  assert.equal(listeners.size, 0);
+  const html = await readFile(new URL("../index.html", import.meta.url), "utf8");
+  assert.ok(html.includes('<details id="feedback">'));
 });
 
 test("anonymous submission stores optional contacts through the private transaction", async () => {

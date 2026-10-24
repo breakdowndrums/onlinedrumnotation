@@ -5605,6 +5605,20 @@ export default function App() {
     isAdminUser,
     refreshChangelogItems,
   ]);
+  const updateChangelogEntry = React.useCallback(async (changelogId, patch) => {
+    if (!changelogId || !isAdminUser) return false;
+    setChangelogError("");
+    setChangelogSuccessMessage("");
+    try {
+      await callChangelogApi("POST", { action: "update", changelogId, title: patch.title, body: patch.body });
+      await refreshChangelogItems();
+      setChangelogSuccessMessage("Update saved.");
+      return true;
+    } catch (error) {
+      setChangelogError(error?.message || "Failed to update changelog.");
+      return false;
+    }
+  }, [callChangelogApi, isAdminUser, refreshChangelogItems]);
   const deleteChangelogEntry = React.useCallback(
     async (changelogId) => {
       const normalizedId = String(changelogId || "").trim();
@@ -21715,6 +21729,7 @@ useEffect(() => {
             }}
             submitting={changelogSubmitting}
             onSubmit={submitChangelogEntry}
+            onUpdate={updateChangelogEntry}
             error={changelogError}
             successMessage={changelogSuccessMessage}
             loading={changelogLoading}

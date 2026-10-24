@@ -78,6 +78,7 @@ export default function FeedbackPanel({
   onDelete,
 }) {
   const [contactDetailsOpen, setContactDetailsOpen] = React.useState(false);
+  const [postEdit, setPostEdit] = React.useState(null);
   const contactDetailsId = React.useId();
   const visibleItems = getVisibleFeedbackItems({
     items,
@@ -276,7 +277,38 @@ export default function FeedbackPanel({
                         </span>
                       ) : null}
                     </div>
-                    <div className="whitespace-pre-wrap text-xs text-neutral-500">{item.body}</div>
+                    {isAdminUser && postEdit?.id === item.id ? (
+                      <div className="space-y-2">
+                        <textarea
+                          aria-label="Edit feedback post"
+                          autoFocus
+                          value={postEdit.body}
+                          onChange={(event) => setPostEdit({ id: item.id, body: event.target.value })}
+                          disabled={adminBusyIds.includes(item.id)}
+                          maxLength={2000}
+                          rows={4}
+                          className="w-full resize-y rounded bg-neutral-900/80 px-3 py-2 text-xs text-neutral-200 outline-none placeholder:text-neutral-600"
+                        />
+                        <div className="flex items-center gap-2">
+                          <button type="button"
+                            disabled={adminBusyIds.includes(item.id) || postEdit.body.trim().length < 3}
+                            onClick={async () => {
+                              const saved = await onUpdateAdminMeta?.(item.id, { postBody: postEdit.body });
+                              if (saved) setPostEdit(null);
+                            }}
+                            className="rounded bg-neutral-800 px-2 py-1 text-xs text-neutral-200 hover:bg-neutral-700/60 disabled:opacity-50">
+                            {adminBusyIds.includes(item.id) ? "Saving..." : "Save post"}
+                          </button>
+                          <button type="button" disabled={adminBusyIds.includes(item.id)}
+                            onClick={() => setPostEdit(null)}
+                            className="rounded px-2 py-1 text-xs text-neutral-500 hover:text-neutral-300">
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="whitespace-pre-wrap text-xs text-neutral-500">{item.body}</div>
+                    )}
                     {item.adminReply ? (
                       <div className="mt-3 rounded bg-neutral-900/70 px-3 py-2 text-xs text-neutral-500">
                         <div className="mb-1 text-left text-xs uppercase text-neutral-500">Admin reply</div>
@@ -293,6 +325,14 @@ export default function FeedbackPanel({
                         <>
                           <span className="text-neutral-700">·</span>
                           <span>{item.isPublic ? "Public" : item.status}</span>
+                          {postEdit?.id !== item.id ? (
+                            <button type="button"
+                              disabled={adminBusyIds.includes(item.id) || Boolean(postEdit)}
+                              onClick={() => setPostEdit({ id: item.id, body: item.body })}
+                              className="text-neutral-500 hover:text-neutral-300 disabled:opacity-50">
+                              Edit post
+                            </button>
+                          ) : null}
                         </>
                       ) : null}
                     </div>

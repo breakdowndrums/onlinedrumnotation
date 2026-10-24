@@ -234,6 +234,13 @@ async function moderateFeedback(req, res) {
     return res.status(400).json({ error: "Write a reply before sending an email." });
   }
   const patch = {};
+  if (Object.prototype.hasOwnProperty.call(body, "postBody")) {
+    if (typeof body.postBody !== "string") return res.status(400).json({ error: "Feedback must be text." });
+    const text = body.postBody.trim();
+    if (text.length < 3) return res.status(400).json({ error: "Feedback is too short." });
+    if (text.length > MAX_FEEDBACK_LENGTH) return res.status(400).json({ error: "Feedback is too long." });
+    patch.body = text;
+  }
   if (typeof body?.makePublic === "boolean") {
     patch.is_public = body.makePublic;
     patch.status = body.makePublic ? "public" : "hidden";

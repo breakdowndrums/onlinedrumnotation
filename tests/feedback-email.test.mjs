@@ -73,6 +73,41 @@ test("email validation is optional and rejects malformed addresses/header inject
   }
 });
 
+test("admin can edit a feedback post without changing moderation or emailing", async () => {
+  const database = mockDatabase();
+  const handler = await makeHandler(database, true);
+  const response = await handler("POST", { action: "moderate", feedbackId: feedback.id, postBody: "  Corrected feedback text  " });
+  assert.equal(response.code, 200);
+  const update = database.state.calls.find((call) => call.table === "feedback_items" && call.patch);
+  assert.equal(update.patch.body, "Corrected feedback text");
+  assert.deepEqual(Object.keys(update.patch).sort(), ["body", "updated_at"]);
+  assert.equal(database.state.calls.some((call) => call.rpc || call.table === "feedback_contacts" || call.table === "feedback_reply_emails"), false);
+});
+
+test("feedback post editing rejects non-admins and invalid text", async () => {
+  const database = mockDatabase();
+  const visitor = await makeHandler(database);
+  const forbidden = await visitor("POST", { action: "moderate", feedbackId: feedback.id, postBody: "Changed text" });
+  assert.equal(forbidden.code, 403);
+  const admin = await makeHandler(database, true);
+  for (const postBody of ["", "  ", "ab", "a".repeat(2001), null, 123]) {
+    const response = await admin("POST", { action: "moderate", feedbackId: feedback.id, postBody });
+    assert.equal(response.code, 400);
+  }
+  assert.equal(database.state.calls.some((call) => call.patch), false);
+});
+
+test("editing missing feedback reports not found", async () => {
+  const database = mockDatabase();
+  database.from = () => {
+    const query = { update: () => query, eq: () => query, select: () => query, maybeSingle: async () => ({ data: null, error: null }) };
+    return query;
+  };
+  const handler = await makeHandler(database, true);
+  const response = await handler("POST", { action: "moderate", feedbackId: "missing", postBody: "Changed text" });
+  assert.equal(response.code, 404);
+});
+
 test("email contains question and full answer, escaping user HTML", () => {
   const message = emailModule.buildFeedbackEmail({ name: "<Alex>", question: feedback.body, answer: "<script>bad()</script>\nFull answer" });
   assert.ok(message.text.includes(feedback.body));

@@ -92,6 +92,30 @@ async function createChangelogEntry(req, res, body) {
   return res.status(200).json({ ok: true });
 }
 
+async function updateChangelogEntry(req, res, body) {
+  const { isAdmin } = await getRequestUser(req);
+  if (!isAdmin) return res.status(403).json({ error: "Admin required." });
+  const changelogId = String(body?.changelogId || "").trim();
+  if (!changelogId) return res.status(400).json({ error: "Missing changelog id." });
+  if (typeof body?.title !== "string" || typeof body?.body !== "string") {
+    return res.status(400).json({ error: "Title and update text are required." });
+  }
+  const title = body.title.trim();
+  const text = body.body.trim();
+  if (title.length < 2 || title.length > MAX_CHANGELOG_TITLE_LENGTH) {
+    return res.status(400).json({ error: "Title must be between 2 and 120 characters." });
+  }
+  if (text.length < 3 || text.length > MAX_CHANGELOG_BODY_LENGTH) {
+    return res.status(400).json({ error: "Update text must be between 3 and 2000 characters." });
+  }
+  const { data, error } = await supabaseAdmin.from("changelog_entries")
+    .update({ title, body: text, updated_at: new Date().toISOString() })
+    .eq("id", changelogId).select("id").maybeSingle();
+  if (error) return res.status(500).json({ error: error.message || "Failed to update changelog." });
+  if (!data) return res.status(404).json({ error: "Changelog entry not found." });
+  return res.status(200).json({ ok: true });
+}
+
 async function deleteChangelogEntry(req, res, body) {
   const { isAdmin } = await getRequestUser(req);
   if (!isAdmin) return res.status(403).json({ error: "Admin required." });
@@ -118,6 +142,7 @@ export default async function handler(req, res) {
     const body = await readJsonBody(req);
     const action = String(body?.action || "").trim().toLowerCase();
     if (action === "create") return createChangelogEntry(req, res, body);
+    if (action === "update") return updateChangelogEntry(req, res, body);
     if (action === "delete") return deleteChangelogEntry(req, res, body);
     return res.status(400).json({ error: "Unknown changelog action." });
   }

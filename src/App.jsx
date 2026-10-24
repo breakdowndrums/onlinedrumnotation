@@ -1,4 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
+import { buildMeterLayout, resolveBarMeters } from "./utils/meterLayout";
+import { normalizeMeterNoteMemory, preserveNotesAcrossMeters } from "./utils/meterNoteMemory";
 import { createPortal, flushSync } from "react-dom";
 import { exportNotationPdf } from "./utils/exportNotationPdf";
 import { exportNotationPng } from "./utils/exportNotationPng";
@@ -1454,13 +1456,9 @@ function getComparableBeatPayload(payload) {
     n: Math.max(1, Number(payload?.timeSig?.n) || 4),
     d: Math.max(1, Number(payload?.timeSig?.d) || 4),
   };
-  const quarterCount = getQuarterBeatsPerBar(nextTimeSig);
-  const nextTupletsByBar = Array.from({ length: nextBars }, (_, barIdx) =>
-    Array.from({ length: quarterCount }, (_, qIdx) => {
-      const raw = payload?.tupletsByBar?.[barIdx]?.[qIdx];
-      return clampTupletValue(raw) ?? null;
-    })
-  );
+  const comparableLayout = buildMeterLayout({ bars: nextBars, resolution: nextResolution, timeSig: nextTimeSig,
+    timeSigByBar: payload?.timeSigByBar, tupletsByBar: payload?.tupletsByBar });
+  const nextTupletsByBar = comparableLayout.tuples;
   const nextGrid = {};
   ALL_INSTRUMENTS.forEach((inst) => {
     const source = Array.isArray(payload?.grid?.[inst.id]) ? payload.grid[inst.id] : [];
@@ -1508,6 +1506,8 @@ function getComparableBeatPayload(payload) {
     bars: nextBars,
     resolution: nextResolution,
     timeSig: nextTimeSig,
+    timeSigByBar: comparableLayout.meters,
+    barNoteMemory: normalizeMeterNoteMemory(payload?.barNoteMemory, nextBars),
     bpm: Math.max(20, Math.min(400, Number(payload?.bpm) || 120)),
     flamSpacingMs: Math.max(10, Math.min(60, Number(payload?.flamSpacingMs) || 33)),
     layout:
@@ -2581,17 +2581,8 @@ function buildNotationStateFromPayload(payload) {
     n: Math.max(1, Number(rawTs.n) || 4),
     d: Math.max(1, Number(rawTs.d) || 4),
   };
-  const quarterCount = getQuarterBeatsPerBar(timeSig);
-  const baseSubdiv = getBaseSubdivPerQuarter(resolution, timeSig);
-  const tupletsByBar = Array.from({ length: bars }, (_, barIdx) =>
-    Array.from({ length: quarterCount }, (_, qIdx) => {
-      const raw = payload.tupletsByBar?.[barIdx]?.[qIdx];
-      return clampTupletValue(raw) ?? null;
-    })
-  );
-  const quarterSubdivisionsByBar = tupletsByBar.map((row) =>
-    resolveQuarterSubdivisions(row, baseSubdiv)
-  );
+  const meterLayout = buildMeterLayout({ ...payload, bars, resolution, timeSig });
+  const quarterSubdivisionsByBar = meterLayout.subdivisions;
   const barStepOffsets = [0];
   for (let b = 0; b < bars; b++) {
     const stepsInBar = quarterSubdivisionsByBar[b].reduce(
@@ -2601,6 +2592,7 @@ function buildNotationStateFromPayload(payload) {
     barStepOffsets.push(barStepOffsets[b] + stepsInBar);
   }
   const columns = barStepOffsets[barStepOffsets.length - 1] ?? 0;
+
   const kitIds = Array.isArray(payload.kitInstrumentIds)
     ? [...new Set(payload.kitInstrumentIds.filter((id) => INSTRUMENT_BY_ID[id]))]
     : [];
@@ -2633,7 +2625,7 @@ function buildNotationStateFromPayload(payload) {
           Object.entries(payload.stickingOverrides).filter(([, value]) => value === "L" || value === "R")
         )
       : {};
-  const timeSigByBar = Array.from({ length: bars }, () => ({ ...timeSig }));
+  const timeSigByBar = meterLayout.meters;
   return {
     instruments,
     grid,
@@ -2662,17 +2654,7 @@ function getBarIndexForStepFromPayload(payload, stepIndex) {
     n: Math.max(1, Number(rawTs.n) || 4),
     d: Math.max(1, Number(rawTs.d) || 4),
   };
-  const quarterCount = getQuarterBeatsPerBar(timeSig);
-  const baseSubdiv = getBaseSubdivPerQuarter(resolution, timeSig);
-  const tupletsByBar = Array.from({ length: bars }, (_, barIdx) =>
-    Array.from({ length: quarterCount }, (_, qIdx) => {
-      const raw = payload.tupletsByBar?.[barIdx]?.[qIdx];
-      return clampTupletValue(raw) ?? null;
-    })
-  );
-  const quarterSubdivisionsByBar = tupletsByBar.map((row) =>
-    resolveQuarterSubdivisions(row, baseSubdiv)
-  );
+  const quarterSubdivisionsByBar = buildMeterLayout({ ...payload, bars, resolution, timeSig }).subdivisions;
   const barStepOffsets = [0];
   for (let b = 0; b < bars; b++) {
     const stepsInBar = quarterSubdivisionsByBar[b].reduce(
@@ -2694,11 +2676,12 @@ function buildStepQuarterDurationsFromNotationState(state) {
   if (!state || typeof state !== "object") return [];
   const byBar = Array.isArray(state.quarterSubdivisionsByBar) ? state.quarterSubdivisionsByBar : [];
   const out = [];
-  byBar.forEach((row) => {
+  byBar.forEach((row, bar) => {
     const quarterRow = Array.isArray(row) ? row : [];
     quarterRow.forEach((subdivRaw) => {
       const subdiv = Math.max(1, Number(subdivRaw) || 1);
-      for (let i = 0; i < subdiv; i++) out.push(1 / subdiv);
+      const beatUnit = 4 / Math.max(1, Number(state.timeSigByBar?.[bar]?.d || state.timeSig?.d) || 4);
+      for (let i = 0; i < subdiv; i++) out.push(beatUnit / subdiv);
     });
   });
   return out;
@@ -3013,12 +2996,13 @@ function buildPayloadFromNotationState(state, bpm = 120) {
   const kitInstrumentIds = (Array.isArray(state.instruments) ? state.instruments : [])
     .map((inst) => inst?.id)
     .filter(Boolean);
+  const timeSigByBar = resolveBarMeters(bars, timeSig, state.timeSigByBar);
   const tupletsByBar = Array.from({ length: bars }, (_, barIdx) =>
     Array.from(
       { length: Math.max(1, Number(state.quarterSubdivisionsByBar?.[barIdx]?.length) || getQuarterBeatsPerBar(timeSig)) },
       (_, qIdx) => {
         const subdiv = Number(state.quarterSubdivisionsByBar?.[barIdx]?.[qIdx]);
-        const baseSubdiv = getBaseSubdivPerQuarter(resolution, timeSig);
+        const baseSubdiv = getBaseSubdivPerQuarter(resolution, timeSigByBar[barIdx]);
         return Number.isFinite(subdiv) && subdiv !== baseSubdiv ? clampTupletValue(subdiv) : null;
       }
     )
@@ -3041,6 +3025,7 @@ function buildPayloadFromNotationState(state, bpm = 120) {
     bars,
     resolution,
     timeSig,
+    timeSigByBar,
     bpm: Math.max(20, Math.min(400, Number(bpm) || 120)),
     tupletsByBar,
     grid,
@@ -3152,8 +3137,8 @@ function computeStickingAssignmentsForNotationState(state, opts = {}) {
   }
 
   const stepStartQuarterTimes = Array(columns).fill(0);
-  const beatUnitQuarterLength = 4 / Math.max(1, Number(state.timeSig?.d) || 4);
   for (let b = 0; b < quarterSubdivisionsByBar.length; b++) {
+    const beatUnitQuarterLength = 4 / Math.max(1, Number(state.timeSigByBar?.[b]?.d || state.timeSig?.d) || 4);
     const barOffset = barStepOffsets?.[b] ?? 0;
     const row = Array.isArray(quarterSubdivisionsByBar[b]) ? quarterSubdivisionsByBar[b] : [];
     let localStep = 0;
@@ -3682,6 +3667,10 @@ export default function App() {
   const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
   const [feedbackError, setFeedbackError] = useState("");
   const [feedbackBody, setFeedbackBody] = useState("");
+  const [feedbackName, setFeedbackName] = useState("");
+  const [feedbackEmail, setFeedbackEmail] = useState("");
+  const [feedbackAdminBusyIds, setFeedbackAdminBusyIds] = useState([]);
+  const feedbackAdminRequestsRef = React.useRef(new Set());
   const [feedbackTypes, setFeedbackTypes] = useState([]);
   const [feedbackSort, setFeedbackSort] = useState("newest");
   const [feedbackSuccessMessage, setFeedbackSuccessMessage] = useState("");
@@ -4422,7 +4411,17 @@ export default function App() {
     }
   });
   const [activeTab, setActiveTab] = useState("none"); // none | timing | notation | selection
-  const [timeSig, setTimeSig] = useState(() => ({ ...initialStartupGridSettings.timeSig }));
+  const [timeSig, setTimeSigState] = useState(() => ({ ...initialStartupGridSettings.timeSig }));
+  const [barTimeSigOverrides, setBarTimeSigOverrides] = useState([]);
+  const [barNoteMemory, setBarNoteMemory] = useState({});
+  const barNoteMemoryRef = React.useRef(barNoteMemory);
+  barNoteMemoryRef.current = barNoteMemory;
+  const barTimeSigOverridesRef = React.useRef(barTimeSigOverrides);
+  barTimeSigOverridesRef.current = barTimeSigOverrides;
+  const setTimeSig = React.useCallback((value) => {
+    setTimeSigState(value);
+    setBarTimeSigOverrides([]);
+  }, []);
   const [keepTiming, setKeepTiming] = useState(true);
   const [isSidebarResolutionOpen, setIsSidebarResolutionOpen] = useState(false);
   const [isSidebarBarsOpen, setIsSidebarBarsOpen] = useState(false);
@@ -5117,6 +5116,9 @@ export default function App() {
         );
       })(),
       adminReply: String(row.admin_reply || "").trim(),
+      contactEmail: String(row.contact_email || ""),
+      replyEmailStatus: String(row.reply_email_status || ""),
+      replyEmailUpdatedAt: String(row.reply_email_updated_at || ""),
       resolutionStatus: String(row.resolution_status || "reviewing").trim().toLowerCase() || "reviewing",
     };
   }, []);
@@ -5656,10 +5658,16 @@ export default function App() {
         action: "submit",
         body,
         feedbackTypes,
+        name: feedbackName.trim(),
+        email: feedbackEmail.trim(),
       });
       setFeedbackBody("");
+      setFeedbackName("");
+      setFeedbackEmail("");
       setFeedbackTypes([]);
-      setFeedbackSuccessMessage("Feedback sent. It is private until published by admin.");
+      setFeedbackSuccessMessage(feedbackEmail.trim()
+        ? "Thanks! You'll receive an email when I reply."
+        : "Feedback sent. It is private until published by admin.");
       await refreshFeedbackItems();
       return true;
     } catch (error) {
@@ -5668,7 +5676,7 @@ export default function App() {
     } finally {
       setFeedbackSubmitting(false);
     }
-  }, [callFeedbackApi, feedbackBody, feedbackTypes, hasSupabaseEnabled, refreshFeedbackItems]);
+  }, [callFeedbackApi, feedbackBody, feedbackName, feedbackEmail, feedbackTypes, hasSupabaseEnabled, refreshFeedbackItems]);
   const setFeedbackItemVisibility = React.useCallback(
     async (feedbackId, makePublic) => {
       const normalizedId = String(feedbackId || "").trim();
@@ -5692,17 +5700,29 @@ export default function App() {
     async (feedbackId, patch = {}) => {
       const normalizedId = String(feedbackId || "").trim();
       if (!normalizedId || !isAdminUser) return false;
+      if (feedbackAdminRequestsRef.current.has(normalizedId)) return false;
+      feedbackAdminRequestsRef.current.add(normalizedId);
+      setFeedbackAdminBusyIds([...feedbackAdminRequestsRef.current]);
+      setFeedbackError("");
+      setFeedbackSuccessMessage("");
       try {
-        await callFeedbackApi("POST", {
+        const result = await callFeedbackApi("POST", {
           action: "moderate",
           feedbackId: normalizedId,
           ...patch,
         });
         await refreshFeedbackItems();
+        if (result?.notification) {
+          if (result.notification.status === "sent") setFeedbackSuccessMessage(result.notification.message);
+          else setFeedbackError(result.notification.message);
+        }
         return true;
       } catch (error) {
         setFeedbackError(error?.message || "Failed to update feedback.");
         return false;
+      } finally {
+        feedbackAdminRequestsRef.current.delete(normalizedId);
+        setFeedbackAdminBusyIds([...feedbackAdminRequestsRef.current]);
       }
     },
     [callFeedbackApi, isAdminUser, refreshFeedbackItems]
@@ -7991,21 +8011,14 @@ useEffect(() => {
 
   const quarterBeatsPerBar = getQuarterBeatsPerBar(timeSig);
   const baseSubdivPerQuarter = getBaseSubdivPerQuarter(resolution, timeSig);
-  const normalizedTupletOverridesByBar = React.useMemo(() => {
-    return Array.from({ length: bars }, (_, barIdx) =>
-      Array.from({ length: quarterBeatsPerBar }, (_, qIdx) => {
-        const raw = tupletOverridesByBar[barIdx]?.[qIdx];
-        return clampTupletValue(raw) ?? null;
-      })
-    );
-  }, [tupletOverridesByBar, bars, quarterBeatsPerBar]);
-  const quarterSubdivisionsByBar = React.useMemo(
-    () =>
-      normalizedTupletOverridesByBar.map((row) =>
-        resolveQuarterSubdivisions(row, baseSubdivPerQuarter)
-      ),
-    [normalizedTupletOverridesByBar, baseSubdivPerQuarter]
-  );
+  const editorMeterLayout = React.useMemo(() => buildMeterLayout({
+    bars, resolution, timeSig, timeSigByBar: barTimeSigOverrides, tupletsByBar: tupletOverridesByBar,
+  }), [bars, resolution, timeSig, barTimeSigOverrides, tupletOverridesByBar]);
+  const editorTimeSigByBar = editorMeterLayout.meters;
+  const hasMixedTimeSignatures = editorTimeSigByBar.some((meter) =>
+    meter.n !== editorTimeSigByBar[0].n || meter.d !== editorTimeSigByBar[0].d);
+  const normalizedTupletOverridesByBar = editorMeterLayout.tuples;
+  const quarterSubdivisionsByBar = editorMeterLayout.subdivisions;
   const stepsPerBarByBar = React.useMemo(
     () =>
       quarterSubdivisionsByBar.map((row) =>
@@ -8021,6 +8034,10 @@ useEffect(() => {
   const stepsPerBar = stepsPerBarByBar[0] ?? Math.max(1, Math.round((timeSig.n * resolution) / timeSig.d));
   const columns = barStepOffsets[barStepOffsets.length - 1] ?? 0;
 
+  React.useLayoutEffect(() => {
+    if (skipNextBaseGridResizeRef.current === columns) skipNextBaseGridResizeRef.current = false;
+  });
+
   useEffect(() => {
     setPlaybackRange(null);
   }, [columns, resolution, timeSig.n, timeSig.d, currentEditorBeatKey]);
@@ -8028,13 +8045,13 @@ useEffect(() => {
   useEffect(() => {
     setTupletOverridesByBar((prev) =>
       Array.from({ length: bars }, (_, barIdx) =>
-        Array.from({ length: quarterBeatsPerBar }, (_, qIdx) => {
+        Array.from({ length: editorTimeSigByBar[barIdx].n }, (_, qIdx) => {
           const raw = prev[barIdx]?.[qIdx];
           return clampTupletValue(raw) ?? null;
         })
       )
     );
-  }, [bars, quarterBeatsPerBar]);
+  }, [bars, timeSig, barTimeSigOverrides]);
 
   useEffect(() => {
     if (skipSelectionResetRef.current > 0) {
@@ -8190,6 +8207,8 @@ useEffect(() => {
     const isAlreadyEmpty = ALL_INSTRUMENTS.every((inst) =>
       (currentGrid[inst.id] || []).every((v) => v === CELL.OFF)
     );
+    if (isAlreadyEmpty && Object.keys(barNoteMemory).length) pushGridHistoryRef.current();
+    setBarNoteMemory({});
     if (isAlreadyEmpty) {
       const hasAnyTuplet = normalizedTupletOverridesByBar.some((row) => row.some((v) => v != null));
       if (hasAnyTuplet) {
@@ -8208,7 +8227,7 @@ useEffect(() => {
     });
     setSelection(null);
     setLoopRule(null);
-  }, [normalizedTupletOverridesByBar, bars, quarterBeatsPerBar, columns]);
+  }, [normalizedTupletOverridesByBar, bars, quarterBeatsPerBar, columns, barNoteMemory]);
 
   const clearSelection = React.useCallback(() => {
     if (!selection || selectionCellCount < 2) return;
@@ -8717,9 +8736,10 @@ useEffect(() => {
     const nextBase = getBaseSubdivPerQuarter(newRes, timeSig);
     // Keep explicit tuplet values stable across resolution changes.
     // Example: triplet (3) should remain triplet when switching 8th <-> 16th.
-    const nextOverridesByBar = sanitizeTupletOverridesForBase(normalizedTupletOverridesByBar, nextBase);
-    const nextSubsByBar = nextOverridesByBar.map((row) =>
-      resolveQuarterSubdivisions(row, nextBase)
+    const nextOverridesByBar = normalizedTupletOverridesByBar.map((row, bar) =>
+      sanitizeTupletOverridesForBase([row], getBaseSubdivPerQuarter(newRes, editorTimeSigByBar[bar]))[0]);
+    const nextSubsByBar = nextOverridesByBar.map((row, bar) =>
+      resolveQuarterSubdivisions(row, getBaseSubdivPerQuarter(newRes, editorTimeSigByBar[bar]))
     );
 
     if (keepTiming) {
@@ -8739,63 +8759,76 @@ useEffect(() => {
     setResolution(newRes);
   };
 
+  const applyMeterNoteChange = (after) => {
+    const next = preserveNotesAcrossMeters({
+      before: editorMeterLayout, after, grid: baseGrid, memory: barNoteMemory,
+      sticking: stickingOverrides, selection: notationStickingSelection,
+    });
+    pushGridHistoryRef.current();
+    setBaseGrid(next.grid);
+    setBarNoteMemory(next.memory);
+    setStickingOverrides(next.sticking);
+    setNotationStickingSelection(next.selection);
+    tupletBaselineGridRef.current = null;
+    tupletBaselineSubsByBarRef.current = null;
+    setSelection(null);
+    setLoopRule(null);
+    setPlaybackRange(null);
+  };
   const handleTimeSigChange = (newTS) => {
     tupletBaselineGridRef.current = null;
     tupletBaselineSubsByBarRef.current = null;
-    const oldSubsByBar = quarterSubdivisionsByBar;
     const nextQuarterCount = getQuarterBeatsPerBar(newTS);
     const nextOverridesByBar = Array.from({ length: bars }, (_, barIdx) =>
       Array.from({ length: nextQuarterCount }, (_, idx) =>
         clampTupletValue(normalizedTupletOverridesByBar[barIdx]?.[idx]) ?? null
       )
     );
-    const nextBase = getBaseSubdivPerQuarter(resolution, newTS);
-    const nextSubsByBar = nextOverridesByBar.map((row) =>
-      resolveQuarterSubdivisions(row, nextBase)
-    );
-    if (keepTiming) {
-      setBaseGridWithUndo((prev) => remapGridBySubdivisions(prev, oldSubsByBar, nextSubsByBar));
-      setNotationStickingSelection((prev) =>
-        remapNotationStickingSelectionBySubdivisions(
-          prev,
-          baseGridRef.current,
-          oldSubsByBar,
-          nextSubsByBar
-        )
-      );
-    } else {
-      pushGridHistoryRef.current();
-    }
+    if (hasMixedTimeSignatures && !window.confirm(`Apply ${newTS.n}/${newTS.d} to all bars? This replaces the individual time signatures.`)) return;
+    applyMeterNoteChange(buildMeterLayout({ bars, resolution, timeSig: newTS, tupletsByBar: nextOverridesByBar }));
     setTupletOverridesByBar(nextOverridesByBar);
     setTimeSig(newTS);
   };
+  const handleBarTimeSigChange = (barIndex, nextMeter) => {
+    const meter = { n: Math.max(2, Math.min(15, Math.round(Number(nextMeter.n) || 4))), d: nextMeter.d === 8 ? 8 : 4 };
+    if (editorTimeSigByBar[barIndex]?.n === meter.n && editorTimeSigByBar[barIndex]?.d === meter.d) return true;
+    const meters = editorTimeSigByBar.map((current, index) => index === barIndex ? meter : current);
+    const after = buildMeterLayout({ bars, resolution, timeSig, timeSigByBar: meters, tupletsByBar: normalizedTupletOverridesByBar });
+    applyMeterNoteChange(after);
+    setBarTimeSigOverrides(meters);
+    setTupletOverridesByBar(after.tuples);
+    return true;
+  };
   const stepTimeSigNumerator = (delta) => {
-    const nextN = Math.max(2, Math.min(15, Number(timeSig.n || 4) + delta));
-    if (nextN === timeSig.n) return;
-    handleTimeSigChange({ n: nextN, d: timeSig.d === 8 ? 8 : 4 });
+    const current = editorTimeSigByBar[0];
+    const nextN = Math.max(2, Math.min(15, Number(current.n || 4) + delta));
+    if (nextN === current.n) return;
+    handleTimeSigChange({ n: nextN, d: current.d === 8 ? 8 : 4 });
   };
   const stepTimeSigDenominator = (delta) => {
     const order = [4, 8];
-    const idx = order.indexOf(timeSig.d);
+    const current = editorTimeSigByBar[0];
+    const idx = order.indexOf(current.d);
     const safeIdx = idx < 0 ? 0 : idx;
     const nextD = order[(safeIdx + delta + order.length) % order.length];
-    if (nextD === timeSig.d) return;
-    handleTimeSigChange({ n: Math.max(2, Math.min(15, Number(timeSig.n) || 4)), d: nextD });
+    if (nextD === current.d) return;
+    handleTimeSigChange({ n: Math.max(2, Math.min(15, Number(current.n) || 4)), d: nextD });
   };
 
   const setTupletAt = React.useCallback(
     (barIdx, beatIdx, nextValue) => {
       if (barIdx < 0 || barIdx >= bars) return;
-      if (beatIdx < 0 || beatIdx >= quarterBeatsPerBar) return;
+      if (beatIdx < 0 || beatIdx >= editorTimeSigByBar[barIdx].n) return;
       const oldSubsByBar = quarterSubdivisionsByBar;
-      const nextEffective = clampTupletValue(nextValue) ?? baseSubdivPerQuarter;
-      const nextVal = nextEffective === baseSubdivPerQuarter ? null : nextEffective;
+      const barBase = getBaseSubdivPerQuarter(resolution, editorTimeSigByBar[barIdx]);
+      const nextEffective = clampTupletValue(nextValue) ?? barBase;
+      const nextVal = nextEffective === barBase ? null : nextEffective;
       const currentVal = normalizedTupletOverridesByBar[barIdx]?.[beatIdx] ?? null;
       if ((currentVal ?? null) === (nextVal ?? null)) return;
       const nextOverridesByBar = normalizedTupletOverridesByBar.map((row) => [...row]);
       nextOverridesByBar[barIdx][beatIdx] = nextVal;
-      const nextSubsByBar = nextOverridesByBar.map((row) =>
-        resolveQuarterSubdivisions(row, baseSubdivPerQuarter)
+      const nextSubsByBar = nextOverridesByBar.map((row, bar) =>
+        resolveQuarterSubdivisions(row, getBaseSubdivPerQuarter(resolution, editorTimeSigByBar[bar]))
       );
       const hasAnyGridContent = ALL_INSTRUMENTS.some((inst) =>
         (baseGridRef.current?.[inst.id] || []).some((val) => val !== CELL.OFF)
@@ -8843,6 +8876,8 @@ useEffect(() => {
       bars,
       quarterBeatsPerBar,
       quarterSubdivisionsByBar,
+      editorTimeSigByBar,
+      resolution,
       normalizedTupletOverridesByBar,
       baseSubdivPerQuarter,
       keepTiming,
@@ -8855,14 +8890,14 @@ useEffect(() => {
   const resetTupletAt = React.useCallback(
     (barIdx, beatIdx) => {
       if (barIdx < 0 || barIdx >= bars) return;
-      if (beatIdx < 0 || beatIdx >= quarterBeatsPerBar) return;
+      if (beatIdx < 0 || beatIdx >= editorTimeSigByBar[barIdx].n) return;
       const existingOverride = normalizedTupletOverridesByBar[barIdx]?.[beatIdx] ?? null;
       if (existingOverride == null) return;
       const oldSubsByBar = quarterSubdivisionsByBar;
       const nextOverridesByBar = normalizedTupletOverridesByBar.map((row) => [...row]);
       nextOverridesByBar[barIdx][beatIdx] = null;
-      const nextSubsByBar = nextOverridesByBar.map((row) =>
-        resolveQuarterSubdivisions(row, baseSubdivPerQuarter)
+      const nextSubsByBar = nextOverridesByBar.map((row, bar) =>
+        resolveQuarterSubdivisions(row, getBaseSubdivPerQuarter(resolution, editorTimeSigByBar[bar]))
       );
       const hasAnyGridContent = ALL_INSTRUMENTS.some((inst) =>
         (baseGridRef.current?.[inst.id] || []).some((val) => val !== CELL.OFF)
@@ -8910,6 +8945,8 @@ useEffect(() => {
       bars,
       quarterBeatsPerBar,
       normalizedTupletOverridesByBar,
+      editorTimeSigByBar,
+      resolution,
       quarterSubdivisionsByBar,
       baseSubdivPerQuarter,
       keepTiming,
@@ -8934,11 +8971,11 @@ useEffect(() => {
     (nextVal) => {
       const normalized = clampTupletValue(nextVal) ?? null;
       const oldSubsByBar = quarterSubdivisionsByBar;
-      const nextOverridesByBar = Array.from({ length: bars }, () =>
-        Array.from({ length: quarterBeatsPerBar }, () => normalized)
+      const nextOverridesByBar = editorTimeSigByBar.map((meter) =>
+        Array.from({ length: meter.n }, () => normalized)
       );
-      const nextSubsByBar = nextOverridesByBar.map((row) =>
-        resolveQuarterSubdivisions(row, baseSubdivPerQuarter)
+      const nextSubsByBar = nextOverridesByBar.map((row, bar) =>
+        resolveQuarterSubdivisions(row, getBaseSubdivPerQuarter(resolution, editorTimeSigByBar[bar]))
       );
       if (keepTiming) {
         applyingTupletRemapRef.current = true;
@@ -8961,6 +8998,8 @@ useEffect(() => {
       quarterSubdivisionsByBar,
       bars,
       quarterBeatsPerBar,
+      editorTimeSigByBar,
+      resolution,
       baseSubdivPerQuarter,
       keepTiming,
       remapGridBySubdivisions,
@@ -9036,6 +9075,8 @@ useEffect(() => {
   const resolutionRef = React.useRef(resolution);
   const barsRef = React.useRef(bars);
   const timeSigRef = React.useRef(timeSig);
+  const stickingSnapshotRef = React.useRef({ stickingOverrides, notationStickingSelection });
+  stickingSnapshotRef.current = { stickingOverrides, notationStickingSelection };
 
   React.useEffect(() => {
     localBeatsRef.current = localBeats;
@@ -9152,6 +9193,10 @@ useEffect(() => {
     (gridState, tupletState) => ({
       grid: snapshotGrid(gridState),
       tuplets: snapshotTuplets(tupletState),
+      barTimeSigOverrides: barTimeSigOverridesRef.current.map((meter) => meter ? { ...meter } : null),
+      barNoteMemory: JSON.parse(JSON.stringify(barNoteMemoryRef.current)),
+      stickingOverrides: { ...stickingSnapshotRef.current.stickingOverrides },
+      notationStickingSelection: { ...stickingSnapshotRef.current.notationStickingSelection },
       resolution: [4, 8, 16, 32].includes(Number(resolutionRef.current))
         ? Number(resolutionRef.current)
         : 8,
@@ -9208,6 +9253,10 @@ useEffect(() => {
       });
     }
     setBaseGrid(prev?.grid || {});
+    setBarTimeSigOverrides(prev?.barTimeSigOverrides || []);
+    setBarNoteMemory(prev?.barNoteMemory || {});
+    if (prev?.stickingOverrides) setStickingOverrides(prev.stickingOverrides);
+    if (prev?.notationStickingSelection) setNotationStickingSelection(prev.notationStickingSelection);
     if (Array.isArray(prev?.tuplets)) setTupletOverridesByBar(prev.tuplets);
     syncHistoryState();
   }, [snapshotEditorState, syncHistoryState]);
@@ -9233,6 +9282,10 @@ useEffect(() => {
       });
     }
     setBaseGrid(next?.grid || {});
+    setBarTimeSigOverrides(next?.barTimeSigOverrides || []);
+    setBarNoteMemory(next?.barNoteMemory || {});
+    if (next?.stickingOverrides) setStickingOverrides(next.stickingOverrides);
+    if (next?.notationStickingSelection) setNotationStickingSelection(next.notationStickingSelection);
     if (Array.isArray(next?.tuplets)) setTupletOverridesByBar(next.tuplets);
     syncHistoryState();
   }, [snapshotEditorState, syncHistoryState]);
@@ -9387,6 +9440,10 @@ useEffect(() => {
           });
         }
         setBaseGrid(snapshot.editor.grid || {});
+        setBarTimeSigOverrides(snapshot.editor.barTimeSigOverrides || []);
+        setBarNoteMemory(snapshot.editor.barNoteMemory || {});
+        if (snapshot.editor.stickingOverrides) setStickingOverrides(snapshot.editor.stickingOverrides);
+        if (snapshot.editor.notationStickingSelection) setNotationStickingSelection(snapshot.editor.notationStickingSelection);
         if (Array.isArray(snapshot.editor.tuplets)) setTupletOverridesByBar(snapshot.editor.tuplets);
       }
       if (snapshot.library) applyLibraryState(snapshot.library);
@@ -14559,8 +14616,8 @@ useEffect(() => {
   const stepStartQuarterTimes = React.useMemo(() => {
     const out = Array(columns).fill(0);
     const byBar = Array.isArray(quarterSubdivisionsByBar) ? quarterSubdivisionsByBar : [];
-    const beatUnitQuarterLength = 4 / Math.max(1, Number(timeSig?.d) || 4);
     for (let b = 0; b < byBar.length; b++) {
+      const beatUnitQuarterLength = 4 / editorTimeSigByBar[b].d;
       const barOffset = barStepOffsets?.[b] ?? 0;
       const row = Array.isArray(byBar[b]) ? byBar[b] : [];
       let localStep = 0;
@@ -14577,7 +14634,7 @@ useEffect(() => {
       }
     }
     return out;
-  }, [quarterSubdivisionsByBar, barStepOffsets, columns, timeSig]);
+  }, [quarterSubdivisionsByBar, barStepOffsets, columns, editorTimeSigByBar]);
   const autoStickingAssignmentsByStep = React.useMemo(() => {
     const handIds = instruments.map((inst) => inst.id).filter((id) => !FOOT_INSTRUMENTS.has(id));
     const lead = stickingLeadHand === "left" ? "L" : "R";
@@ -14859,17 +14916,7 @@ useEffect(() => {
     [stickingConflictSteps]
   );
 
-  const stepQuarterDurations = React.useMemo(() => {
-    const out = [];
-    const beatUnitQuarterLength = 4 / Math.max(1, Number(timeSig?.d) || 4);
-    quarterSubdivisionsByBar.forEach((row) => {
-      row.forEach((subdiv) => {
-        const s = Math.max(1, Number(subdiv) || 1);
-        for (let i = 0; i < s; i++) out.push(beatUnitQuarterLength / s);
-      });
-    });
-    return out;
-  }, [quarterSubdivisionsByBar, timeSig]);
+  const stepQuarterDurations = editorMeterLayout.durations;
   const effectivePlaybackBpm = React.useMemo(
     () => clampBpm(Math.round(bpm * playbackRate * 100) / 100),
     [bpm, playbackRate]
@@ -14878,6 +14925,7 @@ useEffect(() => {
 
 
   const playback = usePlayback({
+    stepMetronomeBeats: editorMeterLayout.metronome,
     flamSpacingMs,
     playbackRange,
     instruments,
@@ -14915,12 +14963,14 @@ useEffect(() => {
     if (playback.isPlaying) {
       playback.stop();
     } else {
-      const countInBeatDurSec = (60 / effectivePlaybackBpm) * (4 / Math.max(1, Number(timeSig?.d) || 4));
-      const countInBeats = metronomeCountInEnabled ? Math.max(1, Number(timeSig?.n) || 4) : 0;
+      const startBar = Math.max(0, barStepOffsets.findIndex((end, index) => index > 0 && (playbackRange?.start || 0) < end) - 1);
+      const startMeter = editorTimeSigByBar[startBar];
+      const countInBeatDurSec = (60 / effectivePlaybackBpm) * (4 / startMeter.d);
+      const countInBeats = metronomeCountInEnabled ? startMeter.n : 0;
       playback.setPlayhead(playbackRange?.start || 0);
       playback.play({ startStep: playbackRange?.start || 0, countInBeats, countInBeatDurSec });
     }
-  }, [playback.isPlaying, playback.play, playback.stop, playback.setPlayhead, effectivePlaybackBpm, timeSig, metronomeCountInEnabled, playbackRange]);
+  }, [playback.isPlaying, playback.play, playback.stop, playback.setPlayhead, effectivePlaybackBpm, editorTimeSigByBar, barStepOffsets, metronomeCountInEnabled, playbackRange]);
   const activeArrangementPlaybackEntry = React.useMemo(() => {
     if (!arrangementPlaybackEnabled) return null;
     return arrangementPlayableEntries[arrangementPlaybackIndex] || null;
@@ -15479,8 +15529,13 @@ useEffect(() => {
         ) / 100
       );
       let quarterPos = 0;
+      const entryMeterLayout = buildMeterLayout(payload);
       for (let step = 0; step < stepQuarterDurations.length; step++) {
-        const beatPos = quarterPos / Math.max(1e-6, beatQuarterLength);
+        const localBar = getBarIndexForStepFromPayload(payload, step);
+        const localMeter = notationState.timeSigByBar?.[localBar] || entryTimeSig;
+        const beatQuarterLength = 4 / localMeter.d;
+        const beatsPerBar = localMeter.n;
+        const beatPos = (entryMeterLayout.localTimes[step] || 0) / Math.max(1e-6, beatQuarterLength);
         const nearestBeat = Math.round(beatPos);
         if (metronomeEnabled && Math.abs(beatPos - nearestBeat) < 1e-6) {
           const beatIndex = ((nearestBeat % beatsPerBar) + beatsPerBar) % beatsPerBar;
@@ -15977,6 +16032,8 @@ useEffect(() => {
       bars,
       resolution,
       timeSig,
+      timeSigByBar: editorTimeSigByBar,
+      ...(Object.keys(barNoteMemory).length ? { barNoteMemory } : {}),
       bpm,
       flamSpacingMs,
       layout,
@@ -16008,6 +16065,8 @@ useEffect(() => {
     bars,
     resolution,
     timeSig,
+    editorTimeSigByBar,
+    barNoteMemory,
     bpm,
     flamSpacingMs,
     layout,
@@ -16212,17 +16271,9 @@ useEffect(() => {
         n: Math.max(1, Number(rawTs.n) || 4),
         d: Math.max(1, Number(rawTs.d) || 4),
       };
-      const quarterCount = getQuarterBeatsPerBar(nextTimeSig);
-      const tupletsByBar = Array.from({ length: nextBars }, (_, barIdx) =>
-        Array.from({ length: quarterCount }, (_, qIdx) => {
-          const raw = payload.tupletsByBar?.[barIdx]?.[qIdx];
-          return clampTupletValue(raw) ?? null;
-        })
-      );
-      const nextBaseSubdivPerQuarter = getBaseSubdivPerQuarter(nextResolution, nextTimeSig);
-      const nextQuarterSubdivisionsByBar = tupletsByBar.map((row) =>
-        resolveQuarterSubdivisions(row, nextBaseSubdivPerQuarter)
-      );
+      const importedLayout = buildMeterLayout({ ...payload, bars: nextBars, resolution: nextResolution, timeSig: nextTimeSig });
+      const tupletsByBar = importedLayout.tuples;
+      const nextQuarterSubdivisionsByBar = importedLayout.subdivisions;
       const nextStepsPerBarByBar = nextQuarterSubdivisionsByBar.map((row) =>
         Math.max(1, row.reduce((sum, n) => sum + Math.max(1, Number(n) || 1), 0))
       );
@@ -16286,7 +16337,7 @@ useEffect(() => {
           ? buildNotationStickingSelectionFromGridRows(nextGrid, nextInstrumentDefs, nextColumns)
           : compactImportedNotationStickingSelection;
       importedBeatLoadInProgressRef.current = true;
-      skipNextBaseGridResizeRef.current = true;
+      skipNextBaseGridResizeRef.current = nextColumns;
       appliedSharedKeyRef.current = shareSourceKey;
       gridPastRef.current = [];
       gridFutureRef.current = [];
@@ -16354,6 +16405,8 @@ useEffect(() => {
         setBars(nextBars);
         setResolution(nextResolution);
         setTimeSig(nextTimeSig);
+        setBarTimeSigOverrides(importedLayout.meters);
+        setBarNoteMemory(normalizeMeterNoteMemory(payload.barNoteMemory, nextBars));
         setTupletOverridesByBar(tupletsByBar);
         setBaseGrid(nextGrid);
       });
@@ -16416,7 +16469,7 @@ useEffect(() => {
     if (isEmbedMode) return undefined;
     const hasAnyNote = Object.values(currentBeatPayload?.grid || {}).some(
       (events) => Array.isArray(events) && events.length > 0
-    );
+    ) || Object.keys(currentBeatPayload?.barNoteMemory || {}).length > 0;
     const shouldWarn =
       isLoadedLocalBeatDirty ||
       (!loadedLocalBeatId && hasAnyNote);
@@ -17918,11 +17971,11 @@ useEffect(() => {
                           −
                         </button>
                       </div>
-                      <div className="row-span-2 flex items-center justify-center px-2 text-sm text-white tabular-nums">
-                        {Math.max(2, Math.min(15, Number(timeSig.n) || 4))}
-                        <span className="mx-1 text-neutral-400">/</span>
-                        {timeSig.d === 8 ? 8 : 4}
-                      </div>
+                      <button type="button" onClick={() => hasMixedTimeSignatures && handleTimeSigChange(timeSig)}
+                        title={hasMixedTimeSignatures ? `Apply ${timeSig.n}/${timeSig.d} to all bars` : "Time signature for all bars"}
+                        className="row-span-2 flex items-center justify-center px-2 text-sm text-white tabular-nums">
+                        {hasMixedTimeSignatures ? "Mixed" : `${editorTimeSigByBar[0].n} / ${editorTimeSigByBar[0].d}`}
+                      </button>
                       <div className="row-span-2 grid grid-rows-2 border-l border-neutral-700">
                         <button
                           type="button"
@@ -18277,7 +18330,8 @@ useEffect(() => {
   );
   const createNewBeat = (skipSaveDialog = false) => {
     const payload = buildCurrentBeatPayload();
-    const hasNotes = Object.values(payload.grid || {}).some((events) => events.length > 0);
+    const hasNotes = Object.values(payload.grid || {}).some((events) => events.length > 0) ||
+      Object.keys(payload.barNoteMemory || {}).length > 0;
     if (!skipSaveDialog && (isLoadedLocalBeatDirty || (!loadedLocalBeatId && hasNotes))) {
       setNewBeatSaveName(beatNameDraft.trim() || "Untitled Beat");
       setNewBeatSaveError("");
@@ -18301,6 +18355,8 @@ useEffect(() => {
       style: "",
       bpm: 120,
       flamSpacingMs: defaultFlamSpacingMs,
+      timeSigByBar: [],
+      barNoteMemory: {},
       grid: {},
       stickingOverrides: {},
       notationStickingSelection: {},
@@ -19498,7 +19554,12 @@ useEffect(() => {
       if (isTyping) return;
       if (!matchesShortcut(e, "play_toggle")) return;
 
-      if (e.pointerType !== "mouse") e.preventDefault();
+      e.preventDefault();
+      if (e.repeat) return;
+      const focusedControl = document.activeElement;
+      if (focusedControl instanceof HTMLElement && focusedControl.matches("button, [role='button']")) {
+        focusedControl.blur();
+      }
       if (
         arrangementPlaybackEnabled ||
         normalizedArrangementBarSelection ||
@@ -19630,7 +19691,7 @@ useEffect(() => {
   // Resize grid when resolution/bars change (preserve existing hits)
   useEffect(() => {
     if (skipNextBaseGridResizeRef.current) {
-      skipNextBaseGridResizeRef.current = false;
+      if (columns === skipNextBaseGridResizeRef.current) skipNextBaseGridResizeRef.current = false;
       return;
     }
     setBaseGrid((prev) => {
@@ -20752,11 +20813,11 @@ useEffect(() => {
                     −
                   </button>
                 </div>
-                <div className="row-span-2 flex items-center justify-center px-2 text-sm text-white tabular-nums">
-                  {Math.max(2, Math.min(15, Number(timeSig.n) || 4))}
-                  <span className="mx-1 text-neutral-500">/</span>
-                  {timeSig.d === 8 ? 8 : 4}
-                </div>
+                <button type="button" onClick={() => hasMixedTimeSignatures && handleTimeSigChange(timeSig)}
+                  title={hasMixedTimeSignatures ? `Apply ${timeSig.n}/${timeSig.d} to all bars` : "Time signature for all bars"}
+                  className="row-span-2 flex items-center justify-center px-2 text-sm text-white tabular-nums">
+                  {hasMixedTimeSignatures ? "Mixed" : `${editorTimeSigByBar[0].n} / ${editorTimeSigByBar[0].d}`}
+                </button>
                 <div className="row-span-2 grid grid-rows-2 border-l border-neutral-800">
                   <button
                     type="button"
@@ -21316,6 +21377,7 @@ useEffect(() => {
               rowGap={editorNotationRowGap}
               stepsPerBar={stepsPerBar}
               timeSig={timeSig}
+              timeSigByBar={editorTimeSigByBar}
               quarterSubdivisionsByBar={quarterSubdivisionsByBar}
               barStepOffsets={barStepOffsets}
               mergeRests={mergeRests}
@@ -21341,6 +21403,7 @@ useEffect(() => {
                   rowGap={editorNotationRowGap}
                   stepsPerBar={stepsPerBar}
                   timeSig={timeSig}
+                  timeSigByBar={editorTimeSigByBar}
                   quarterSubdivisionsByBar={quarterSubdivisionsByBar}
                   barStepOffsets={barStepOffsets}
                   mergeRests={mergeRests}
@@ -21371,6 +21434,8 @@ useEffect(() => {
                 stepsPerBar={stepsPerBar}
                 resolution={resolution}
                 timeSig={timeSig}
+                timeSigByBar={editorTimeSigByBar}
+                onBarTimeSigChange={handleBarTimeSigChange}
                 quarterSubdivisionsByBar={quarterSubdivisionsByBar}
                 normalizedTupletOverridesByBar={normalizedTupletOverridesByBar}
                 barStepOffsets={barStepOffsets}
@@ -21432,6 +21497,8 @@ useEffect(() => {
                 stepsPerBar={stepsPerBar}
                 resolution={resolution}
                 timeSig={timeSig}
+                timeSigByBar={editorTimeSigByBar}
+                onBarTimeSigChange={handleBarTimeSigChange}
                 quarterSubdivisionsByBar={quarterSubdivisionsByBar}
                 normalizedTupletOverridesByBar={normalizedTupletOverridesByBar}
                 barStepOffsets={barStepOffsets}
@@ -21497,6 +21564,7 @@ useEffect(() => {
                   rowGap={editorNotationRowGap}
                   stepsPerBar={stepsPerBar}
                   timeSig={timeSig}
+                  timeSigByBar={editorTimeSigByBar}
                   quarterSubdivisionsByBar={quarterSubdivisionsByBar}
                   barStepOffsets={barStepOffsets}
                   mergeRests={mergeRests}
@@ -21644,6 +21712,11 @@ useEffect(() => {
             hasSupabaseEnabled={hasSupabaseEnabled}
             isAdminUser={isAdminUser}
             body={feedbackBody}
+            name={feedbackName}
+            onNameChange={setFeedbackName}
+            email={feedbackEmail}
+            onEmailChange={setFeedbackEmail}
+            adminBusyIds={feedbackAdminBusyIds}
             onBodyChange={(nextBody) => {
               setFeedbackBody(nextBody);
               if (feedbackError) setFeedbackError("");

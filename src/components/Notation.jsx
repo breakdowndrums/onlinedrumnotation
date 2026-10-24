@@ -83,20 +83,10 @@ function estimateNotationBarWidthDemand({
   const end = Math.max(start + 1, Number(barEndStep) || start + 1);
   const barSteps = Math.max(1, end - start);
   const safeGrid = grid && typeof grid === "object" ? grid : {};
-  let activeCells = 0;
   let activeSteps = 0;
-  let maxChordSize = 0;
 
   for (let step = start; step < end; step++) {
-    let chordSize = 0;
-    for (const cells of Object.values(safeGrid)) {
-      if ((cells?.[step] ?? CELL.OFF) !== CELL.OFF) chordSize += 1;
-    }
-    if (chordSize > 0) {
-      activeSteps += 1;
-      activeCells += chordSize;
-      if (chordSize > maxChordSize) maxChordSize = chordSize;
-    }
+    if (Object.values(safeGrid).some((cells) => (cells?.[step] ?? CELL.OFF) !== CELL.OFF)) activeSteps += 1;
   }
 
   const maxQuarterSubdiv = Math.max(
@@ -117,7 +107,6 @@ function estimateNotationBarWidthDemand({
     0
   );
   const densityRatio = activeSteps / barSteps;
-  const chordExtras = Math.max(0, activeCells - activeSteps);
   const tupletExtra = Math.max(0, maxQuarterSubdiv - 2);
   const densityBoost =
     densityRatio > 0.85 ? 44 :
@@ -129,12 +118,9 @@ function estimateNotationBarWidthDemand({
     Math.max(0, Number(leadingWidthExtra) || 0) +
     barSteps * 2.8 +
     activeSteps * 10 +
-    chordExtras * 18 +
     tupletExtra * 28 +
     tupletBracketExtra +
-    densityBoost +
-    (maxChordSize >= 4 ? 38 : 0) +
-    (maxChordSize === 3 ? 20 : 0);
+    densityBoost;
   const presetFactor =
     spacingPreset === "large"
       ? 1.25
@@ -142,6 +128,51 @@ function estimateNotationBarWidthDemand({
         ? 0.75
         : 1;
   return Math.max(minWidth, Math.round(estimatedWidth * presetFactor));
+}
+
+function fitStavesToVoiceWidths({ voices, staves, rowBarCounts, renderer, height, spacingPresets }) {
+  const rhythmGroups = new Map();
+  const measurements = staves.map((stave, index) => {
+    const voice = voices[index];
+    const notes = voice.getTickables();
+    notes.forEach((note) => note.setStave(stave));
+    const formatter = new Formatter().joinVoices([voice]);
+    const minimum = formatter.preCalculateMinTotalWidth([voice]) + 12;
+    const signaturePadding = stave.__dgTimeSigNotePadding ?? 4;
+    const modifierWidth = stave.getWidth() - (stave.getNoteEndX() - stave.getNoteStartX());
+    const available = stave.getWidth() - modifierWidth - Stave.defaultPadding;
+    const measurement = { modifierWidth: modifierWidth + signaturePadding, minimum, preferred: Math.max(available, minimum) };
+    const rhythmKey = JSON.stringify([
+      spacingPresets?.[index] || "normal",
+      notes.map((note) => [note.getTicks().value(), note.getDuration?.(), note.isRest?.(), !!note.__dgHasFlam]),
+    ]);
+    if (!rhythmGroups.has(rhythmKey)) rhythmGroups.set(rhythmKey, []);
+    rhythmGroups.get(rhythmKey).push(measurement);
+    return measurement;
+  });
+  // Match note space independently of clefs/signatures at the start of a system.
+  for (const group of rhythmGroups.values()) {
+    const sharedWidth = Math.max(
+      ...group.map((measurement) => measurement.minimum),
+      group.reduce((sum, measurement) => sum + measurement.preferred, 0) / group.length
+    );
+    group.forEach((measurement) => { measurement.noteWidth = sharedWidth; });
+  }
+  let barIndex = 0;
+  let rightEdge = 0;
+  for (const barCount of rowBarCounts) {
+    let x = 10;
+    for (let column = 0; column < barCount && barIndex < staves.length; column++, barIndex++) {
+      const stave = staves[barIndex];
+      const { modifierWidth, noteWidth } = measurements[barIndex];
+      stave.setX(x).setWidth(modifierWidth + noteWidth + Stave.defaultPadding);
+      stave.setNoteStartX(stave.getNoteStartX() + (stave.__dgTimeSigNotePadding ?? 4));
+      x += stave.getWidth();
+    }
+    rightEdge = Math.max(rightEdge, x);
+  }
+  renderer.resize(rightEdge + 10, height);
+  staves.forEach((stave) => stave.draw());
 }
 
 function drawNotationBarOverlay(svg, rects, barIndices, {
@@ -1096,17 +1127,17 @@ export default function Notation({
         while (base * 2 <= s) base *= 2;
         return Math.max(1, Math.min(8, base));
       };
-      const durationFromBase = (displayBase) => {
+      const durationFromBase = (displayBase, beatUnit) => {
         const base = Math.max(1, Number(displayBase) || 1);
-        const denom = Math.max(1, beatValue * base);
+        const denom = Math.max(1, beatUnit * base);
         if (denom === 4) return "q";
         return String(denom);
       };
-      const durationFromLen = (lenSteps, baseStepsPerQuarter) => {
+      const durationFromLen = (lenSteps, baseStepsPerQuarter, beatUnit) => {
         const base = Math.max(1, Number(baseStepsPerQuarter) || 1);
         const len = Math.max(1, Math.min(base, Number(lenSteps) || 1));
         const ratio = base / len;
-        const denom = beatValue * ratio;
+        const denom = beatUnit * ratio;
         if (denom === 4) return "q";
         return String(denom);
       };
@@ -1201,8 +1232,11 @@ export default function Notation({
         if (col === 0) {
           stave.addClef("percussion");
         }
-        if (showBarTimeSig) stave.addTimeSignature(`${barTimeSig.n}/${barTimeSig.d}`);
-        stave.setContext(ctx).draw();
+        if (showBarTimeSig) {
+          stave.addTimeSignature(`${barTimeSig.n}/${barTimeSig.d}`);
+          stave.__dgTimeSigNotePadding = 8;
+        }
+        stave.setContext(ctx);
         staves.push(stave);
 
         const repeatInfo = repeatPlan[b];
@@ -1357,7 +1391,7 @@ export default function Notation({
 
                 const note = new StaveNote({
                   keys: entry.keys,
-                  duration: durationFromLen(len, mergeBaseStepsPerQuarter),
+                  duration: durationFromLen(len, mergeBaseStepsPerQuarter, barTimeSig.d),
                   clef: "percussion",
                 });
                 note.setStemDirection(1);
@@ -1379,7 +1413,7 @@ export default function Notation({
               if (!effectiveMergeRests) {
                 const rest = new StaveNote({
                   keys: ["b/4"],
-                  duration: `${durationFromBase(quarterDisplayBase)}r`,
+                  duration: `${durationFromBase(quarterDisplayBase, barTimeSig.d)}r`,
                   clef: "percussion",
                 });
                 notes.push(rest);
@@ -1404,7 +1438,7 @@ export default function Notation({
                   break;
                 }
               }
-              const restDur = `${durationFromLen(chunk, mergeBaseStepsPerQuarter)}r`;
+              const restDur = `${durationFromLen(chunk, mergeBaseStepsPerQuarter, barTimeSig.d)}r`;
               const rest = new StaveNote({ keys: ["b/4"], duration: restDur, clef: "percussion" });
               notes.push(rest);
               quarterNotes.push(rest);
@@ -1422,8 +1456,8 @@ export default function Notation({
             for (let sub = 0; sub < subdiv; sub++) {
               const entry = stepData[sub];
               const note = entry.keys.length
-                ? new StaveNote({ keys: entry.keys, duration: durationFromBase(quarterDisplayBase), clef: "percussion" })
-                : new StaveNote({ keys: ["b/4"], duration: `${durationFromBase(quarterDisplayBase)}r`, clef: "percussion" });
+                ? new StaveNote({ keys: entry.keys, duration: durationFromBase(quarterDisplayBase, barTimeSig.d), clef: "percussion" })
+                : new StaveNote({ keys: ["b/4"], duration: `${durationFromBase(quarterDisplayBase, barTimeSig.d)}r`, clef: "percussion" });
               if (entry.keys.length) note.setStemDirection(1);
               applyGhostStyling(note, entry.ghostKeyIndices);
               applyGhostStemOverride(note, entry.ghostKeyIndices);
@@ -1490,9 +1524,10 @@ export default function Notation({
         tupletsByBar[b] = tuplets;
       }
 
+      fitStavesToVoiceWidths({ voices, staves, rowBarCounts: resolvedRowBarCounts, renderer, height, spacingPresets: spacingPresetByBar });
       for (let b = 0; b < bars; b++) {
         const formatter = new Formatter().joinVoices([voices[b]]);
-        formatter.formatToStave([voices[b]], staves[b]);
+        formatter.format([voices[b]], staves[b].getNoteEndX() - staves[b].getNoteStartX() - Stave.defaultPadding - 2, { context: ctx });
         finalizeSpecialStemOverridesForVoice(voices[b]);
         voices[b].draw(ctx, staves[b]);
         drawStickingSpecsForVoice(voices[b], svgRoot);
@@ -1720,9 +1755,12 @@ export default function Notation({
       if (col === 0) {
         stave.addClef("percussion");
       }
-      if (showBarTimeSig) stave.addTimeSignature(`${barTimeSig.n}/${barTimeSig.d}`);
+      if (showBarTimeSig) {
+        stave.addTimeSignature(`${barTimeSig.n}/${barTimeSig.d}`);
+        stave.__dgTimeSigNotePadding = 8;
+      }
 
-      stave.setContext(ctx).draw();
+      stave.setContext(ctx);
       staves.push(stave);
 
       const repeatInfo = repeatPlan[b];
@@ -2194,9 +2232,10 @@ for (let i = 0; i < notes.length; i++) {
     }
 
     // Format and draw each bar independently (format to stave so barlines stay correct)
+    fitStavesToVoiceWidths({ voices, staves, rowBarCounts: resolvedRowBarCounts, renderer, height, spacingPresets: spacingPresetByBar });
     for (let b = 0; b < bars; b++) {
       const formatter = new Formatter().joinVoices([voices[b]]);
-      formatter.formatToStave([voices[b]], staves[b]);
+      formatter.format([voices[b]], staves[b].getNoteEndX() - staves[b].getNoteStartX() - Stave.defaultPadding - 2, { context: ctx });
       finalizeSpecialStemOverridesForVoice(voices[b]);
       voices[b].draw(ctx, staves[b]);
       drawStickingSpecsForVoice(voices[b], svgRoot);

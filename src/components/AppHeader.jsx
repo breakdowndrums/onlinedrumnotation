@@ -323,7 +323,7 @@ export default function AppHeader({
                   <div className="mt-1">Selection: use arrow keys to move it.</div>
                   <div className="mt-1">Looping: press &quot;L&quot; to toggle looping for the current selection.</div>
                   <div className="mt-1">Start: click above counts; click again to clear. Loop: click and drag, or Shift-click an end.</div>
-                  <div className="mt-1">Subdivision: click count numbers above the grid to toggle the selected subdivision. Long press a count number for subdivision options.</div>
+                  <div className="mt-1">Counts: click to toggle subdivision; hold/right-click for subdivisions and bar time signature.</div>
                 </>
               }
               align="left"

@@ -24,6 +24,7 @@ export function makeAudioEngine() {
   let resolution = 16;
   let transportColumns = 32;
   let stepQuarterDurations = [];
+  let stepMetronomeBeats = [];
   let timeSig = { n: 4, d: 4 };
   let metronomeEnabled = false;
   let metronomeVolume = 0.5;
@@ -115,6 +116,7 @@ export function makeAudioEngine() {
     nextResolution,
     nextColumns,
     nextStepQuarterDurations,
+    nextStepMetronomeBeats,
     nextTimeSig,
     nextMetronomeEnabled,
     nextMetronomeVolume,
@@ -127,6 +129,7 @@ export function makeAudioEngine() {
       (Array.isArray(nextStepQuarterDurations) && nextStepQuarterDurations.length > 0) ||
       (typeof nextColumns === "number" && Number.isFinite(nextColumns) && nextColumns > 0);
     if (typeof nextBpm === "number") bpm = nextBpm;
+    if (Array.isArray(nextStepMetronomeBeats)) stepMetronomeBeats = nextStepMetronomeBeats;
     if (Number.isFinite(nextFlamSpacingMs)) flamSpacingMs = Math.max(10, Math.min(60, nextFlamSpacingMs));
     if (typeof nextResolution === "number") resolution = nextResolution;
     if (nextTimeSig && typeof nextTimeSig === "object") {
@@ -265,6 +268,11 @@ export function makeAudioEngine() {
 
   function scheduleMetronomeForGridStep(stepIndex, time) {
     if (!metronomeEnabled) return;
+    if (stepMetronomeBeats.length === transportColumns) {
+      const beat = stepMetronomeBeats[stepIndex];
+      if (beat) triggerMetronome(time, beat === 2);
+      return;
+    }
     const beatQuarterLength = 4 / Math.max(1, Number(timeSig?.d) || 4);
     const beatsPerBar = Math.max(1, Math.round(Number(timeSig?.n) || 4));
     const quarterPos = getQuarterPositionBeforeStep(stepIndex);

@@ -1,3 +1,5 @@
+import { buildMeterLayout } from "./meterLayout.js";
+
 function toVarLen(value) {
   let v = Math.max(0, value | 0);
   const bytes = [v & 0x7f];
@@ -81,31 +83,7 @@ function resolveQuarterSubdivisions(tupletOverrides, baseSubdiv) {
 }
 
 function buildStepQuarterDurationsFromPayload(payload) {
-  const bars = Math.max(1, Math.min(64, Number(payload?.bars) || 1));
-  const resolution = [4, 8, 16, 32].includes(Number(payload?.resolution))
-    ? Number(payload.resolution)
-    : 8;
-  const timeSig = {
-    n: Math.max(1, Number(payload?.timeSig?.n) || 4),
-    d: Math.max(1, Number(payload?.timeSig?.d) || 4),
-  };
-  const quarterCount = getQuarterBeatsPerBar(timeSig);
-  const baseSubdiv = getBaseSubdivPerQuarter(resolution, timeSig);
-  const tupletsByBar = Array.from({ length: bars }, (_, barIdx) =>
-    Array.from({ length: quarterCount }, (_, qIdx) => {
-      const raw = payload?.tupletsByBar?.[barIdx]?.[qIdx];
-      return clampTupletValue(raw) ?? null;
-    })
-  );
-  const beatUnitQuarterLength = 4 / Math.max(1, Number(timeSig?.d) || 4);
-  const out = [];
-  tupletsByBar.forEach((row) => {
-    resolveQuarterSubdivisions(row, baseSubdiv).forEach((subdiv) => {
-      const s = Math.max(1, Number(subdiv) || 1);
-      for (let i = 0; i < s; i++) out.push(beatUnitQuarterLength / s);
-    });
-  });
-  return out;
+  return buildMeterLayout(payload || {}).durations;
 }
 
 function pushTrackEvent(track, delta, bytes) {
@@ -170,9 +148,19 @@ export function exportDrumMidi({
     }
   }
 
+  if (payload?.timeSigByBar?.length) {
+    const layout = buildMeterLayout(payload);
+    layout.meters.forEach((meter, bar) => {
+      const previous = layout.meters[bar - 1];
+      if (previous && previous.n === meter.n && previous.d === meter.d) return;
+      events.push({ tick: bar === 0 ? 0 : (stepStarts[layout.offsets[bar]] || 0) + pickupTicks,
+        type: "meta", bytes: [0xff, 0x58, 0x04, meter.n & 0xff, denominatorPowerOfTwo(meter.d) & 0xff, 24, 8] });
+    });
+  }
   events.sort((a, b) => {
     if (a.tick !== b.tick) return a.tick - b.tick;
     if (a.type === b.type) return 0;
+    if (a.type === "meta" || b.type === "meta") return a.type === "meta" ? -1 : 1;
     return a.type === "off" ? -1 : 1;
   });
 
@@ -194,13 +182,14 @@ export function exportDrumMidi({
 
   const tsn = Math.max(1, Number(timeSig?.n) || 4);
   const tsd = Math.max(1, Number(timeSig?.d) || 4);
-  track.push(...toVarLen(0), 0xff, 0x58, 0x04, tsn & 0xff, denominatorPowerOfTwo(tsd) & 0xff, 24, 8);
+  if (!payload?.timeSigByBar?.length) track.push(...toVarLen(0), 0xff, 0x58, 0x04, tsn & 0xff, denominatorPowerOfTwo(tsd) & 0xff, 24, 8);
 
   let lastTick = 0;
   for (const ev of events) {
     const delta = ev.tick - lastTick;
     lastTick = ev.tick;
-    track.push(...toVarLen(delta), ev.type === "on" ? onStatus : offStatus, ev.note & 0x7f, ev.velocity & 0x7f);
+    if (ev.type === "meta") track.push(...toVarLen(delta), ...ev.bytes);
+    else track.push(...toVarLen(delta), ev.type === "on" ? onStatus : offStatus, ev.note & 0x7f, ev.velocity & 0x7f);
   }
 
   track.push(...toVarLen(0), 0xff, 0x2f, 0x00);
@@ -286,14 +275,14 @@ export function exportArrangementMidi({
         });
         previousTempo = tempo;
       }
-      if (previousTimeSig !== tsKey) {
-        timelineEvents.push({
-          tick: repeatStartTick,
-          kind: "meta",
-          bytes: [0xff, 0x58, 0x04, timeSig.n & 0xff, denominatorPowerOfTwo(timeSig.d) & 0xff, 24, 8],
-        });
-        previousTimeSig = tsKey;
-      }
+      const meterLayout = buildMeterLayout(payload);
+      meterLayout.meters.forEach((meter, bar) => {
+        const key = `${meter.n}/${meter.d}`;
+        if (previousTimeSig === key) return;
+        timelineEvents.push({ tick: repeatStartTick + (stepStarts[meterLayout.offsets[bar]] || 0),
+          kind: "meta", bytes: [0xff, 0x58, 0x04, meter.n & 0xff, denominatorPowerOfTwo(meter.d) & 0xff, 24, 8] });
+        previousTimeSig = key;
+      });
 
       for (const inst of instruments) {
         if (!inst || !Number.isFinite(inst.midi)) continue;

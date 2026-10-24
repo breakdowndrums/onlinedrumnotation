@@ -52,6 +52,11 @@ export default function FeedbackPanel({
   isAdminUser,
   body,
   onBodyChange,
+  name = "",
+  onNameChange,
+  email = "",
+  onEmailChange,
+  adminBusyIds = [],
   selectedTypes = [],
   onToggleType,
   submitting = false,
@@ -72,6 +77,8 @@ export default function FeedbackPanel({
   onUpdateAdminMeta,
   onDelete,
 }) {
+  const [contactDetailsOpen, setContactDetailsOpen] = React.useState(false);
+  const contactDetailsId = React.useId();
   const visibleItems = getVisibleFeedbackItems({
     items,
     isAdmin: isAdminUser,
@@ -88,8 +95,14 @@ export default function FeedbackPanel({
 
   return (
     <div className="space-y-3">
-      <div className="bg-black p-3">
+      <form
+        className="bg-black p-3"
+        onSubmit={(event) => { event.preventDefault(); onSubmit?.(); }}
+        onInvalid={() => setContactDetailsOpen(true)}
+      >
         <textarea
+          aria-label="Your feedback"
+          disabled={submitting}
           value={body}
           onChange={(e) => onBodyChange?.(e.target.value)}
           rows={4}
@@ -97,7 +110,7 @@ export default function FeedbackPanel({
           placeholder="Share ideas, bugs, and requests. Feedback is private by default and can be made public by admin."
           className="w-full resize-y rounded bg-neutral-900/80 px-3 py-2 text-sm text-neutral-200 outline-none ring-0 placeholder:text-neutral-600 focus:outline-none focus:ring-0"
         />
-        <div className="mt-2 flex flex-wrap items-center justify-between gap-3">
+        <div className="mt-0 flex flex-wrap items-center justify-between gap-2">
           <div className="flex min-w-0 flex-wrap items-center gap-2">
             {FEEDBACK_TYPE_OPTIONS.map((typeId) => (
               <button
@@ -118,13 +131,40 @@ export default function FeedbackPanel({
               {String(body || "").length >= 2000 ? "Character limit reached" : ""}
             </span>
           </div>
+          <button
+            type="button"
+            aria-expanded={contactDetailsOpen}
+            aria-controls={contactDetailsId}
+            onClick={() => setContactDetailsOpen((open) => !open)}
+            className="ml-auto text-[11px] text-neutral-600 hover:text-neutral-300"
+          >
+            Add name or get a reply by email
+          </button>
+        </div>
+        <div id={contactDetailsId} hidden={!contactDetailsOpen} className="mt-3 text-xs text-neutral-500">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label className="space-y-1">
+              <span>Name (optional)</span>
+              <input value={name} onChange={(event) => onNameChange?.(event.target.value)}
+                maxLength={80} autoComplete="name" disabled={submitting}
+                className="block w-full rounded bg-neutral-900/80 px-3 py-2 text-sm text-neutral-200" />
+            </label>
+            <label className="space-y-1">
+              <span>Email (optional)</span>
+              <input type="email" value={email} onChange={(event) => onEmailChange?.(event.target.value)}
+                maxLength={254} autoComplete="email" disabled={submitting}
+                className="block w-full rounded bg-neutral-900/80 px-3 py-2 text-sm text-neutral-200" />
+            </label>
+          </div>
+          <p className="mt-2">Get an email when I reply. Your address stays private; your name may appear on published feedback.</p>
+        </div>
+        <div className="mt-2 flex flex-wrap items-center justify-between gap-3">
           <div className="flex shrink-0 items-center gap-3">
             {successMessage ? <span className="text-xs text-sky-300">{successMessage}</span> : null}
           </div>
           <div className="ml-auto shrink-0">
             <button
-              type="button"
-              onClick={onSubmit}
+              type="submit"
               disabled={submitting}
               className={`rounded px-3 py-1.5 text-xs ${
                 submitting
@@ -137,7 +177,7 @@ export default function FeedbackPanel({
           </div>
         </div>
         {error ? <div className="mt-2 text-xs text-amber-300">{error}</div> : null}
-      </div>
+      </form>
 
       <div className="flex flex-wrap items-center gap-2 pl-3 text-xs">
         {FEEDBACK_SORT_OPTIONS.map((sortOption) => (
@@ -258,11 +298,23 @@ export default function FeedbackPanel({
                     </div>
                     {isAdminUser ? (
                       <div className="mt-3 space-y-2">
+                        {item.contactEmail ? (
+                          <div className="break-all text-xs text-neutral-500">
+                            {item.contactEmail} (private)
+                            {item.replyEmailStatus ? (
+                              <div className="mt-1" role="status">
+                                {item.replyEmailStatus === "sent" ? "Last email sent" : item.replyEmailStatus === "failed" ? "Last email failed - retry below" : "Email pending"}
+                                {item.replyEmailUpdatedAt ? ` · ${formatFeedbackDate(item.replyEmailUpdatedAt)}` : ""}
+                              </div>
+                            ) : null}
+                          </div>
+                        ) : null}
                         <div className="flex flex-wrap items-center gap-2">
                           {FEEDBACK_RESOLUTION_OPTIONS.map((statusId) => (
                             <button
                               key={`feedback-status-${item.id}-${statusId}`}
                               type="button"
+                              disabled={adminBusyIds.includes(item.id)}
                               onClick={() => onUpdateAdminMeta?.(item.id, { resolutionStatus: statusId })}
                               className={`rounded-md px-2.5 py-1 text-xs font-medium ${
                                 item.resolutionStatus === statusId
@@ -279,6 +331,7 @@ export default function FeedbackPanel({
                           ))}
                         </div>
                         <textarea
+                          disabled={adminBusyIds.includes(item.id)}
                           value={adminReplyDrafts[item.id] ?? item.adminReply ?? ""}
                           onChange={(e) => onAdminReplyDraftChange?.(item.id, e.target.value)}
                           rows={3}
@@ -288,7 +341,7 @@ export default function FeedbackPanel({
                         <button
                           type="button"
                           onClick={() => onSetVisibility?.(item.id, true)}
-                          disabled={item.isPublic}
+                          disabled={item.isPublic || adminBusyIds.includes(item.id)}
                           className={`rounded px-2 py-1 text-xs ${
                             item.isPublic
                               ? "bg-neutral-950 text-neutral-700 cursor-not-allowed"
@@ -300,7 +353,7 @@ export default function FeedbackPanel({
                         <button
                           type="button"
                           onClick={() => onSetVisibility?.(item.id, false)}
-                          disabled={!item.isPublic && item.status === "hidden"}
+                          disabled={(!item.isPublic && item.status === "hidden") || adminBusyIds.includes(item.id)}
                           className={`rounded px-2 py-1 text-xs ${
                             !item.isPublic && item.status === "hidden"
                               ? "bg-neutral-950 text-neutral-700 cursor-not-allowed"
@@ -311,18 +364,21 @@ export default function FeedbackPanel({
                         </button>
                         <button
                           type="button"
+                          disabled={adminBusyIds.includes(item.id)}
                           onClick={() =>
                             onUpdateAdminMeta?.(item.id, {
                               adminReply: String(adminReplyDrafts[item.id] ?? item.adminReply ?? ""),
+                              sendEmail: Boolean(item.contactEmail),
                             })
                           }
                           className="rounded bg-neutral-800 px-2 py-1 text-xs text-neutral-200 hover:bg-neutral-700/60"
                         >
-                          Save reply
+                          {adminBusyIds.includes(item.id) ? "Saving..." : item.contactEmail ? "Save & email reply" : "Save reply"}
                         </button>
                         <button
                           type="button"
                           onClick={() => onDelete?.(item.id)}
+                          disabled={adminBusyIds.includes(item.id)}
                           className="rounded bg-neutral-900/60 px-2 py-1 text-xs text-neutral-500 hover:bg-neutral-800/60 hover:text-neutral-300"
                         >
                           Delete

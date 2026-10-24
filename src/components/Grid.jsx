@@ -87,7 +87,7 @@ function formatTupletHslColor(appearance, alpha = 1) {
 
 export default function Grid({
   instruments,
-  grid, columns, bars, stepsPerBar, resolution, timeSig, quarterSubdivisionsByBar, normalizedTupletOverridesByBar, barStepOffsets, setTupletAt, resetTupletAt, selectedCountRowSubdivision = 3, onSelectedCountRowSubdivisionChange, gridBarsPerLine,
+  grid, columns, bars, stepsPerBar, resolution, timeSig, timeSigByBar = [], onBarTimeSigChange, quarterSubdivisionsByBar, normalizedTupletOverridesByBar, barStepOffsets, setTupletAt, resetTupletAt, selectedCountRowSubdivision = 3, onSelectedCountRowSubdivisionChange, gridBarsPerLine,
   cycleVelocity, toggleGhost, selection, setSelection, loopRule, playbackRange, onPlaybackRangeChange,
     loopRepeats,
   setLoopRule, wrappedSelectionCells, playhead, moveSelectionByDelta, playabilityWarningsEnabled, playabilityWarningStepSet, stickingConflictStepSet, stickingGuideEnabled, showEditedSticking, notationStickingSelection, stickingAssignmentsByStep, stickingEditModeEnabled, notationStickingSelectionModeEnabled, stickingOverrides, onCycleStickingOverride, onToggleNotationStickingSelection, onDisableNotationStickingSelectionMode, onDisableStickingEditMode, bakeLoopPreview, hoveredGridCellRef, labelGutterWidth = "calc(8ch + 0.75rem)", countRowCutoffOffsetPx = 0, tupletGridAppearanceByValue = DEFAULT_TUPLET_GRID_APPEARANCE_BY_VALUE, darkenCountRowNonQuarters = true
@@ -118,6 +118,7 @@ export default function Grid({
     timer: null,
     longPressed: false,
     pointerId: null,
+    dismissPointerId: null,
   });
   const countRowPopupRef = React.useRef(null);
   const playbackRangeDragRef = React.useRef(null);
@@ -170,6 +171,8 @@ export default function Grid({
     };
   }, [onPlaybackRangeChange]);
   const [countRowPopupState, setCountRowPopupState] = useState(null);
+  const mixedMeters = timeSigByBar.some((meter) => meter.n !== timeSigByBar[0]?.n || meter.d !== timeSigByBar[0]?.d);
+  const baseForBar = React.useCallback((bar) => getBaseSubdivPerQuarter(resolution, timeSigByBar[bar] || timeSig), [resolution, timeSigByBar, timeSig]);
   const maybeClearSingleCellSelectionAfterMove = React.useCallback(() => {
     const shouldClearSingleSelection =
       press.current.mode === "move" ||
@@ -475,7 +478,7 @@ export default function Grid({
       if (
         tuplet != null &&
         isPowerOfTwoSubdivision(tuplet) &&
-        Math.max(1, Number(tuplet) || 1) !== gridBaseSubdivPerQuarter
+        Math.max(1, Number(tuplet) || 1) !== baseForBar(barIdx)
       ) {
         return "bg-black/[0.14]";
       }
@@ -484,7 +487,7 @@ export default function Grid({
       }
       return "";
     },
-    [normalizedTupletOverridesByBar, resolution, quarterOffsetByBar, gridBaseSubdivPerQuarter]
+    [normalizedTupletOverridesByBar, resolution, quarterOffsetByBar, baseForBar]
   );
   const getTupletQuarterBandStyle = React.useCallback((tupletValue, dark = false) => {
     const appearance =
@@ -509,7 +512,7 @@ export default function Grid({
       ),
     };
   }, [tupletGridAppearanceByValue]);
-  const getCountRowQuarterBandStyle = React.useCallback((quarterBandClass, quarterTupletValue) => {
+  const getCountRowQuarterBandStyle = React.useCallback((quarterBandClass, quarterTupletValue, barIndex) => {
     if (quarterBandClass === "is-tuplet-band") {
       return getTupletQuarterBandStyle(quarterTupletValue, false);
     }
@@ -521,14 +524,14 @@ export default function Grid({
       if (
         !quarterTupletValue ||
         !isPowerOfTwoSubdivision(straightOverride) ||
-        straightOverride === gridBaseSubdivPerQuarter
+        straightOverride === baseForBar(barIndex)
       ) {
         return undefined;
       }
       return { backgroundColor: "#1f1f1f" };
     }
     return undefined;
-  }, [getTupletQuarterBandStyle, gridBaseSubdivPerQuarter]);
+  }, [getTupletQuarterBandStyle, baseForBar]);
 
   const getQuarterBorderClass = React.useCallback(
     (barIdx, stepMeta) => {
@@ -548,7 +551,7 @@ export default function Grid({
       if (
         tuplet != null &&
         isPowerOfTwoSubdivision(tuplet) &&
-        Math.max(1, Number(tuplet) || 1) !== gridBaseSubdivPerQuarter
+        Math.max(1, Number(tuplet) || 1) !== baseForBar(barIdx)
       ) {
         return "border-[#212121]";
       }
@@ -557,7 +560,7 @@ export default function Grid({
       }
       return "";
     },
-    [normalizedTupletOverridesByBar, resolution, quarterOffsetByBar, gridBaseSubdivPerQuarter]
+    [normalizedTupletOverridesByBar, resolution, quarterOffsetByBar, baseForBar]
   );
 
   const clearCountRowLongPress = React.useCallback(() => {
@@ -578,12 +581,13 @@ export default function Grid({
       8,
       Math.min(viewportWidth - popupWidth - 8, rect.left + rect.width / 2 - popupWidth / 2)
     );
-    const estimatedHeight = 170;
+    const estimatedHeight = 290;
     const top = rect.bottom + estimatedHeight + 12 <= viewportHeight
       ? rect.bottom + 8
       : Math.max(8, rect.top - estimatedHeight - 8);
-    setCountRowPopupState({ left, top, barIdx, quarterIdx });
-  }, []);
+    const meter = timeSigByBar[barIdx] || timeSig;
+    setCountRowPopupState({ left, top, barIdx, quarterIdx, meterN: meter.n, meterD: meter.d });
+  }, [timeSigByBar, timeSig]);
 
   const applyCountRowSubdivision = React.useCallback(
     (value, barIdx, quarterIdx) => {
@@ -595,10 +599,21 @@ export default function Grid({
     },
     [onSelectedCountRowSubdivisionChange, setTupletAt]
   );
+  const updateCountRowMeter = (n, d) => {
+    if (!countRowPopupState) return;
+    const meter = { n: Math.max(2, Math.min(15, n)), d };
+    const accepted = onBarTimeSigChange?.(countRowPopupState.barIdx, meter);
+    if (accepted !== false) {
+      setCountRowPopupState((prev) => prev ? {
+        ...prev, meterN: meter.n, meterD: meter.d, quarterIdx: Math.min(prev.quarterIdx, meter.n - 1),
+      } : null);
+    }
+  };
 
   React.useEffect(() => {
     const handleGlobalPointerUp = () => {
       countRowPressRef.current.longPressed = false;
+      countRowPressRef.current.dismissPointerId = null;
       clearCountRowLongPress();
     };
     const handlePointerDownOutside = (event) => {
@@ -762,6 +777,34 @@ export default function Grid({
               );
             })}
           </div>
+          <div className="my-3 border-t border-neutral-800" />
+          <div className="flex items-center justify-between gap-2">
+            <div className="shrink-0">
+              <div className="text-sm font-medium text-neutral-100">Time</div>
+              <div className="mt-1 text-xs text-neutral-500">Bar {countRowPopupState.barIdx + 1}</div>
+            </div>
+          <div className="grid h-10 w-fit shrink-0 grid-cols-[1.5rem_3.5rem_1.5rem] grid-rows-2 overflow-hidden rounded-md border border-neutral-800 bg-neutral-900/60">
+            <div className="row-span-2 grid grid-rows-2 border-r border-neutral-800">
+              <button type="button" aria-label="Increase bar time signature numerator"
+                onClick={() => updateCountRowMeter(countRowPopupState.meterN + 1, countRowPopupState.meterD)}
+                className="flex items-center justify-center text-xs leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700">+</button>
+              <button type="button" aria-label="Decrease bar time signature numerator"
+                onClick={() => updateCountRowMeter(countRowPopupState.meterN - 1, countRowPopupState.meterD)}
+                className="flex items-center justify-center border-t border-neutral-800 text-xs leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700">−</button>
+            </div>
+            <div className="row-span-2 flex items-center justify-center px-2 text-sm text-white tabular-nums">
+              {countRowPopupState.meterN}<span className="mx-1 text-neutral-500">/</span>{countRowPopupState.meterD}
+            </div>
+            <div className="row-span-2 grid grid-rows-2 border-l border-neutral-800">
+              <button type="button" aria-label="Next bar time signature denominator"
+                onClick={() => updateCountRowMeter(countRowPopupState.meterN, countRowPopupState.meterD === 8 ? 4 : 8)}
+                className="flex items-center justify-center text-xs leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700">+</button>
+              <button type="button" aria-label="Previous bar time signature denominator"
+                onClick={() => updateCountRowMeter(countRowPopupState.meterN, countRowPopupState.meterD === 8 ? 4 : 8)}
+                className="flex items-center justify-center border-t border-neutral-800 text-xs leading-none text-neutral-200 hover:bg-neutral-700/60 active:bg-neutral-700">−</button>
+            </div>
+          </div>
+          </div>
         </div>
       ) : null}
       {Array.from({ length: Math.ceil(bars / Math.max(1, Math.min(bars, Number(gridBarsPerLine) || 1))) }).map((_, lineIdx) => {
@@ -789,6 +832,20 @@ export default function Grid({
 
         return (
           <div key={`gridline-${lineIdx}`} className="grid gap-1" style={{ gridTemplateColumns: `${labelGutterWidth} repeat(${timeline.length}, 28px)` }}>
+            {mixedMeters && <>
+              <div className="h-4" />
+              {timeline.map((t, index) => {
+                const meter = timeSigByBar[t.bar] || timeSig;
+                const previous = timeSigByBar[t.bar - 1];
+                const show = t.type === "cell" && t.stepInBar === 0 &&
+                  (t.bar === barStart || meter.n !== previous?.n || meter.d !== previous?.d);
+                return show ? <button key={`meter-${index}`} type="button"
+                  className="h-4 text-[10px] text-neutral-500 hover:text-neutral-200"
+                  title={`Edit bar ${t.bar + 1} time signature`}
+                  onClick={(event) => openCountRowSubdivisionPopup(event.currentTarget, t.bar, 0)}>{meter.n}/{meter.d}</button>
+                  : <div key={`meter-${index}`} />;
+              })}
+            </>}
             <div className="h-4" />
             {timeline.map((t) => {
               if (t.type === "gap") return <div key={`loop-${t.key}`} />;
@@ -862,7 +919,8 @@ export default function Grid({
                     normalizedTupletOverridesByBar?.[t.bar]?.[t.stepMeta?.quarterIndex ?? 0] ?? null;
                   const countRowQuarterBandStyle = getCountRowQuarterBandStyle(
                     quarterBandClass,
-                    quarterTupletValue
+                    quarterTupletValue,
+                    t.bar
                   );
               return (
                 <div
@@ -876,11 +934,17 @@ export default function Grid({
                   onPointerDown={(e) => {
                     e.stopPropagation();
                     if (e.button != null && e.button !== 0) return;
-                    setCountRowPopupState(null);
-                    const targetEl = e.currentTarget;
-                    countRowPressRef.current.longPressed = false;
-                    countRowPressRef.current.pointerId = e.pointerId;
                     clearCountRowLongPress();
+                    countRowPressRef.current.longPressed = false;
+                    countRowPressRef.current.dismissPointerId = null;
+                    if (countRowPopupState) {
+                      // Consume the whole gesture, including its pointer-up subdivision toggle.
+                      countRowPressRef.current.dismissPointerId = e.pointerId;
+                      setCountRowPopupState(null);
+                      return;
+                    }
+                    const targetEl = e.currentTarget;
+                    countRowPressRef.current.pointerId = e.pointerId;
                     countRowPressRef.current.timer = window.setTimeout(() => {
                       countRowPressRef.current.longPressed = true;
                       openCountRowSubdivisionPopup(targetEl, t.bar, t.stepMeta?.quarterIndex ?? 0);
@@ -888,20 +952,24 @@ export default function Grid({
                   }}
                   onPointerUp={(e) => {
                     e.stopPropagation();
+                    if (e.button != null && e.button !== 0) return;
                     const wasLongPressed = countRowPressRef.current.longPressed;
+                    const wasDismissal = countRowPressRef.current.dismissPointerId === e.pointerId;
+                    countRowPressRef.current.dismissPointerId = null;
                     countRowPressRef.current.longPressed = false;
                     clearCountRowLongPress();
-                    if (wasLongPressed) return;
+                    if (wasLongPressed || wasDismissal) return;
                     const quarterIdx = t.stepMeta?.quarterIndex ?? 0;
                     const selectedSubdivision = Number(selectedCountRowSubdivision) || 3;
                     const currentOverride = normalizedTupletOverridesByBar?.[t.bar]?.[quarterIdx] ?? null;
-                    const currentEffective = currentOverride == null ? gridBaseSubdivPerQuarter : Number(currentOverride);
+                    const currentEffective = currentOverride == null ? baseForBar(t.bar) : Number(currentOverride);
                     if (currentEffective === selectedSubdivision) resetTupletAt?.(t.bar, quarterIdx);
                     else setTupletAt?.(t.bar, quarterIdx, selectedSubdivision);
                   }}
                   onPointerCancel={() => {
                     playbackRangeDragRef.current = null;
                     countRowPressRef.current.longPressed = false;
+                    countRowPressRef.current.dismissPointerId = null;
                     clearCountRowLongPress();
                   }}
                   onPointerLeave={(e) => {
@@ -909,7 +977,11 @@ export default function Grid({
                       clearCountRowLongPress();
                     }
                   }}
-                  title="Click to toggle subdivisions. Long press for subdivision options"
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    openCountRowSubdivisionPopup(event.currentTarget, t.bar, t.stepMeta?.quarterIndex ?? 0);
+                  }}
+                  title="Click to toggle subdivisions. Hold or right-click for subdivisions and bar time signature"
                 >
                   {countRowQuarterBandStyle ? (
                     <span

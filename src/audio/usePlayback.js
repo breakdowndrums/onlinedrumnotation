@@ -11,6 +11,7 @@ export function usePlayback({
   bpm,
   resolution,
   stepQuarterDurations,
+  stepMetronomeBeats,
   timeSig,
   metronomeEnabled,
   metronomeVolume,
@@ -42,13 +43,14 @@ export function usePlayback({
       nextResolution: resolution,
       nextColumns: columns,
       nextStepQuarterDurations: stepQuarterDurations,
+      nextStepMetronomeBeats: stepMetronomeBeats,
       nextTimeSig: timeSig,
       nextMetronomeEnabled: metronomeEnabled,
       nextMetronomeVolume: metronomeVolume,
       nextDrumVolume: drumVolume,
       nextFlamSpacingMs: flamSpacingMs,
     });
-  }, [engine, bpm, resolution, columns, stepQuarterDurations, timeSig, metronomeEnabled, metronomeVolume, drumVolume, flamSpacingMs]);
+  }, [engine, bpm, resolution, columns, stepQuarterDurations, stepMetronomeBeats, timeSig, metronomeEnabled, metronomeVolume, drumVolume, flamSpacingMs]);
 
   useEffect(() => {
     engine.setOnStep((step, meta) => {

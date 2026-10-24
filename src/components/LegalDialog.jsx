@@ -129,6 +129,16 @@ export default function LegalDialog({
               Supabase Auth and Resend (Art. 6(1)(b) and (f) GDPR).
             </p>
             <p>
+              Feedback and replies:
+              <br />
+              Feedback can be submitted without an account. If you choose to provide a name, it may appear
+              alongside feedback published by the administrator. Optional email addresses are stored privately
+              in Supabase and are not published. When the administrator sends a reply, Resend processes the
+              recipient address, original feedback and reply to send the notification. These addresses are
+              used for feedback replies, not marketing. Deleting the feedback removes its stored contact
+              details and notification records from this app.
+            </p>
+            <p>
               Cookies:
               <br />
               The app itself does not use non-essential marketing cookies. Technical browser storage may still
@@ -154,7 +164,7 @@ export default function LegalDialog({
               <br />
               Personal data may be processed by service providers used to run the app, in particular Vercel
               (hosting and analytics), Supabase (authentication, database, and cloud library functions), and
-              Resend where used for account-related emails.
+              Resend where used for account-related emails and feedback reply notifications.
             </p>
             <p>
               International transfers:

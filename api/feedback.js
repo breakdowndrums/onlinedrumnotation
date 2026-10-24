@@ -1,4 +1,5 @@
 import { getRequestUser, hasSupabaseAdmin, supabaseAdmin } from "./_supabaseAdmin.js";
+import { emailFeedbackReply, normalizeContactEmail } from "./_feedbackEmail.js";
 
 const MAX_FEEDBACK_LENGTH = 2000;
 const MAX_ANON_SUBMISSIONS_PER_DAY = 5;
@@ -99,8 +100,24 @@ async function listFeedback(req, res) {
   const { data, error } = await query.limit(200);
   if (error) return res.status(500).json({ error: error.message || "Failed to load feedback." });
 
-  const items = Array.isArray(data) ? data : [];
+  let items = Array.isArray(data) ? data : [];
   const ids = items.map((item) => String(item.id || "")).filter(Boolean);
+  if (isAdmin && ids.length) {
+    const { data: contacts, error: contactError } = await supabaseAdmin.from("feedback_contacts")
+      .select("feedback_id,email").in("feedback_id", ids);
+    const { data: emails, error: emailError } = await supabaseAdmin.from("feedback_reply_emails")
+      .select("feedback_id,status,updated_at").in("feedback_id", ids)
+      .order("created_at", { ascending: false }).limit(1000);
+    if (contactError || emailError) return res.status(500).json({ error: "Feedback email tables are not ready. Run supabase-feedback-email.sql." });
+    const contactMap = new Map((contacts || []).map((row) => [row.feedback_id, row.email]));
+    const emailMap = new Map();
+    (emails || []).forEach((row) => { if (!emailMap.has(row.feedback_id)) emailMap.set(row.feedback_id, row); });
+    items = items.map((item) => ({ ...item,
+      contact_email: contactMap.get(item.id) || "",
+      reply_email_status: emailMap.get(item.id)?.status || "",
+      reply_email_updated_at: emailMap.get(item.id)?.updated_at || "",
+    }));
+  }
   let myVotes = {};
   if (ids.length && (user?.id || fingerprint)) {
     let voteQuery = supabaseAdmin
@@ -124,6 +141,11 @@ async function submitFeedback(req, res) {
   const { user } = await getRequestUser(req);
   const fingerprint = user?.id ? "" : readFingerprint(req);
   const text = String(body?.body || "").trim();
+  const name = String(body?.name || "").trim().replace(/[\r\n\t]/g, " ");
+  let email;
+  try { email = normalizeContactEmail(body?.email); }
+  catch (error) { return res.status(400).json({ error: error.message }); }
+  if (name.length > 80) return res.status(400).json({ error: "Name must be 80 characters or fewer." });
   const feedbackTypes = normalizeFeedbackTypes(body?.feedbackTypes);
   if (text.length < 3) return res.status(400).json({ error: "Feedback is too short." });
   if (text.length > MAX_FEEDBACK_LENGTH) return res.status(400).json({ error: "Feedback is too long." });
@@ -134,10 +156,10 @@ async function submitFeedback(req, res) {
       return res.status(429).json({ error: error.message || "Anonymous feedback limit reached." });
     }
   }
-  const { error } = await supabaseAdmin.from("feedback_items").insert({
+  const { error } = await supabaseAdmin.rpc("submit_feedback_with_contact", { p_email: email || null, p_item: {
     user_id: user?.id || null,
     author_kind: user?.id ? "registered" : "anonymous",
-    author_label: user?.id ? "Signed-in user" : "Anonymous",
+    author_label: name || (user?.id ? "Signed-in user" : "Anonymous"),
     body: text,
     status: "pending",
     is_public: false,
@@ -147,7 +169,7 @@ async function submitFeedback(req, res) {
     feedback_type: feedbackTypes[0] === "bug" ? "bug" : "feature",
     feedback_types: feedbackTypes,
     resolution_status: "reviewing",
-  });
+  } });
   if (error) return res.status(500).json({ error: error.message || "Failed to submit feedback." });
   return res.status(200).json({ ok: true });
 }
@@ -207,6 +229,10 @@ async function moderateFeedback(req, res) {
   if (!isAdmin) return res.status(403).json({ error: "Admin required." });
   const feedbackId = String(body?.feedbackId || "").trim();
   if (!feedbackId) return res.status(400).json({ error: "Missing feedback id." });
+  const sendEmail = body?.sendEmail === true;
+  if (sendEmail && !String(body?.adminReply || "").trim()) {
+    return res.status(400).json({ error: "Write a reply before sending an email." });
+  }
   const patch = {};
   if (typeof body?.makePublic === "boolean") {
     patch.is_public = body.makePublic;
@@ -215,8 +241,19 @@ async function moderateFeedback(req, res) {
   if (typeof body?.adminReply === "string") patch.admin_reply = String(body.adminReply).trim().slice(0, 2000);
   if (body?.resolutionStatus) patch.resolution_status = normalizeFeedbackResolution(body.resolutionStatus);
   patch.updated_at = new Date().toISOString();
-  const { error } = await supabaseAdmin.from("feedback_items").update(patch).eq("id", feedbackId);
+  const { data: item, error } = await supabaseAdmin.from("feedback_items").update(patch)
+    .eq("id", feedbackId).select("id,body,author_label,admin_reply").maybeSingle();
   if (error) return res.status(500).json({ error: error.message || "Failed to moderate feedback." });
+  if (!item) return res.status(404).json({ error: "Feedback not found." });
+  if (sendEmail) {
+    const { data: contact, error: contactError } = await supabaseAdmin.from("feedback_contacts")
+      .select("email").eq("feedback_id", feedbackId).maybeSingle();
+    if (contactError || !contact?.email) return res.status(200).json({ ok: true, notification: {
+      status: "failed", message: "Reply saved, but no contact email is available.",
+    } });
+    const notification = await emailFeedbackReply(supabaseAdmin, item, contact.email);
+    return res.status(200).json({ ok: true, notification });
+  }
   return res.status(200).json({ ok: true });
 }
 
@@ -232,6 +269,7 @@ async function deleteFeedback(req, res) {
 }
 
 export default async function handler(req, res) {
+  res.setHeader("Cache-Control", "private, no-store");
   if (!hasSupabaseAdmin || !supabaseAdmin) {
     return res.status(503).json({ error: "Feedback backend not configured." });
   }
